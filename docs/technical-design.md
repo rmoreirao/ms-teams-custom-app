@@ -1,9 +1,11 @@
 # Technical design: Teams-backed chat reference implementation
 
+Companion: [Detailed architecture](detailed-architecture.md) covers Azure/Entra components, software/data contracts, runtime sequences, and implementation-level recovery and operations.
+
 | Field | Value |
 | --- | --- |
 | Document status | Draft reference implementation guide |
-| Architecture decision status | Accepted for this reference design; deployment acceptance remains conditional |
+| Architecture decision status | ADRs 0001-0006 accepted for reference design; privacy-boundary ADR 0007 proposed; deployment acceptance remains conditional |
 | Version | 0.1 |
 | Public documentation reviewed | 2026-10-15 |
 | Implementation status | Documentation only; no application, infrastructure, or capacity evidence is included |
@@ -34,6 +36,8 @@ Define a cloud-native, responsive web application that lets authenticated users 
 The design follows Microsoft's embedding reference: retrieve messages once where practical, cache a bounded working set, subscribe to changes, and deliver updates to clients through a server component [R1]. It applies Graph guidance on least privilege, paging, throttling, response handling, and data retention [R2].
 
 **Core design:** Teams remains the system of record. Azure maintains a bounded, authorized recent-message projection so that normal reads do not wait for Graph. User-authored writes require Graph confirmation and remain constrained by Teams.
+
+The projection is a performance-oriented proposal, not permission to retain personal data. [ADR 0007](adr/0007-message-content-processing-and-storage-boundary.md) makes selection and approval of the processing/storage boundary an explicit prerequisite. If policy does not permit the proposed content copy, the relevant architecture and performance assumptions must change.
 
 The workload assumptions in this guide are synthetic. They are not operational measurements from a deployment. No existing implementation, comparable-scale production result, or guaranteed Graph capacity is asserted.
 
@@ -74,8 +78,29 @@ Attachment metadata and authorization must be supported where selected. Attachme
 | NFR-06 | Recover from zone and regional failures | Replicate required state and provision full failover capacity |
 | NFR-07 | Make dependency behavior supportable | Trace individual Graph attempts, retries, paging, and complete user operations |
 | NFR-08 | Demonstrate the actual acceptance envelope | Test capacity, real Graph behavior, security correctness, and browser experience separately |
+| NFR-09 | Approve the personal-data processing and storage boundary | Select an explicit privacy profile before enabling its real-data path; assess all copied, encrypted, derived, and operational records |
 
 Unauthorized disclosure is not an acceptable error-budget outcome. Availability or latency targets do not relax access-control requirements.
+
+### 2.1 Privacy and data-handling prerequisites
+
+Privacy is an architecture input, not a database setting or a substitute for performance evidence. The design must distinguish a restriction on durable copies from restrictions on RAM caches, backend plaintext processing, particular products/locations, or all personal data outside Microsoft 365.
+
+| Required decision | Approval scope |
+| --- | --- |
+| Purpose and content boundary | Permitted use, message-body processing, memory caching, durable storage, approved fields/previews and resources |
+| Identity and metadata | Users, membership, resource identifiers, timestamps, operation evidence and derived/linkable values |
+| Hosting and access | Approved regions/infrastructure, tenant separation, runtime/operator access, history and policy enforcement |
+| Lifecycle and copies | Retention/expiry, deletion, legal/policy requirements, queues/DLQs, outboxes, backups, diagnostics, exports and client storage |
+| Architecture and evidence | Selected option, changed data/authentication flows, Graph budget, SLO populations and recovery objectives |
+
+Keep the full [P01-P13 trade-off comparison](detailed-architecture.md#56-privacy-and-storage-options) in the detailed architecture as the canonical table. P07, the bounded full Cosmos DB projection with Redis, remains the reference candidate subject to approval. Alternatives include no-copy, metadata-only, ephemeral, minimized, encrypted, hybrid, and different experience/platform patterns; they are not implemented runtime fallbacks.
+
+Encryption and pseudonymization do not automatically make data anonymous. An approved memory cache still handles personal data, and encrypted rich notifications can still create a durable content copy. Graph admin consent and licensing do not approve these additional purposes.
+
+Use [ADR 0007](adr/0007-message-content-processing-and-storage-boundary.md) to record the proposed boundary and eventual approved selection. No permitted profile is inferred from its **Proposed** status. Gate G0 applies before enabling the selected real-data processing/storage path; experiments using approved synthetic/test data can proceed without implying approval for production content.
+
+Projection-specific design implications and recent-read targets in this TDD are conditional on the profile. No-copy and hybrid variants require revised dependency demand, measurement populations, and acceptance evidence; a faster target cannot justify an unapproved data copy.
 
 ## 3. Workload and capacity model
 
@@ -154,6 +179,8 @@ An eligible operation is a valid request for a supported action by an authorized
 
 Measure business operations once while also recording every Graph attempt. Start latency measurement before retries and waiting. Timeouts and failures remain in the operation population, not only in successful-response percentiles.
 
+A usable initial recent-message page contains the first 20 authorized, displayable messages in the requested working range when that many exist, or all available messages when fewer exist. A projection coverage gap is not a valid empty conversation. Reply expansion and older-history loading must not block this initial page.
+
 ### 4.2 Targets
 
 | SLI | Proposed SLO | Measurement boundary |
@@ -176,6 +203,7 @@ Microsoft documents expected `chatMessage` notification delivery as less than 10
 
 - A skeleton, empty placeholder, `202`, or local pending message is not usable content or a confirmed send.
 - A read that quickly returns stale data may pass availability while failing freshness. Dashboards must show both; the business journey is not healthy merely because the cache returned `200`.
+- Determine freshness from change/coverage evidence, not only the age of the last message. An inactive conversation with old messages is not necessarily stale.
 - A Web PubSub publish acknowledgment is not proof that a client displayed the update. Instrument client receipt/rendering or controlled end-to-end probes.
 - A user message is labeled sent only after known Graph creation. Optimistic pending display can have a separate UX target but cannot satisfy send success.
 - Offboarding timing starts at receipt of the authoritative event. Measure the upstream identity-lifecycle delay separately; do not imply immediate revocation from a delayed notification source.
@@ -283,7 +311,7 @@ The overview intentionally excludes synchronization loops and cross-cutting serv
 | Identity and credentials | Microsoft Entra ID, MSAL, Key Vault, managed identities | Distinct interactive/background responsibilities and protected server-side credentials |
 | Operations | Azure Monitor, Application Insights/OpenTelemetry, Log Analytics | SLOs, dependency attempts, service health, capacity, and support evidence |
 
-Container Apps is the starting compute choice because managed client connections remove the need for 200,000 sockets on API replicas. Use dedicated workload profiles, supported zone redundancy, nonzero minimum replicas, and measured scale rules. Validate ingress, networking, CPU, replica, and environment quotas.
+Container Apps is the starting compute choice because managed client connections remove the need for 200,000 sockets on API replicas. Use dedicated workload profiles, supported zone redundancy, nonzero minimum replicas, and measured scale rules. Validate ingress, networking, CPU, replica, and environment quotas [R21].
 
 API Management is optional when gateway governance requires it. It is not assumed to increase Graph capacity or replace application-specific authorization and rate controls.
 
@@ -422,7 +450,7 @@ App-only read grants are not end-user permissions. Enforce current access, priva
 
 Never let clients self-authorize group membership or directly publish a business message that bypasses Graph confirmation. Short-lived connection credentials and group membership must derive from validated application state.
 
-Define a trustworthy freshness bound for entitlement state. Membership notifications can be delayed, so notification receipt alone cannot prove immediate revocation. Fail-closed leases do not magically detect a change that has not arrived. Production acceptance requires a bounded authorization/revocation method compatible with the Graph budget.
+Define a trustworthy freshness bound for entitlement state. Membership notifications can be delayed, so notification receipt alone cannot prove immediate revocation. Expiring local leases cannot establish timely revocation unless refresh validates against a suitable authoritative source. Production acceptance requires a bounded authorization/revocation method compatible with the Graph budget.
 
 Identity lifecycle events must invalidate application sessions, deny subsequent operations, and close affected connections. Verify the source-to-application propagation time as well as the local enforcement target.
 
@@ -535,8 +563,11 @@ Agree real Graph traffic, permission scope, test resources, duration, cost budge
 
 ### 11.3 Acceptance gates
 
+**G0 is a prerequisite for the selected real-data path.** G1-G7 then validate that approved architecture. It does not prevent design work or experiments within a separately approved synthetic/test scope.
+
 | Gate | Pass condition |
 | --- | --- |
+| G0: Privacy boundary | Recorded approval of the selected processing/storage profile, purpose, fields/resources, regions, access, retention/deletion and operational copies; actual flows match the boundary under ADR 0007 |
 | G1: Graph demand | Measured read/write/control/retry demand fits confirmed budgets across all applicable dimensions |
 | G2: User experience | Recent-read and send/freshness targets pass at the agreed real workload and mobile profile |
 | G3: Security | Copied-data access, revocation, history visibility, DLP, retention, and client-storage policies are demonstrated |
@@ -551,7 +582,7 @@ A simulator capacity pass is not a G1/G2 proof for real Graph. A service's nomin
 
 | Stage | Deliverable and exit condition |
 | --- | --- |
-| 1. Prerequisites | Confirm tenant licensing, consent, resource scope, message policy, regions, retention, and Azure quotas |
+| 1. Prerequisites | Approve the applicable ADR 0007/G0 privacy profile, then confirm tenant licensing, consent, resource scope, message policy, regions, retention, and Azure quotas |
 | 2. Vertical slice | One authorized read, delegated send, rich notification, durable projection update, and client delivery |
 | 3. Correctness | Explicit write states, transactional outbox, replay/tombstones, authorization invalidation, renewal, and bounded repair |
 | 4. Capacity controls | Shared Graph budgets, cache coalescing, bounded queries, warm capacity, and end-to-end telemetry |
@@ -564,6 +595,7 @@ Implementation should use versioned interfaces and infrastructure as code. Add a
 
 | Risk | Treatment / decision required |
 | --- | --- |
+| Proposed content copy violates the permitted privacy boundary | Resolve G0 before enabling the real-data path; select another architecture and re-baseline performance rather than silently retaining content elsewhere |
 | Sustained sends exceed Teams capacity | Obtain Microsoft confirmation or change the product/communication architecture; do not hide backlog |
 | Hot conversation hits resource limits | Model concentration and acceptable throttling; aggregate tenant headroom is insufficient |
 | Notification freshness misses product needs | Validate external-change timing; do not promise subsecond delivery from the public average |
@@ -578,11 +610,15 @@ Before selecting production settings, decide the chat/channel send split and bur
 
 Continue with the Graph-backed design only when the acceptance gates pass. If sustained writes, hot conversations, strict freshness, or security constraints cannot be satisfied, consider native Teams entry points or another communication backend.
 
-Azure Communication Services Chat is a distinct communication architecture, not a drop-in service for existing Teams chat/channel conversations. An alternative must undergo its own identity, interoperability, retention, and compliance design.
+Compare the [privacy and storage options](detailed-architecture.md#56-privacy-and-storage-options) before approving the copied working set. No-copy, ephemeral-cache, minimized, encrypted, and hybrid variants have different data flows and performance assumptions.
+
+An independent communication backend is not a drop-in service for existing Teams chat/channel conversations and requires its own identity, interoperability, retention, and compliance design. Azure Communication Services Chat should not be selected as a new long-term standalone alternative: Microsoft lists ACS Chat, including Chat for Teams Meeting Interop, for retirement on 2028-09-30 in the [current retirement guide](https://learn.microsoft.com/en-us/azure/communication-services/acs-retirement-and-breaking-changes-guide).
 
 ## 14. Architecture decision records
 
 See the [ADR index](adr/README.md). Reference-design acceptance is not deployment approval or capacity certification.
+
+ADRs 0001-0006 describe the reference pattern; ADR 0007 is **Proposed** and does not select or approve a deployment privacy profile.
 
 | ADR | Decision |
 | --- | --- |
@@ -592,6 +628,7 @@ See the [ADR index](adr/README.md). Reference-design acceptance is not deploymen
 | [0004](adr/0004-managed-azure-services-and-regional-recovery.md) | Use managed Azure compute, connection infrastructure, and conditional regional recovery |
 | [0005](adr/0005-graph-budgets-and-explicit-write-outcomes.md) | Enforce Graph budgets and explicit write outcomes |
 | [0006](adr/0006-slo-driven-capacity-and-feasibility-validation.md) | Validate SLOs, Azure capacity, and real Graph feasibility separately |
+| [0007](adr/0007-message-content-processing-and-storage-boundary.md) | Propose an explicit processing/storage boundary and privacy-approval prerequisite before enabling the real-data path |
 
 ## 15. References
 

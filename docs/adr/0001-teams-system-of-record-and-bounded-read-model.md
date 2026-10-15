@@ -49,6 +49,8 @@ Fast local reads do not improve Graph write capacity. This decision does not est
 ## Links
 
 - [Technical design: projection and interactions](../technical-design.md#7-interaction-and-synchronization-design)
+- [Privacy and storage alternatives](../detailed-architecture.md#56-privacy-and-storage-options)
+- [ADR 0007: proposed privacy-boundary prerequisite](0007-message-content-processing-and-storage-boundary.md)
 - [ADR 0002: copied-data authorization](0002-permission-separation-and-copied-data-authorization.md)
 - [ADR 0003: synchronization](0003-rich-notifications-and-durable-synchronization.md)
 - [Microsoft embedding reference](https://learn.microsoft.com/en-us/graph/teams-embed-within-own-app)

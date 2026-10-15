@@ -4,6 +4,8 @@ These records explain the decisions behind the [technical design](../technical-d
 
 **Accepted** means selected for this reference design. It does not mean a deployment has passed security review, a proposed SLO has been achieved, or Microsoft/Azure capacity has been certified. Each record lists deployment acceptance conditions.
 
+ADR 0007 is **Proposed**: the deployment's processing/storage boundary is not yet selected or approved. It does not automatically accept the proposed Cosmos DB content copy.
+
 | ADR | Status | Decision |
 | --- | --- | --- |
 | [0001](0001-teams-system-of-record-and-bounded-read-model.md) | Accepted for reference design | Teams remains authoritative; Azure holds a bounded recent-message projection |
@@ -12,6 +14,7 @@ These records explain the decisions behind the [technical design](../technical-d
 | [0004](0004-managed-azure-services-and-regional-recovery.md) | Accepted for reference design | Managed Azure services with separately validated connection and recovery capacity |
 | [0005](0005-graph-budgets-and-explicit-write-outcomes.md) | Accepted for reference design | Shared Graph request budgets and explicit uncertain-write handling |
 | [0006](0006-slo-driven-capacity-and-feasibility-validation.md) | Accepted for reference design | Separate SLO, Azure-capacity, and real Graph feasibility evidence |
+| [0007](0007-message-content-processing-and-storage-boundary.md) | Proposed | Select and approve the message-content processing/storage boundary before enabling the real-data path |
 
 ## Maintenance
 

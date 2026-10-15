@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<!--
+THESIS: Compare four ways to simplify the same messaging task.
+OWN-WORLD: Shared Clawpilot theme, Segoe UI, quiet borders, schematic layout previews.
+STORY: Understand each structural trade-off and open any independently runnable demo.
+FIRST VIEWPORT: Direct introduction followed by a labeled layout preview and working link.
+FORM: Vertical comparison with equally weighted alternatives; no recommended production winner.
+-->
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Four simple, clickable messaging UI concepts in pure HTML, CSS, and JavaScript.">
+<title>Four ways to keep it simple - Messaging prototypes</title>
+<script>(() => {
+    const param = new URLSearchParams(window.location.search).get("clawpilotTheme");
+    const theme =
+      param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", theme);
+  })();</script>
+<style>:root {
+  color-scheme: light;
+  --cp-bg: #f7f4ef;
+  --cp-bg-elevated: #fcfbf8;
+  --cp-surface: #ffffff;
+  --cp-surface-soft: #f5f5f5;
+  --cp-border: #dedede;
+  --cp-border-strong: #919191;
+  --cp-text: #242424;
+  --cp-text-muted: #5c5c5c;
+  --cp-text-soft: #6f6f6f;
+  --cp-accent: #b11f4b;
+  --cp-accent-hover: #9a1a41;
+  --cp-accent-soft: rgba(177, 31, 75, 0.08);
+  --cp-accent-fg: #ffffff;
+  --cp-success: #16a34a;
+  --cp-danger: #dc2626;
+  --cp-warning: #f59e0b;
+  --cp-link: #0078d4;
+  --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.12);
+  --cp-overlay: rgba(255, 255, 255, 0.8);
+  --cp-panel: rgba(255, 255, 255, 0.86);
+  --cp-panel-strong: rgba(255, 255, 255, 0.96);
+  --cp-sheen: rgba(255, 255, 255, 0.55);
+  --cp-highlight: rgba(177, 31, 75, 0.12);
+}
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --cp-bg: #3d3b3a;
+  --cp-bg-elevated: #343231;
+  --cp-surface: #292929;
+  --cp-surface-soft: #2e2e2e;
+  --cp-border: #474747;
+  --cp-border-strong: #5f5f5f;
+  --cp-text: #dedede;
+  --cp-text-muted: #919191;
+  --cp-text-soft: #b0b0b0;
+  --cp-accent: #fd8ea1;
+  --cp-accent-hover: #fb7b91;
+  --cp-accent-soft: rgba(253, 142, 161, 0.14);
+  --cp-accent-fg: #1a1a1a;
+  --cp-success: #4ade80;
+  --cp-danger: #f87171;
+  --cp-warning: #fbbf24;
+  --cp-link: #4da6ff;
+  --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+  --cp-overlay: rgba(41, 41, 41, 0.88);
+  --cp-panel: rgba(41, 41, 41, 0.72);
+  --cp-panel-strong: rgba(41, 41, 41, 0.96);
+  --cp-sheen: rgba(255, 255, 255, 0.04);
+  --cp-highlight: rgba(253, 142, 161, 0.12);
+}
+
+
+* { box-sizing: border-box; }
+html[data-theme="dark"] { --cp-text-muted: var(--cp-text-soft); }
+body { margin: 0; background: var(--cp-bg); color: var(--cp-text); font: 0.9375rem/1.6 "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif; }
+a { color: var(--cp-accent); text-underline-offset: 4px; }
+:focus-visible { outline: 2px solid var(--cp-accent); outline-offset: 4px; }
+header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 20px 40px; border-bottom: 1px solid var(--cp-border); }
+header strong { font-size: 0.875rem; font-weight: 650; }
+button { font: inherit; color: var(--cp-text); background: var(--cp-bg-elevated); border: 1px solid var(--cp-border); padding: 8px 16px; min-height: 40px; border-radius: 10px; cursor: pointer; font-size: 0.8125rem; }
+button:hover { background: var(--cp-surface-soft); }
+main { max-width: 1120px; margin: 0 auto; padding: 64px 40px 48px; }
+h1 { font-size: 2.5rem; font-weight: 650; letter-spacing: -0.035em; line-height: 1.15; margin: 0 0 20px; text-wrap: balance; max-width: 650px; }
+.intro { max-width: 640px; color: var(--cp-text-muted); font-size: 1rem; margin: 0 0 40px; }
+.concept { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 40px; padding: 32px 0; border-top: 1px solid var(--cp-border); align-items: center; }
+.concept h2 { font-size: 1.375rem; line-height: 1.3; margin: 0 0 8px; font-weight: 650; }
+.concept .description { font-size: 1rem; margin: 0 0 12px; }
+.concept .detail, .tradeoff { color: var(--cp-text-muted); font-size: 0.875rem; margin: 0 0 12px; max-width: 65ch; }
+.tradeoff { font-size: 0.8125rem; }
+.open { display: inline-flex; align-items: center; gap: 10px; font-weight: 650; font-size: 0.875rem; padding: 8px 0; }
+svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.diagram { width: 100%; aspect-ratio: 1.65; display: flex; gap: 0; border: 1px solid var(--cp-border-strong); border-radius: 12px; overflow: hidden; background: var(--cp-surface); padding: 0; }
+.mini-nav { width: 32%; padding: 16px 12px; background: var(--cp-bg-elevated); border-right: 1px solid var(--cp-border); display: flex; flex-direction: column; gap: 10px; }
+.mini-line { display: block; height: 5px; border-radius: 2px; background: var(--cp-border); width: 100%; }
+.mini-line.short { width: 60%; }
+.mini-selected { background: var(--cp-accent-soft); padding: 8px; border-radius: 4px; margin: 2px -4px; }
+.mini-selected .mini-line { background: var(--cp-accent); }
+.mini-content { flex: 1; padding: 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.mini-heading { border-bottom: 1px solid var(--cp-border); padding-bottom: 12px; margin-bottom: 4px; }
+.mini-compose { margin-top: auto; padding: 10px 8px; border: 1px solid var(--cp-border); border-radius: 6px; display: flex; align-items: center; gap: 16px; }
+.mini-compose::after { content: ""; width: 16px; height: 14px; background: var(--cp-accent); border-radius: 3px; }
+.mini-message { display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; width: 95%; }
+.mini-message .mini-line { height: 4px; }
+.mini-message.self { padding: 8px; background: var(--cp-accent-soft); border-radius: 4px; }
+.mini-focus { background: var(--cp-bg-elevated); padding: 12px 32px; }
+.mini-focus .mini-content { border: 1px solid var(--cp-border); border-radius: 8px; background: var(--cp-surface); padding: 12px; }
+.mini-inbox { display: block; padding: 20px; }
+.mini-inbox .mini-heading { width: 60%; }
+.mini-inbox-row { display: flex; gap: 16px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--cp-border); }
+.mini-inbox-row .mini-line:first-child { width: 36%; }
+.mini-workspace .mini-nav { width: 28%; }
+.mini-workspace .mini-nav .mini-line:nth-child(even) { width: 65%; margin-left: 8px; }
+.mini-workspace .mini-message { border: 1px solid var(--cp-border); border-radius: 6px; padding: 8px; }
+footer { border-top: 1px solid var(--cp-border); color: var(--cp-text-muted); padding-top: 24px; margin-top: 24px; font-size: 0.8125rem; max-width: 72ch; }
+footer p { margin: 0 0 8px; }
+@media (max-width: 720px) { header { padding: 16px 20px; } main { padding: 40px 20px; } h1 { font-size: 2rem; } .concept { grid-template-columns: 1fr; gap: 24px; } .diagram { max-width: 360px; } .intro { margin-bottom: 24px; } }
+</style>
+</head>
+<body>
+<header><strong>Messaging / UI explorations</strong><button type="button" id="theme-toggle">Switch theme</button></header>
+<main>
+<h1>Four ways to keep<br>the conversation simple.</h1>
+<p class="intro">The same chats, channels, and sample messages. Four different ways to find your place, read the context, and reply. No installation. No connection to Teams.</p>
+<section class="concept" aria-labelledby="title-split">
+<div class="diagram mini-split" aria-hidden="true"><div class="mini-nav"><span class="mini-line short"></span><span class="mini-line"></span><div class="mini-selected"><span class="mini-line"></span></div><span class="mini-line"></span><span class="mini-line short"></span><span class="mini-line"></span></div><div class="mini-content"><div class="mini-heading"><span class="mini-line short"></span></div><div class="mini-message"><span class="mini-line short"></span><span class="mini-line"></span><span class="mini-line short"></span></div><div class="mini-message self"><span class="mini-line"></span><span class="mini-line short"></span></div><div class="mini-compose"><span class="mini-line"></span></div></div></div>
+<div><h2 id="title-split">Split view</h2><p class="description">A familiar list. A conversation beside it.</p><p class="detail">Find a conversation on the left and keep the context on the right. Replies get their own side panel.</p><p class="tradeoff">Best for quick switching. Needs more room on desktop.</p><a class="open" href="01-split-view.html" data-local-link>Open split view <svg class="" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a></div>
+</section>
+<section class="concept" aria-labelledby="title-focus">
+<div class="diagram mini-focus" aria-hidden="true"><div class="mini-content"><div class="mini-heading"><span class="mini-line short"></span></div><div class="mini-message"><span class="mini-line short"></span><span class="mini-line"></span><span class="mini-line short"></span></div><div class="mini-message self"><span class="mini-line"></span><span class="mini-line short"></span></div><div class="mini-compose"><span class="mini-line"></span></div></div></div>
+<div><h2 id="title-focus">Focus</h2><p class="description">One conversation. Nothing competing with it.</p><p class="detail">The message history takes the stage. Open the conversation switcher only when you need to go somewhere else.</p><p class="tradeoff">Least visual noise. Switching takes an extra action.</p><a class="open" href="02-focus.html" data-local-link>Open focus <svg class="" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a></div>
+</section>
+<section class="concept" aria-labelledby="title-inbox">
+<div class="diagram mini-inbox" aria-hidden="true"><div class="mini-heading"><span class="mini-line short"></span></div><div class="mini-inbox-row"><span class="mini-line short"></span><span class="mini-line"></span></div><div class="mini-inbox-row"><span class="mini-line short"></span><span class="mini-line"></span></div><div class="mini-inbox-row"><span class="mini-line short"></span><span class="mini-line"></span></div><div class="mini-inbox-row"><span class="mini-line short"></span><span class="mini-line"></span></div></div>
+<div><h2 id="title-inbox">Inbox</h2><p class="description">See the overview. Open what matters.</p><p class="detail">Start with a clean list of summaries. Open a reading panel when you're ready to read or reply.</p><p class="tradeoff">Strong at-a-glance overview. Reading is a separate step.</p><a class="open" href="03-inbox.html" data-local-link>Open inbox <svg class="" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a></div>
+</section>
+<section class="concept" aria-labelledby="title-workspace">
+<div class="diagram mini-workspace" aria-hidden="true"><div class="mini-nav"><span class="mini-line short"></span><span class="mini-line"></span><div class="mini-selected"><span class="mini-line"></span></div><span class="mini-line"></span><span class="mini-line short"></span><span class="mini-line"></span></div><div class="mini-content"><div class="mini-heading"><span class="mini-line short"></span></div><div class="mini-message"><span class="mini-line short"></span><span class="mini-line"></span><span class="mini-line short"></span></div><div class="mini-message self"><span class="mini-line"></span><span class="mini-line short"></span></div><div class="mini-compose"><span class="mini-line"></span></div></div></div>
+<div><h2 id="title-workspace">Workspace</h2><p class="description">A clear home for every conversation.</p><p class="detail">Chats stay close. Channels live under their teams, with posts and replies kept together.</p><p class="tradeoff">Clear channel context. Adds a small navigation hierarchy.</p><a class="open" href="04-workspace.html" data-local-link>Open workspace <svg class="" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a></div>
+</section>
+<footer><p><strong>Made to try, not just to look at.</strong> Search conversations, send a sample message, and open a channel thread. Each demo includes loading, offline, rejected, and uncertain-delivery scenarios under Demo controls.</p><p>All people and messages are fictional. Changes live only in the open page and reset on refresh. Each file is self-contained HTML, CSS, and JavaScript.</p></footer>
+</main>
+<script>
+(() => {
+  const control = document.getElementById("theme-toggle");
+  const requested = new URLSearchParams(location.search).get("clawpilotTheme");
+  if (requested !== "light" && requested !== "dark") document.documentElement.dataset.theme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  function update() {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    control.textContent = "Switch to " + next + " theme";
+    document.querySelectorAll("[data-local-link]").forEach(link => {
+      const url = new URL(link.getAttribute("href"), location.href);
+      const explicit = new URLSearchParams(location.search).get("clawpilotTheme");
+      if (explicit === "light" || explicit === "dark") url.searchParams.set("clawpilotTheme", explicit);
+      link.href = url.href;
+    });
+  }
+  control.addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    const url = new URL(location.href); url.searchParams.set("clawpilotTheme", next);
+    history.replaceState(null, "", url); update();
+  });
+  update();
+})();
+</script>
+</body></html>
