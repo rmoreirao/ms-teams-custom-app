@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="1090" viewBox="0 0 560 1090" role="img" aria-labelledby="diagram-title diagram-description">
+  <title id="diagram-title">Teams-backed chat: vertical interactive architecture</title>
+  <desc id="diagram-description">Desktop and mobile browsers connect through Azure Front Door and WAF to authenticated Container Apps APIs. The read path uses Cosmos DB and Managed Redis. The write path uses Microsoft Graph with Teams as the system of record. Notification synchronization and real-time delivery are documented in separate diagrams.</desc>
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M 0 0 L 8 5 L 0 10 Z" fill="#0078D4"/>
+    </marker>
+    <style>
+      .background { fill: #ffffff; }
+      .azure { fill: #CFE4FA; stroke: #0078D4; stroke-width: 2; }
+      .data { fill: #E8DAEF; stroke: #5C2D91; stroke-width: 2; }
+      .neutral { fill: #F3F2F1; stroke: #1e1e1e; stroke-width: 2; }
+      .connector { fill: none; stroke: #0078D4; stroke-width: 2; stroke-linejoin: round; marker-end: url(#arrowhead); }
+      .heading, .label, .detail { fill: #000000; font-family: "Segoe UI", Helvetica, Arial, sans-serif; text-anchor: middle; }
+      .heading { font-size: 26px; font-weight: 600; }
+      .label { font-size: 20px; font-weight: 600; }
+      .detail { font-size: 18px; }
+    </style>
+  </defs>
+
+  <rect class="background" x="0" y="0" width="560" height="1090"/>
+  <text class="heading" x="280" y="43">Teams-backed chat</text>
+
+  <g id="connections">
+    <path id="browser-to-edge" class="connector" d="M 280 208 V 242"/>
+    <path id="edge-to-api" class="connector" d="M 280 378 V 412"/>
+    <path id="api-to-read" class="connector" d="M 280 548 V 565 H 140 V 582"/>
+    <path id="api-to-write" class="connector" d="M 280 548 V 565 H 420 V 582"/>
+    <path id="read-to-data" class="connector" d="M 140 718 V 752"/>
+    <path id="write-to-graph" class="connector" d="M 420 718 V 752"/>
+  </g>
+
+  <g id="browser">
+    <rect class="neutral" x="100" y="80" width="360" height="120" rx="12"/>
+    <text class="label" x="280" y="132">Responsive web app</text>
+    <text class="detail" x="280" y="162">Desktop and mobile browsers</text>
+  </g>
+
+  <g id="edge">
+    <rect class="azure" x="100" y="250" width="360" height="120" rx="12"/>
+    <text class="label" x="280" y="302">Azure Front Door + WAF</text>
+    <text class="detail" x="280" y="332">Static assets and API routing</text>
+  </g>
+
+  <g id="api">
+    <rect class="azure" x="100" y="420" width="360" height="120" rx="12"/>
+    <text class="label" x="280" y="472">Azure Container Apps</text>
+    <text class="detail" x="280" y="502">BFF and authenticated APIs</text>
+  </g>
+
+  <g id="read">
+    <rect class="azure" x="30" y="590" width="220" height="120" rx="12"/>
+    <text class="label" x="140" y="642">Read API</text>
+    <text class="detail" x="140" y="672">Authorized recent views</text>
+  </g>
+
+  <g id="write">
+    <rect class="azure" x="310" y="590" width="220" height="120" rx="12"/>
+    <text class="label" x="420" y="642">Write API</text>
+    <text class="detail" x="420" y="672">Delegated user actions</text>
+  </g>
+
+  <g id="data">
+    <rect class="data" x="30" y="760" width="220" height="160" rx="12"/>
+    <text class="label" x="140" y="813">Azure read model</text>
+    <text class="detail" x="140" y="844">Cosmos DB</text>
+    <text class="detail" x="140" y="874">Managed Redis</text>
+  </g>
+
+  <g id="graph">
+    <rect class="neutral" x="310" y="760" width="220" height="160" rx="12"/>
+    <text class="label" x="420" y="813">Microsoft Graph</text>
+    <text class="detail" x="420" y="844">Teams messages</text>
+    <text class="detail" x="420" y="874">System of record</text>
+  </g>
+
+  <g id="scope-note">
+    <rect class="neutral" x="30" y="970" width="500" height="100" rx="12"/>
+    <text class="label" x="280" y="1010">Interactive paths only</text>
+    <text class="detail" x="280" y="1040">Synchronization is shown separately</text>
+  </g>
+</svg>

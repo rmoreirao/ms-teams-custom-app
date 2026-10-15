@@ -1,0 +1,213 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "github-copilot",
+  "elements": [
+    {
+      "id": "title", "type": "text", "x": 30, "y": 12, "width": 500, "height": 65,
+      "text": "Teams-backed chat", "fontSize": 26, "fontFamily": 2, "strokeColor": "#000000",
+      "backgroundColor": "transparent", "textAlign": "center", "verticalAlign": "top",
+      "angle": 0, "opacity": 100, "roughness": 0, "groupIds": [], "frameId": null,
+      "containerId": null, "lineHeight": 1.25, "originalText": "Teams-backed chat",
+      "seed": 1, "version": 1, "versionNonce": 1, "isDeleted": false, "boundElements": null
+    },
+    {
+      "id": "browser", "type": "rectangle", "x": 100, "y": 80, "width": 360, "height": 120,
+      "strokeColor": "#1e1e1e", "backgroundColor": "#F3F2F1", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+      "roundness": { "type": 3 }, "groupIds": [], "frameId": null,
+      "boundElements": [{ "id": "browser-label", "type": "text" }, { "id": "browser-to-edge", "type": "arrow" }],
+      "seed": 2, "version": 1, "versionNonce": 2, "isDeleted": false
+    },
+    {
+      "id": "browser-label", "type": "text", "x": 110, "y": 95, "width": 340, "height": 90,
+      "text": "Responsive web app\nDesktop and mobile browsers", "fontSize": 18, "fontFamily": 2,
+      "strokeColor": "#000000", "backgroundColor": "transparent", "textAlign": "center", "verticalAlign": "middle",
+      "containerId": "browser", "groupIds": [], "frameId": null, "lineHeight": 1.25,
+      "originalText": "Responsive web app\nDesktop and mobile browsers",
+      "angle": 0, "opacity": 100, "roughness": 0, "seed": 3, "version": 1, "versionNonce": 3, "isDeleted": false, "boundElements": null
+    },
+    {
+      "id": "edge", "type": "rectangle", "x": 100, "y": 250, "width": 360, "height": 120,
+      "strokeColor": "#0078D4", "backgroundColor": "#CFE4FA", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+      "roundness": { "type": 3 }, "groupIds": [], "frameId": null,
+      "boundElements": [{ "id": "edge-label", "type": "text" }, { "id": "browser-to-edge", "type": "arrow" }, { "id": "edge-to-api", "type": "arrow" }],
+      "seed": 4, "version": 1, "versionNonce": 4, "isDeleted": false
+    },
+    {
+      "id": "edge-label", "type": "text", "x": 110, "y": 265, "width": 340, "height": 90,
+      "text": "Azure Front Door + WAF\nStatic assets and API routing", "fontSize": 18, "fontFamily": 2,
+      "strokeColor": "#000000", "backgroundColor": "transparent", "textAlign": "center", "verticalAlign": "middle",
+      "containerId": "edge", "groupIds": [], "frameId": null, "lineHeight": 1.25,
+      "originalText": "Azure Front Door + WAF\nStatic assets and API routing",
+      "angle": 0, "opacity": 100, "roughness": 0, "seed": 5, "version": 1, "versionNonce": 5, "isDeleted": false, "boundElements": null
+    },
+    {
+      "id": "api", "type": "rectangle", "x": 100, "y": 420, "width": 360, "height": 120,
+      "strokeColor": "#0078D4", "backgroundColor": "#CFE4FA", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+      "roundness": { "type": 3 }, "groupIds": [], "frameId": null,
+      "boundElements": [{ "id": "api-label", "type": "text" }, { "id": "edge-to-api", "type": "arrow" }, { "id": "api-to-read", "type": "arrow" }, { "id": "api-to-write", "type": "arrow" }],
+      "seed": 6, "version": 1, "versionNonce": 6, "isDeleted": false
+    },
+    {
+      "id": "api-label", "type": "text", "x": 110, "y": 435, "width": 340, "height": 90,
+      "text": "Azure Container Apps\nBFF and authenticated APIs", "fontSize": 18, "fontFamily": 2,
+      "strokeColor": "#000000", "backgroundColor": "transparent", "textAlign": "center", "verticalAlign": "middle",
+      "containerId": "api", "groupIds": [], "frameId": null, "lineHeight": 1.25,
+      "originalText": "Azure Container Apps\nBFF and authenticated APIs",
+      "angle": 0, "opacity": 100, "roughness": 0, "seed": 7, "version": 1, "versionNonce": 7, "isDeleted": false, "boundElements": null
+    },
+    {
+      "id": "read", "type": "rectangle", "x": 30, "y": 590, "width": 220, "height": 120,
+      "strokeColor": "#0078D4", "backgroundColor": "#CFE4FA", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+      "roundness": { "type": 3 }, "groupIds": [], "frameId": null,
+      "boundElements": [{ "id": "read-label", "type": "text" }, { "id": "api-to-read", "type": "arrow" }, { "id": "read-to-data", "type": "arrow" }],
+      "seed": 8, "version": 1, "versionNonce": 8, "isDeleted": false
+    },
+    {
+      "id": "read-label", "type": "text", "x": 40, "y": 605, "width": 200, "height": 90,
+      "text": "Read API\nAuthorized recent views", "fontSize": 18, "fontFamily": 2,
+      "strokeColor": "#000000", "backgroundColor": "transparent", "textAlign": "center", "verticalAlign": "middle",
+      "containerId": "read", "groupIds": [], "frameId": null, "lineHeight": 1.25,
+      "originalText": "Read API\nAuthorized recent views",
+      "angle": 0, "opacity": 100, "roughness": 0, "seed": 9, "version": 1, "versionNonce": 9, "isDeleted": false, "boundElements": null
+    },
+    {
+      "id": "write", "type": "rectangle", "x": 310, "y": 590, "width": 220, "height": 120,
+      "strokeColor": "#0078D4", "backgroundColor": "#CFE4FA", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+      "roundness": { "type": 3 }, "groupIds": [], "frameId": null,
+      "boundElements": [{ "id": "write-label", "type": "text" }, { "id": "api-to-write", "type": "arrow" }, { "id": "write-to-graph", "type": "arrow" }],
+      "seed": 10, "version": 1, "versionNonce": 10, "isDeleted": false
+    },
+    {
+      "id": "write-label", "type": "text", "x": 320, "y": 605, "width": 200, "height": 90,
+      "text": "Write API\nDelegated user actions", "fontSize": 18, "fontFamily": 2,
+      "strokeColor": "#000000", "backgroundColor": "transparent", "textAlign": "center", "verticalAlign": "middle",
+      "containerId": "write", "groupIds": [], "frameId": null, "lineHeight": 1.25,
+      "originalText": "Write API\nDelegated user actions",
+      "angle": 0, "opacity": 100, "roughness": 0, "seed": 11, "version": 1, "versionNonce": 11, "isDeleted": false, "boundElements": null
+    },
+    {
+      "id": "data", "type": "rectangle", "x": 30, "y": 760, "width": 220, "height": 160,
+      "strokeColor": "#5C2D91", "backgroundColor": "#E8DAEF", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+      "roundness": { "type": 3 }, "groupIds": [], "frameId": null,
+      "boundElements": [{ "id": "data-label", "type": "text" }, { "id": "read-to-data", "type": "arrow" }],
+      "seed": 12, "version": 1, "versionNonce": 12, "isDeleted": false
+    },
+    {
+      "id": "data-label", "type": "text", "x": 40, "y": 772.5, "width": 200, "height": 135,
+      "text": "Azure read model\nCosmos DB\nManaged Redis", "fontSize": 18, "fontFamily": 2,
+      "strokeColor": "#000000", "backgroundColor": "transparent", "textAlign": "center", "verticalAlign": "middle",
+      "containerId": "data", "groupIds": [], "frameId": null, "lineHeight": 1.25,
+      "originalText": "Azure read model\nCosmos DB\nManaged Redis",
+      "angle": 0, "opacity": 100, "roughness": 0, "seed": 13, "version": 1, "versionNonce": 13, "isDeleted": false, "boundElements": null
+    },
+    {
+      "id": "graph", "type": "rectangle", "x": 310, "y": 760, "width": 220, "height": 160,
+      "strokeColor": "#1e1e1e", "backgroundColor": "#F3F2F1", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+      "roundness": { "type": 3 }, "groupIds": [], "frameId": null,
+      "boundElements": [{ "id": "graph-label", "type": "text" }, { "id": "write-to-graph", "type": "arrow" }],
+      "seed": 14, "version": 1, "versionNonce": 14, "isDeleted": false
+    },
+    {
+      "id": "graph-label", "type": "text", "x": 320, "y": 772.5, "width": 200, "height": 135,
+      "text": "Microsoft Graph\nTeams messages\nSystem of record", "fontSize": 18, "fontFamily": 2,
+      "strokeColor": "#000000", "backgroundColor": "transparent", "textAlign": "center", "verticalAlign": "middle",
+      "containerId": "graph", "groupIds": [], "frameId": null, "lineHeight": 1.25,
+      "originalText": "Microsoft Graph\nTeams messages\nSystem of record",
+      "angle": 0, "opacity": 100, "roughness": 0, "seed": 15, "version": 1, "versionNonce": 15, "isDeleted": false, "boundElements": null
+    },
+    {
+      "id": "scope-note", "type": "rectangle", "x": 30, "y": 970, "width": 500, "height": 100,
+      "strokeColor": "#1e1e1e", "backgroundColor": "#F3F2F1", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+      "roundness": { "type": 3 }, "groupIds": [], "frameId": null,
+      "boundElements": [{ "id": "scope-label", "type": "text" }],
+      "seed": 16, "version": 1, "versionNonce": 16, "isDeleted": false
+    },
+    {
+      "id": "scope-label", "type": "text", "x": 40, "y": 980, "width": 480, "height": 80,
+      "text": "Interactive paths only\nSynchronization is shown separately", "fontSize": 16, "fontFamily": 2,
+      "strokeColor": "#000000", "backgroundColor": "transparent", "textAlign": "center", "verticalAlign": "middle",
+      "containerId": "scope-note", "groupIds": [], "frameId": null, "lineHeight": 1.25,
+      "originalText": "Interactive paths only\nSynchronization is shown separately",
+      "angle": 0, "opacity": 100, "roughness": 0, "seed": 17, "version": 1, "versionNonce": 17, "isDeleted": false, "boundElements": null
+    },
+    {
+      "id": "browser-to-edge", "type": "arrow", "x": 280, "y": 208, "width": 0, "height": 34,
+      "points": [[0, 0], [0, 34]], "strokeColor": "#0078D4", "backgroundColor": "transparent",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+      "startBinding": { "elementId": "browser", "focus": 0, "gap": 8 },
+      "endBinding": { "elementId": "edge", "focus": 0, "gap": 8 },
+      "startArrowhead": null, "endArrowhead": "arrow", "roundness": null,
+      "groupIds": [], "frameId": null, "boundElements": null,
+      "seed": 18, "version": 1, "versionNonce": 18, "isDeleted": false
+    },
+    {
+      "id": "edge-to-api", "type": "arrow", "x": 280, "y": 378, "width": 0, "height": 34,
+      "points": [[0, 0], [0, 34]], "strokeColor": "#0078D4", "backgroundColor": "transparent",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+      "startBinding": { "elementId": "edge", "focus": 0, "gap": 8 },
+      "endBinding": { "elementId": "api", "focus": 0, "gap": 8 },
+      "startArrowhead": null, "endArrowhead": "arrow", "roundness": null,
+      "groupIds": [], "frameId": null, "boundElements": null,
+      "seed": 19, "version": 1, "versionNonce": 19, "isDeleted": false
+    },
+    {
+      "id": "api-to-read", "type": "arrow", "x": 280, "y": 548, "width": 140, "height": 34,
+      "points": [[0, 0], [0, 17], [-140, 17], [-140, 34]], "strokeColor": "#0078D4", "backgroundColor": "transparent",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+      "startBinding": { "elementId": "api", "focus": 0, "gap": 8 },
+      "endBinding": { "elementId": "read", "focus": 0, "gap": 8 },
+      "startArrowhead": null, "endArrowhead": "arrow", "roundness": null,
+      "groupIds": [], "frameId": null, "boundElements": null,
+      "seed": 20, "version": 1, "versionNonce": 20, "isDeleted": false
+    },
+    {
+      "id": "api-to-write", "type": "arrow", "x": 280, "y": 548, "width": 140, "height": 34,
+      "points": [[0, 0], [0, 17], [140, 17], [140, 34]], "strokeColor": "#0078D4", "backgroundColor": "transparent",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+      "startBinding": { "elementId": "api", "focus": 0, "gap": 8 },
+      "endBinding": { "elementId": "write", "focus": 0, "gap": 8 },
+      "startArrowhead": null, "endArrowhead": "arrow", "roundness": null,
+      "groupIds": [], "frameId": null, "boundElements": null,
+      "seed": 21, "version": 1, "versionNonce": 21, "isDeleted": false
+    },
+    {
+      "id": "read-to-data", "type": "arrow", "x": 140, "y": 718, "width": 0, "height": 34,
+      "points": [[0, 0], [0, 34]], "strokeColor": "#0078D4", "backgroundColor": "transparent",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+      "startBinding": { "elementId": "read", "focus": 0, "gap": 8 },
+      "endBinding": { "elementId": "data", "focus": 0, "gap": 8 },
+      "startArrowhead": null, "endArrowhead": "arrow", "roundness": null,
+      "groupIds": [], "frameId": null, "boundElements": null,
+      "seed": 22, "version": 1, "versionNonce": 22, "isDeleted": false
+    },
+    {
+      "id": "write-to-graph", "type": "arrow", "x": 420, "y": 718, "width": 0, "height": 34,
+      "points": [[0, 0], [0, 34]], "strokeColor": "#0078D4", "backgroundColor": "transparent",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+      "startBinding": { "elementId": "write", "focus": 0, "gap": 8 },
+      "endBinding": { "elementId": "graph", "focus": 0, "gap": 8 },
+      "startArrowhead": null, "endArrowhead": "arrow", "roundness": null,
+      "groupIds": [], "frameId": null, "boundElements": null,
+      "seed": 23, "version": 1, "versionNonce": 23, "isDeleted": false
+    }
+  ],
+  "appState": {
+    "viewBackgroundColor": "#ffffff",
+    "gridSize": null,
+    "theme": "light",
+    "exportBackground": true,
+    "scrollX": 0,
+    "scrollY": 0,
+    "zoom": { "value": 0.7 }
+  },
+  "files": {}
+}
