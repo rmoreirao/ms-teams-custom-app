@@ -1,0 +1,11 @@
+**/bin
+**/obj
+**/node_modules
+**/wwwroot
+.git
+.env*
+artifacts
+prototypes
+tests/**/TestResults
+**/playwright-report
+**/test-results

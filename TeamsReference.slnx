@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Teams.Core/Teams.Core.csproj" />
+    <Project Path="src/Teams.Host/Teams.Host.csproj" />
+    <Project Path="src/Teams.Infrastructure/Teams.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Teams.Tests/Teams.Tests.csproj" />
+  </Folder>
+</Solution>

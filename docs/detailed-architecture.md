@@ -5,7 +5,7 @@
 | Status | Draft implementation-level architecture |
 | Version | 0.1 |
 | Documentation reviewed | 2026-10-15 |
-| Implementation status | Documentation only; components, interfaces, and flows are proposed |
+| Implementation status | Target reference architecture, with a separately scoped [simulator-first dev implementation](dev-guide.md); cloud and live Teams behavior are not yet validated |
 | Requirements and targets | [Technical design](technical-design.md) |
 | Decisions and consequences | [Architecture decision records](adr/README.md) |
 
@@ -35,7 +35,7 @@ This document explains how the reference design can be assembled and how its com
 | Components, interfaces, runtime responsibilities, and sequence details | This document |
 | Deployment approval | Evidence for [TDD gates G1-G7](technical-design.md#113-acceptance-gates) |
 
-The cookie-BFF authentication pattern, contract shapes, partition layout, and delivery details below are proposed implementation refinements consistent with the ADRs. They require implementation review; no application code, measured capacity, deployed identity, or infrastructure is implied.
+The cookie-BFF authentication pattern, contract shapes, partition layout, and delivery details below describe the target reference architecture. The current dev implementation and its deliberate limits are recorded in [ADR 0008](adr/0008-simulator-first-single-region-development.md). Neither the code nor these diagrams imply measured capacity, deployed identities, or completed cloud/live-integration acceptance.
 
 The component layouts, content-bearing records, and synchronization flows describe the proposed bounded Cosmos DB projection, option P07 in the [privacy and storage comparison](#56-privacy-and-storage-options). It requires explicit privacy approval. Other options are alternatives to assess, not already implemented modes or automatic fallbacks.
 

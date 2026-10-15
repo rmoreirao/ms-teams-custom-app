@@ -16,14 +16,14 @@ Expose authorized Microsoft Teams chats and channels in a responsive, focused we
 
 ## Operating Context
 
-The repository contains a reference architecture and four standalone, clickable UI prototypes. The prototypes use fictional sample data and simulated outcomes; they are not connected to Teams, Microsoft Graph, Entra, or Azure.
+The repository contains a reference architecture, an executable simulator-first dev application, and four standalone UI prototypes. The dev frontend follows the selected Split View prototype. Local hosting uses authenticated test personas and volatile server memory; the Azure definitions require Entra sign-in and managed services. Cloud rollout is blocked by a disabled subscription and outstanding approvals. Live Teams access remains disabled.
 
 ## Capabilities and Constraints
 
-- Prototype scope: browse chats and channels, read messages, send demo messages, and reply to channel posts.
-- Four alternative layouts explore simplicity without choosing a final production interface.
+- Dev scope: browse authorized chats/channels, read bounded recent pages, send simulator messages, reply in threads, receive updates, and safely track delivery uncertainty.
+- Split View is selected for dev; the four portable prototypes remain available for comparison.
 - Each prototype is plain HTML, CSS, and JavaScript, opens directly from disk, and needs no backend, framework, installation, or build.
-- Demo messages and drafts remain in memory and reset on refresh.
+- Prototype state resets on refresh. Dev browser drafts stay in memory; local server data lasts until process restart, while Azure configuration uses Cosmos persistence and an explicit retention window.
 - Production delivery must distinguish pending, confirmed, rejected, and unknown outcomes. The demos illustrate these distinctions without asserting real Graph confirmation.
 - Calling, meetings, presence, typing indicators, attachments, and a durable offline-send queue are outside prototype scope.
 
@@ -33,7 +33,8 @@ The repository contains a reference architecture and four standalone, clickable 
 - `docs\technical-design.md`: requirements and interaction semantics.
 - `docs\detailed-architecture.md`: proposed component and data contracts.
 - `docs\adr\0005-graph-budgets-and-explicit-write-outcomes.md`: explicit delivery states and safe handling of uncertainty.
-- No implemented production backend, infrastructure, measured capacity, or customer evidence is supplied.
+- `src\`, `infra\`, and `.github\workflows\`: dev implementation and deployment definitions, not proof of cloud rollout or production capacity.
+- `docs\dev-validation.md`: correctness evidence and outstanding approval/live-integration gates.
 
 ## Product Principles
 
@@ -44,4 +45,4 @@ The repository contains a reference architecture and four standalone, clickable 
 
 ## Accessibility & Inclusion
 
-The prototypes support desktop and mobile browsers, keyboard navigation, labeled controls, visible focus, reduced motion, and light/dark themes.
+The Split View implementation and prototypes support desktop/mobile browsers, keyboard navigation, labeled controls, visible focus, reduced motion, and light/dark themes.

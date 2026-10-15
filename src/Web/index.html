@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<!--
+THESIS: Keep the conversation and its context in view.
+OWN-WORLD: Segoe UI, Clawpilot neutral surfaces, restrained rose accent, subtle borders.
+STORY: Find an authorized conversation, read recent context, send, and follow a channel thread.
+FIRST VIEWPORT: Conversation list beside a message feed; composer remains the primary action.
+FORM: User-selected Split View, with a contextual thread pane and single-task mobile surfaces.
+-->
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="A Teams-backed messaging reference application. Dev workspace uses synthetic data." />
+  <title>Conversations - Teams reference</title>
+  <script>
+    (() => {
+      const param = new URLSearchParams(window.location.search).get("clawpilotTheme");
+      const theme =
+        param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

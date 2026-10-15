@@ -4,12 +4,31 @@ A technical design for a responsive web application that exposes Microsoft Teams
 
 The reference design separates application capacity from Microsoft Graph capacity. Recent reads and real-time delivery scale in Azure; user-authored writes remain subject to Teams permissions, latency, and throttling limits.
 
-> **Reference design with standalone UI demos.** This repository contains architecture documentation and clickable UI prototypes, not a production application, implemented backend, or deployable infrastructure. The workload model is synthetic, the SLOs are proposed targets, and capacity has not been demonstrated. This is an independent guide, not a Microsoft capacity guarantee or endorsement.
+> **Simulator-first dev implementation.** The repository now includes a .NET 10 BFF/API and worker, a React Split View frontend, synthetic fixtures, Bicep, and GitHub Actions definitions. Local correctness/browser checks pass. Azure rollout is blocked: the selected subscription is disabled/read-only, and directory/provisioning approvals are outstanding. Live Teams integration is disabled. SLOs remain proposed targets; production capacity has not been demonstrated.
+
+## Run the dev application
+
+Install .NET 10 SDK, Node.js 22.12 or newer in the Node 22 line, npm, and PowerShell 7. From the repository root:
+
+```powershell
+Push-Location src\Web
+npm ci
+npm run build
+Pop-Location
+.\scripts\Start-Local.ps1
+```
+
+Choose a temporary development password at the prompt, open `http://localhost:5255`, select **Local development sign-in**, and use a fixture persona with that password. No default password is supplied. Local mode uses volatile server memory; Azure mode requires Entra and managed services. Both visibly distinguish simulator confirmation from Teams delivery.
+
+Run `.\scripts\Validate.ps1 -Browser` for build, unit/component, authenticated API, and real-browser checks. Browser prerequisites and the Azure/Entra approval gates are covered in the [dev guide](docs/dev-guide.md).
 
 ## Start here
 
 | Document | Purpose |
 | --- | --- |
+| [Dev setup and deployment](docs/dev-guide.md) | Executable components, private-network Azure bootstrap, Entra prerequisites, approvals, GitHub Actions, and cleanup |
+| [Test data and scenarios](docs/testing.md) | Fixture identities, repeatable seeding/reset, browser scenarios, and live Teams prerequisites |
+| [Functional validation evidence](docs/dev-validation.md) | Local results and the explicit distinction between validated, blocked, and unexecuted work |
 | [Technical design](docs/technical-design.md) | Requirements, workload model, SLIs/SLOs, Graph constraints, Azure architecture, implementation guidance, and validation gates |
 | [Detailed architecture](docs/detailed-architecture.md) | Azure/Entra components, software boundaries, data/API contracts, runtime sequence diagrams, and recovery/operations details |
 | [Privacy and storage comparison](docs/detailed-architecture.md#56-privacy-and-storage-options) | Thirteen data-handling options, including the proposed Cosmos DB projection, no-copy variants, encryption, and privacy/performance trade-offs |
@@ -32,7 +51,7 @@ Every file is self-contained HTML, CSS, and JavaScript with the same fictional s
 
 **Demo controls** expose loading/unavailable views, rejected/uncertain sends, simulated offline/reconnect behavior, and reset. A status check resolves the original uncertain demo send without creating a second message. Offline mode does not queue sends. All state lives in memory and resets on refresh; nothing connects to Teams or persists messages on the device. There is no real authentication, authorization, message synchronization, or Graph confirmation.
 
-The four layouts are alternatives, not a selected production design. [Prototype design notes](prototypes/DESIGN.md) describe their common rules and differences.
+The four layouts remain standalone alternatives; **Split View is selected for the executable dev frontend**, not asserted as a production acceptance decision. [Prototype design notes](prototypes/DESIGN.md) describe their common rules and differences.
 
 ## Architecture at a glance
 

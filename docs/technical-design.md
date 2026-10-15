@@ -8,7 +8,7 @@ Companion: [Detailed architecture](detailed-architecture.md) covers Azure/Entra 
 | Architecture decision status | ADRs 0001-0006 accepted for reference design; privacy-boundary ADR 0007 proposed; deployment acceptance remains conditional |
 | Version | 0.1 |
 | Public documentation reviewed | 2026-10-15 |
-| Implementation status | Documentation only; no application, infrastructure, or capacity evidence is included |
+| Implementation status | Simulator-first dev slice added; see [dev guide](dev-guide.md) and [validation evidence](dev-validation.md). No production capacity or real Graph result is asserted. |
 | Intended audience | Application engineers, architects, platform engineers, security reviewers, and performance engineers |
 
 ## Contents
@@ -40,6 +40,8 @@ The design follows Microsoft's embedding reference: retrieve messages once where
 The projection is a performance-oriented proposal, not permission to retain personal data. [ADR 0007](adr/0007-message-content-processing-and-storage-boundary.md) makes selection and approval of the processing/storage boundary an explicit prerequisite. If policy does not permit the proposed content copy, the relevant architecture and performance assumptions must change.
 
 The workload assumptions in this guide are synthetic. They are not operational measurements from a deployment. No existing implementation, comparable-scale production result, or guaranteed Graph capacity is asserted.
+
+The executable dev delivery is scoped separately by [ADR 0008](adr/0008-simulator-first-single-region-development.md). It does not implement regional recovery or load testing, and its bounded data model is not evidence for this document's production envelope. The statement above concerns production/reference-scale implementation evidence, not the existence of the dev code.
 
 ### In scope
 

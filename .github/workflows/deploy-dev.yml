@@ -1,0 +1,89 @@
+name: Deploy dev
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Enter DEPLOY-SYNTHETIC-DEV to acknowledge billable dev resources."
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      WEB_CLIENT_ID: ${{ vars.TEAMS_WEB_CLIENT_ID }}
+      EVENTS_CLIENT_ID: ${{ vars.TEAMS_EVENTS_CLIENT_ID }}
+      ACTOR_IDS: ${{ vars.TEAMS_FIXTURE_ACTOR_IDS }}
+      REGISTRY: ${{ vars.AZURE_REGISTRY_NAME }}
+      COSMOS_LOCATION: ${{ vars.AZURE_COSMOS_LOCATION || 'westeurope' }}
+      REDIS_SKU: ${{ vars.AZURE_REDIS_SKU || 'Balanced_B0' }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Require completed privileged bootstrap
+        env:
+          BOOTSTRAP_READY: ${{ vars.TEAMS_BOOTSTRAP_COMPLETE }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          test "$CONFIRMATION" = "DEPLOY-SYNTHETIC-DEV" || { echo "Explicit deployment confirmation is required."; exit 1; }
+          test "$BOOTSTRAP_READY" = "true" || { echo "Complete Entra, RBAC and private-origin bootstrap first."; exit 1; }
+          test -n "$AZURE_SUBSCRIPTION_ID" && test -n "$RESOURCE_GROUP" && test -n "$WEB_CLIENT_ID" && test -n "$EVENTS_CLIENT_ID" && test -n "$ACTOR_IDS" && test -n "$REGISTRY"
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22.x
+      - name: Verify release source
+        run: |
+          dotnet restore TeamsReference.slnx --locked-mode
+          dotnet test TeamsReference.slnx --configuration Release --no-restore
+          cd src/Web
+          npm ci --no-audit --no-fund
+          npm run build
+          npm test
+      - uses: Azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        with:
+          client-id: ${{ vars.AZURE_DEPLOY_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Build immutable container
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          server="$(az acr show --name "$REGISTRY" --query loginServer -o tsv)"
+          az acr login --name "$REGISTRY"
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" --tag "$server/teams-reference:$GITHUB_SHA" .
+          docker push "$server/teams-reference:$GITHUB_SHA"
+          digest="$(az acr repository show --name "$REGISTRY" --image "teams-reference:$GITHUB_SHA" --query digest -o tsv)"
+          echo "reference=$server/teams-reference@$digest" >> "$GITHUB_OUTPUT"
+      - name: Install pinned Bicep
+        run: az bicep install --version v0.48.1
+      - name: Deploy and verify synthetic fixtures
+        shell: pwsh
+        env:
+          IMAGE_REFERENCE: ${{ steps.image.outputs.reference }}
+        run: |
+          $parameters = @{
+            webClientId = @{ value = $env:WEB_CLIENT_ID }
+            eventsClientId = @{ value = $env:EVENTS_CLIENT_ID }
+            fixtureActorIds = @{ value = @(ConvertFrom-Json $env:ACTOR_IDS) }
+            cosmosLocation = @{ value = $env:COSMOS_LOCATION }
+            redisSku = @{ value = $env:REDIS_SKU }
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'dev.parameters.json'
+          @{ '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'; contentVersion = '1.0.0.0'; parameters = $parameters } | ConvertTo-Json -Depth 10 | Set-Content $path
+          ./scripts/Deploy-Dev.ps1 -SubscriptionId $env:AZURE_SUBSCRIPTION_ID -ResourceGroup $env:RESOURCE_GROUP -ParametersPath $path -Image $env:IMAGE_REFERENCE -Apply -EnableRealtimeAdmission -Confirm:$false
