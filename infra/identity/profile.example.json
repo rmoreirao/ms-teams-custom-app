@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "tenantId": "00000000-0000-0000-0000-000000000000",
+  "subscriptionId": "00000000-0000-0000-0000-000000000000",
+  "prefix": "teams-reference-dev",
+  "applications": [
+    { "purpose": "web", "assignmentRequired": true, "assignedUsers": [], "delegatedGrants": [], "applicationPermissions": [] },
+    { "purpose": "sync", "assignmentRequired": false, "applicationPermissions": [] },
+    { "purpose": "events", "assignmentRequired": false },
+    {
+      "purpose": "deploy",
+      "assignmentRequired": false,
+      "federatedCredentials": [
+        {
+          "name": "github-dev",
+          "issuer": "https://token.actions.githubusercontent.com",
+          "subject": "repo:rmoreirao/ms-teams-custom-app:environment:dev",
+          "audiences": ["api://AzureADTokenExchange"]
+        }
+      ]
+    }
+  ]
+}

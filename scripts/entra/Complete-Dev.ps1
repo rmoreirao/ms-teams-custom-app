@@ -1,6 +1,7 @@
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
 param(
     [Parameter(Mandatory)][string]$InventoryPath,
+    [guid]$SubscriptionId,
     [Parameter(Mandatory)][string]$PublicOrigin,
     [Parameter(Mandatory)][guid]$ApiIdentityPrincipalId,
     [Parameter(Mandatory)][guid]$PubSubPrincipalId
@@ -9,9 +10,10 @@ $ErrorActionPreference = 'Stop'
 if (-not $PublicOrigin.StartsWith('https://') -or ([uri]$PublicOrigin).AbsolutePath -ne '/') { throw 'Use the approved HTTPS origin without a path.' }
 $inventory = Get-Content -Raw -LiteralPath $InventoryPath | ConvertFrom-Json
 if (-not $PSCmdlet.ShouldProcess($inventory.tenantId, 'Finalize web redirects, managed-identity trust and PubSub callback app role')) { return }
-$account = az account show --output json | ConvertFrom-Json
+$accountArguments = if ($PSBoundParameters.ContainsKey('SubscriptionId')) { @('--subscription', $SubscriptionId.ToString()) } else { @() }
+$account = az account show @accountArguments --output json | ConvertFrom-Json
 if ($LASTEXITCODE -or $account.tenantId -ne $inventory.tenantId) { throw 'Wrong tenant.' }
-$token = az account get-access-token --resource-type ms-graph --output json | ConvertFrom-Json
+$token = az account get-access-token @accountArguments --resource-type ms-graph --output json | ConvertFrom-Json
 if ($LASTEXITCODE) { throw 'Graph authentication failed.' }
 $headers = @{ Authorization = "Bearer $($token.accessToken)" }
 function Graph([string]$Method, [string]$Path, $Body = $null) {

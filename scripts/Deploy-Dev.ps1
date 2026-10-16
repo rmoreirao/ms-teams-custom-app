@@ -10,6 +10,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $template = Join-Path $root 'infra\main.bicep'
+$settings = Get-Content -Raw -LiteralPath $ParametersPath | ConvertFrom-Json
+$actorIds = @($settings.parameters.fixtureActorIds.value)
+if ($actorIds.Count -ne 4 -or @($actorIds | Sort-Object -Unique).Count -ne 4 -or
+    @($actorIds | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count) {
+    throw 'Four distinct approved Entra fixture actor IDs are required before deploying application workloads.'
+}
 $parameters = '@' + [IO.Path]::GetFullPath($ParametersPath)
 $admission = $EnableRealtimeAdmission.IsPresent.ToString().ToLowerInvariant()
 $arguments = @('--subscription', $SubscriptionId.ToString(), '--resource-group', $ResourceGroup,
@@ -38,4 +44,8 @@ for ($attempt = 0; $attempt -lt 24; $attempt++) {
     Start-Sleep -Seconds 10
 }
 if (-not $ready) { throw 'Public dev readiness did not pass. Check private-origin approval, DNS, identity and runtime logs.' }
+$tenant = az account show --subscription $SubscriptionId --query tenantId --output tsv
+if ($LASTEXITCODE) { throw 'Unable to verify the deployment tenant for public smoke checks.' }
+& (Join-Path $PSScriptRoot 'Test-DeployedApp.ps1') -PublicOrigin $origin -TenantId $tenant `
+    -WebClientId $settings.parameters.webClientId.value
 Write-Output "Synthetic dev service is ready at $origin. Entra browser scenarios require separate authenticated validation."

@@ -128,6 +128,7 @@ else
     builder.Services.AddAuthentication(OpenIdConnectDefaults.AuthenticationScheme)
         .AddMicrosoftIdentityWebApp(config.GetSection("AzureAd"))
         .EnableTokenAcquisitionToCallDownstreamApi().AddDistributedTokenCaches();
+    builder.Services.AddCanonicalOidcCallback(config["App:PublicOrigin"]);
     builder.Services.Configure<MsalDistributedTokenCacheAdapterOptions>(o =>
     {
         o.Encrypt = true;
@@ -137,7 +138,6 @@ else
     {
         o.UsePkce = true;
         o.ResponseMode = "form_post";
-        o.CallbackPath = "/auth/callback";
         o.Events.OnTokenValidated += context =>
         {
             var id = context.Principal?.FindFirstValue("oid") ??
@@ -149,12 +149,6 @@ else
             }
             if (context.Principal?.Identity is ClaimsIdentity identity)
                 identity.AddClaim(new Claim("app_sid", Guid.NewGuid().ToString("N")));
-            return Task.CompletedTask;
-        };
-        o.Events.OnRedirectToIdentityProvider += context =>
-        {
-            var origin = config["App:PublicOrigin"] ?? throw new InvalidOperationException("App:PublicOrigin is required.");
-            context.ProtocolMessage.RedirectUri = $"{origin}/auth/callback";
             return Task.CompletedTask;
         };
     });
@@ -221,6 +215,7 @@ if (!local)
 var indexFile = Path.Combine(app.Environment.ContentRootPath, "wwwroot", "index.html");
 var inlineScripts = File.Exists(indexFile) ? Regex.Matches(File.ReadAllText(indexFile), @"<script\b[^>]*>([\s\S]*?)</script>")
     .Select(m => m.Groups[1].Value).Where(s => !string.IsNullOrWhiteSpace(s))
+    .Select(s => s.Replace("\r\n", "\n").Replace('\r', '\n'))
     .Select(s => $"'sha256-{Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(s)))}'") : [];
 var scriptPolicy = string.Join(" ", inlineScripts);
 app.Use(async (context, next) =>
@@ -278,6 +273,7 @@ app.MapGet("/health/ready", async (IStateStore store, HttpContext c, Cancellatio
 });
 app.MapGet("/auth/csrf", (HttpContext c, IAntiforgery antiforgery) =>
     Results.Ok(new { token = antiforgery.GetAndStoreTokens(c).RequestToken }));
+app.MapGet("/auth/config", () => Results.Ok(new { localAuth, simulated = true }));
 app.MapGet("/auth/signin", () => localAuth ? Results.Redirect("/") :
     Results.Challenge(new AuthenticationProperties { RedirectUri = "/" }, [OpenIdConnectDefaults.AuthenticationScheme]));
 app.MapPost("/auth/local", async (HttpContext c, IAntiforgery csrf) =>

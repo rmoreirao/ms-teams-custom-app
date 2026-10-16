@@ -3,15 +3,13 @@ targetScope = 'resourceGroup'
 @minLength(3)
 @maxLength(12)
 param prefix string = 'teamsrefdev'
-param location string = 'westeurope'
+param location string = 'swedencentral'
 param cosmosLocation string = location
-@allowed(['Balanced_B0', 'Balanced_B1'])
+@allowed(['Balanced_B0', 'Balanced_B1', 'Balanced_B3', 'Balanced_B5'])
 param redisSku string = 'Balanced_B0'
 param webClientId string
 param eventsClientId string
-@minLength(4)
-@maxLength(4)
-param fixtureActorIds array
+param fixtureActorIds array = []
 param deployWorkloads bool = false
 param provisionRbac bool = true
 param enableRealtimeAdmission bool = false
@@ -26,7 +24,8 @@ param tags object = {
 var suffix = uniqueString(resourceGroup().id, prefix)
 var base = '${prefix}-${suffix}'
 var tenantId = tenant().tenantId
-var appSubnetName = 'container-apps'
+var appSubnetName = 'container-apps-ready'
+var appSubnetPrefix = '10.30.4.0/23'
 var endpointSubnetName = 'private-endpoints'
 
 resource apiIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
@@ -47,7 +46,8 @@ resource network 'Microsoft.Network/virtualNetworks@2024-05-01' = {
     addressSpace: { addressPrefixes: ['10.30.0.0/16'] }
     subnets: [
       {
-        name: appSubnetName
+        // Retain the original subnet while Azure removes the incomplete first environment.
+        name: 'container-apps'
         properties: {
           addressPrefix: '10.30.0.0/23'
           delegations: [{ name: 'container-apps', properties: { serviceName: 'Microsoft.App/environments' } }]
@@ -56,6 +56,13 @@ resource network 'Microsoft.Network/virtualNetworks@2024-05-01' = {
       {
         name: endpointSubnetName
         properties: { addressPrefix: '10.30.2.0/24', privateEndpointNetworkPolicies: 'Disabled' }
+      }
+      {
+        name: appSubnetName
+        properties: {
+          addressPrefix: appSubnetPrefix
+          delegations: [{ name: 'container-apps', properties: { serviceName: 'Microsoft.App/environments' } }]
+        }
       }
     ]
   }
@@ -144,7 +151,7 @@ resource notifications 'Microsoft.ServiceBus/namespaces/queues@2024-01-01' = {
   }
 }
 resource cache 'Microsoft.Cache/redisEnterprise@2025-07-01' = {
-  name: redisSku == 'Balanced_B0' ? '${base}-redis' : '${base}-redis-b1'
+  name: redisSku == 'Balanced_B0' ? '${base}-redis' : '${base}-redis-${toLower(replace(redisSku, 'Balanced_', ''))}'
   location: location
   tags: tags
   sku: { name: redisSku }
@@ -206,7 +213,7 @@ resource pubsub 'Microsoft.SignalRService/webPubSub@2024-03-01' = {
   }
 }
 resource environment 'Microsoft.App/managedEnvironments@2025-07-01' = {
-  name: '${base}-env'
+  name: '${base}-env-ready'
   location: location
   tags: tags
   properties: {
@@ -242,6 +249,7 @@ resource cosmosRoles 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2
     roleDefinitionId: '${cosmos.id}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002'
     scope: '${cosmos.id}/dbs/teams/colls/state'
   }
+  dependsOn: [state]
 }]
 resource pullRoles 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for index in range(0, 2): if (provisionRbac) {
   name: guid(registry.id, string(index), 'AcrPull')
@@ -278,6 +286,7 @@ module workloads './modules/workloads.bicep' = if (deployWorkloads) {
     base: base
     location: location
     environmentId: environment.id
+    trustedProxyCidr: appSubnetPrefix
     registry: registry.properties.loginServer
     image: image
     apiIdentity: apiIdentity.id

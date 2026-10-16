@@ -1,6 +1,7 @@
 param base string
 param location string
 param environmentId string
+param trustedProxyCidr string
 param registry string
 param image string
 param apiIdentity string
@@ -14,6 +15,8 @@ param pubsubPrincipalId string
 param enableRealtimeAdmission bool = false
 @secure()
 param insightsConnectionString string
+@minLength(4)
+@maxLength(4)
 param fixtureActorIds array
 param cosmosEndpoint string
 param redisEndpoint string
@@ -40,7 +43,7 @@ var common = [
   { name: 'AzureAd__TenantId', value: tenantId }
   { name: 'AzureAd__ClientId', value: webClientId }
   { name: 'App__PublicOrigin', value: 'https://${endpoint.properties.hostName}' }
-  { name: 'App__TrustedProxyNetworks__0', value: '10.30.0.0/23' }
+  { name: 'App__TrustedProxyNetworks__0', value: trustedProxyCidr }
   { name: 'Azure__CosmosEndpoint', value: cosmosEndpoint }
   { name: 'Azure__Redis', value: redisEndpoint }
   { name: 'Azure__ServiceBus', value: busEndpoint }
@@ -78,7 +81,8 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
         ])
         probes: [
           { type: 'Liveness', httpGet: { path: '/health/live', port: 8080 }, initialDelaySeconds: 30, periodSeconds: 20 }
-          { type: 'Readiness', httpGet: { path: '/health/ready', port: 8080 }, initialDelaySeconds: 15, periodSeconds: 30 }
+          // The initial release must start its seed job before dependency readiness can pass.
+          { type: 'Readiness', httpGet: { path: enableRealtimeAdmission ? '/health/ready' : '/health/live', port: 8080 }, initialDelaySeconds: 15, periodSeconds: 30 }
         ]
       }]
       scale: { minReplicas: 1, maxReplicas: 1 }
@@ -166,7 +170,7 @@ resource route 'Microsoft.Cdn/profiles/afdEndpoints/routes@2024-02-01' = {
   name: 'application'
   properties: {
     originGroup: { id: originGroup.id }
-    supportedProtocols: ['Https']
+    supportedProtocols: ['Http', 'Https']
     patternsToMatch: ['/*']
     forwardingProtocol: 'HttpsOnly'
     httpsRedirect: 'Enabled'
@@ -181,7 +185,7 @@ resource waf 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@2024-02-
   sku: { name: 'Premium_AzureFrontDoor' }
   properties: {
     policySettings: { enabledState: 'Enabled', mode: 'Prevention', requestBodyCheck: 'Enabled' }
-    managedRules: { managedRuleSets: [{ ruleSetType: 'Microsoft_DefaultRuleSet', ruleSetVersion: '2.1' }] }
+    managedRules: { managedRuleSets: [{ ruleSetType: 'Microsoft_DefaultRuleSet', ruleSetVersion: '2.1', ruleSetAction: 'Block' }] }
   }
 }
 resource security 'Microsoft.Cdn/profiles/securityPolicies@2024-02-01' = {

@@ -5,7 +5,7 @@
 | Status | Draft implementation-level architecture |
 | Version | 0.1 |
 | Documentation reviewed | 2026-10-15 |
-| Implementation status | Target reference architecture, with a separately scoped [simulator-first dev implementation](dev-guide.md); cloud and live Teams behavior are not yet validated |
+| Implementation status | Target reference architecture with a [deployed simulator-first Sweden dev implementation](dev-guide.md); bounded public/cloud checks are recorded separately, and authenticated/live Teams acceptance remains incomplete |
 | Requirements and targets | [Technical design](technical-design.md) |
 | Decisions and consequences | [Architecture decision records](adr/README.md) |
 
@@ -544,9 +544,11 @@ P07 remains the proposed reference, subject to approval; this comparison does no
 
 ## 6. Main interaction flows
 
-Each flow identifies components, preconditions, ordering, and failure/telemetry requirements. Shared guards include tenant isolation, session validity, policy freshness, bounded work, and redacted trace correlation.
+Each flow describes its purpose, trigger, and expected outcome, then identifies components, preconditions, ordering, and failure/telemetry requirements. Shared guards include tenant isolation, session validity, policy freshness, bounded work, and redacted trace correlation.
 
 ### 6.1 F01: Sign in and acquire delegated tokens
+
+**Description:** This flow establishes an application session when a user starts sign-in. The BFF redirects the browser to Entra, validates the returning authorization response, and redeems the code on the server to obtain tokens for the signed-in user. After checking application access, it stores the protected session and token cache and returns only an opaque session cookie to the browser. Subsequent user-initiated Graph operations acquire delegated tokens through the BFF without exposing them to browser code.
 
 **Components:** browser, BFF, Entra, protected session/token storage. **Preconditions:** approved tenant/consent, registered Web callback, callback hostname and credential configuration.
 
@@ -583,6 +585,8 @@ The BFF validates application access before establishing the session. Later Grap
 **Failure/telemetry:** callback correlation/tenant failure denies sign-in; token/session-store failures are explicit. Measure sign-in separately from already-authenticated read SLOs and redact code/token/cookie values.
 
 ### 6.2 F02: Read recent content, including cache miss
+
+**Description:** This flow serves a recent-message page or bounded change request from the application projection rather than querying Graph synchronously. The read API checks the user's access and looks for a suitable cached view; a cache miss or insufficient revision falls back to a bounded Cosmos query. The response contains only authorized content with its cursor and coverage evidence. If coverage or authorization cannot be established, the API returns an explicit preparing or verification state instead of presenting incomplete or unverifiable content as current.
 
 **Components:** browser, read API, authorization guard, Redis, Cosmos. **Preconditions:** authenticated user, verified resource entitlement, defined projection window.
 
@@ -627,6 +631,8 @@ There is no synchronous Graph read in this recent-content path. Older history us
 **Failure/telemetry:** distinguish cache miss, insufficient revision, incomplete coverage, and unavailable authority. Count normal recent-page gaps/failures in the TDD population, and record usable rendering rather than skeleton time.
 
 ### 6.3 F03: Send a message with known confirmation
+
+**Description:** This flow handles a user sending a message and receiving a definitive Graph creation response. The send API records the operation before dispatch, obtains shared Graph capacity, and verifies current authority and the delegated token before posting. A successful response supplies the Graph message ID, which is linked to the operation, projection, and outbox. The browser receives the known confirmation and projection status; repeating the same operation returns its recorded state without sending another message.
 
 **Components:** browser, send API, operation/projection store, shared budget, Graph. **Preconditions:** valid command window, eligible user/conversation, delegated token, current write owner.
 
@@ -673,6 +679,8 @@ If the local post-confirmation transaction fails, never repeat the Graph POST. R
 
 ### 6.4 F04: Uncertain send and safe repeat submission
 
+**Description:** This flow handles a send whose Graph response is lost or times out after dispatch, so the application cannot tell whether the message was created. The operation remains unknown or dispatching, and repeat submissions or status queries use the original operation record without issuing another POST. A repair worker may resolve the outcome using an exact, trustworthy resource reference and authoritative verification; without sufficient evidence, uncertainty remains visible rather than risking a duplicate message.
+
 **Components:** browser, send API, operation journal, Graph, repair worker. **Preconditions:** dispatch was claimed; a transport/process failure prevents a definitive result.
 
 ```mermaid
@@ -713,6 +721,8 @@ If journal writing fails after dispatch, the already-persisted dispatching recor
 **Failure/telemetry:** unresolved outcomes remain visible and count against send success until the target is satisfied. Do not silently create a new operation after token refresh, lease expiry, region change, or journal retention.
 
 ### 6.5 F05: Accept and apply a rich change notification
+
+**Description:** This flow brings changes reported by Graph into the local projection. The callback receiver validates the incoming notification collection and durably queues approved encrypted envelopes before acknowledging acceptance. A projector then decrypts and normalizes each notification and conditionally applies its content or tombstone, projection revision, and outbox event. Queue work completes only after a durable apply or verified duplicate, while processing failures remain retryable or are dead-lettered for investigation.
 
 **Components:** Graph, callback receiver, notification queue, projector, Cosmos. **Preconditions:** approved active subscription, validation configuration, required key versions, queue availability.
 
@@ -755,6 +765,8 @@ Validate each item in a collection. Acknowledge only after all valid in-scope it
 **Failure/telemetry:** acceptance failure is non-success, not `202`. Record acknowledgment latency, validation failures, event age, processing attempts, certificate identity, projection lag, and dead-letter age without routine payload logging.
 
 ### 6.6 F06: Publish an outbox change and refresh a client
+
+**Description:** This flow makes a committed projection change visible to connected, authorized clients. The outbox worker invalidates stale cache state or advances a read barrier, publishes a stable event to the delivery queue, and records publication progress. The delivery service rechecks recipient policy and sends a coalesced change hint through Web PubSub. The browser uses that hint to fetch authorized changes through F02; acceptance by the messaging services alone does not mean the user has seen the updated content.
 
 **Components:** outbox dispatcher, Cosmos, delivery queue, delivery service, Web PubSub, browser. **Preconditions:** committed projection event and current recipient authority.
 
@@ -800,6 +812,8 @@ Cache invalidation is not atomic with Cosmos. Version/read barriers prevent a ne
 
 ### 6.7 F07: Bootstrap, renewal, and gap reconciliation
 
+**Description:** This flow establishes and maintains synchronization for an approved resource scope, starting at bootstrap and continuing through subscription renewal and gap repair. The controller creates the subscription and buffers incoming changes while workers hydrate the bounded working set under the shared Graph budget. Snapshot pages and notifications use the same version-aware merge rules, and readiness reflects demonstrated coverage rather than simply finishing a scan. Renewals preserve change delivery, while failures or incomplete coverage trigger bounded reconciliation.
+
 **Components:** subscription controller, Graph, callback receiver, queue, hydration worker, Cosmos. **Preconditions:** approved scope/permissions, working callbacks, retained keys, and reserved Graph budget.
 
 ```mermaid
@@ -843,6 +857,8 @@ Mark ready only for demonstrated resource/window coverage. Page/time-budget exha
 
 ### 6.8 F08: Revoke access and close connections
 
+**Description:** This flow withdraws application access after a verified offboarding or resource-access change. The control worker durably records the denial or policy change together with connection-control work, then invalidates affected authorization leases, sessions, or command windows as appropriate. A dispatcher removes affected Web PubSub group memberships or closes connections and retries unresolved control actions. API access is governed by the updated authority independently of when socket closure finishes.
+
 **Components:** approved lifecycle source, control worker, entitlement/session authority, connection-control adapter, Web PubSub. **Preconditions:** authenticated source with a defined propagation guarantee.
 
 ```mermaid
@@ -882,6 +898,8 @@ A short-lived Web PubSub token alone is not ongoing revocation. Check current au
 **Failure/telemetry:** durable denial and API enforcement are independent of eventual socket closure. Preserve retryable control work, expire unverifiable leases, and measure source delay, authority propagation, denied operations, and closure completion. Do not promise instant Teams revocation from delayed notifications.
 
 ### 6.9 F09: Reconnect and catch up
+
+**Description:** This flow restores a browser's live updates after a connection interruption and catches up its displayed content. The client first attempts supported reliable resume; if a new connection is needed, the BFF negotiates a short-lived capability and the upstream admission handler revalidates current access and server-selected groups. The browser then requests bounded changes from its application cursor. An unusable cursor requires a fresh authorized page, not an assumption that Web PubSub retains the complete message history.
 
 **Components:** browser, BFF, access authority, admission handler, Web PubSub, projection repository. **Preconditions:** allowed user/session and a supported reliable-client protocol.
 
@@ -928,6 +946,8 @@ On invalid/expired cursor or lost reliable delivery state, reset through the rea
 **Failure/telemetry:** jitter retries, reuse valid supported SDK resume behavior, and rate-limit negotiation. Measure backend token-generation/connect-admission throughput independently of nominal connection capacity; Entra and Web PubSub Auth APIs are not assumed unlimited.
 
 ### 6.10 F10: Regional failover
+
+**Description:** This flow transfers serving responsibility to the recovery region when the active region must be replaced. Recovery control first fences the old write owner and verifies recovered state and ownership, then restores authorization, operation journals, and shared budget controls before routing traffic to ready capabilities. Unresolved sends remain unknown, and clients reconnect while bounded reconciliation resumes. Capabilities whose fencing, authority, or state readiness cannot be proved remain unavailable rather than accepting unsafe reads or duplicate writes.
 
 **Components:** recovery coordinator, old write owner, durable control/data state, recovery region, Front Door. **Preconditions:** a tested fencing mechanism and accepted state-recovery evidence.
 
@@ -1027,6 +1047,8 @@ Deploy networking/identity/data dependencies before enabling traffic. Private en
 
 ### 8.2 Configuration contract
 
+The [Entra configuration and rebuild runbook](entra-configuration.md) maps current scripts, identity ID types, federation, consent, and deployment inputs, and defines the planned reproducible live configuration. The [live integration plan](live-integration-plan.md) sequences implementation; neither document implies the live paths are enabled.
+
 | Configuration family | Required content |
 | --- | --- |
 | Tenant/cloud | Allowed tenant and authority; Graph base authority/version and endpoint capabilities |
@@ -1079,13 +1101,13 @@ Simulator endpoints are available only in isolated test environments and cannot 
 
 | Decision | Required resolution |
 | --- | --- |
-| Message processing/storage boundary | Select and approve the applicable P01-P13 pattern and protection controls; update flows and capacity targets when departing from P07 |
-| Runtime/framework and frontend libraries | Select supported libraries and SDKs; logical ports remain the same |
+| Message processing/storage boundary | P07 is the selected engineering direction for final implementation; obtain deployment-specific G0 approval and protection controls before business-content processing |
+| Runtime/framework and frontend libraries | Retain the implemented .NET 10 BFF and React/TypeScript baseline; verify supported SDKs and production module boundaries |
 | Entitlement authority and bound | Demonstrate source propagation, freshness validation, and fail-closed behavior; a production security gate |
 | Exact scopes/permissions | Verify selected API/version, RSC/installation prerequisites, consent, and user licensing |
 | Cache security boundaries | Approve supported ACL maturity or resource separation; no assumed read-only access from ARM roles |
 | Projection partition/consistency | Prove transaction locality, hot-key capacity, and cross-instance read barriers |
-| Client delivery mode | Validate hint-induced reads; approve history/policy cohorts before body-bearing push |
+| Client delivery mode | Implement authorized, coalesced body-free hints and guarded catch-up; validate induced reads; body-bearing push needs a separate approval |
 | Credential/decryption mechanism | Approve protected key caching or remote crypto throughput, overlap, and purge policy |
 | Regional state guarantees | Define acceptable loss separately for content, authority, journal, and queue work |
 | Concrete infrastructure sizing | Verify regions/SKUs/quotas, ingress, network, failover capacity, and cost |

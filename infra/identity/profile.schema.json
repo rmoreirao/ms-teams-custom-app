@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "tenantId", "subscriptionId", "prefix", "applications"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "tenantId": { "$ref": "#/$defs/guid" },
+    "subscriptionId": { "$ref": "#/$defs/guid" },
+    "prefix": { "type": "string", "pattern": "^[a-z0-9-]{3,32}$" },
+    "applications": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["purpose", "assignmentRequired"],
+        "properties": {
+          "purpose": { "enum": ["web", "sync", "events", "deploy"] },
+          "assignmentRequired": { "type": "boolean" },
+          "redirectUris": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^https://[^?#]+/auth/callback$" } },
+          "logoutUrl": { "type": "string", "pattern": "^https://[^?#]+/$" },
+          "assignedUsers": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/guid" } },
+          "callbackPrincipals": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/guid" } },
+          "applicationPermissions": { "$ref": "#/$defs/permissions" },
+          "delegatedGrants": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["consentType", "scopes"],
+              "properties": {
+                "consentType": { "enum": ["Principal", "AllPrincipals"] },
+                "principalId": { "$ref": "#/$defs/guid" },
+                "scopes": { "$ref": "#/$defs/permissions" }
+              }
+            }
+          },
+          "federatedCredentials": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "issuer", "subject", "audiences"],
+              "properties": {
+                "name": { "type": "string", "pattern": "^[A-Za-z0-9_-]{3,120}$" },
+                "issuer": { "type": "string", "pattern": "^https://" },
+                "subject": { "type": "string", "minLength": 1, "maxLength": 600 },
+                "audiences": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "const": "api://AzureADTokenExchange" } }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "guid": { "type": "string", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" },
+    "permissions": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.]+$" } }
+  }
+}

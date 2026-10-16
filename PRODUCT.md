@@ -16,7 +16,7 @@ Expose authorized Microsoft Teams chats and channels in a responsive, focused we
 
 ## Operating Context
 
-The repository contains a reference architecture, an executable simulator-first dev application, and four standalone UI prototypes. The dev frontend follows the selected Split View prototype. Local hosting uses authenticated test personas and volatile server memory; the Azure definitions require Entra sign-in and managed services. Cloud rollout is blocked by a disabled subscription and outstanding approvals. Live Teams access remains disabled.
+The repository contains a reference architecture, a simulator-first dev application deployed in Sweden Central, and four standalone UI prototypes. The dev frontend follows the selected Split View prototype. Local hosting uses explicit test credentials and volatile server memory; Azure uses real Entra and managed services with synthetic content. Public readiness and desktop/mobile rendering pass. Sign-in consent is provisioned; authenticated Azure journeys await fresh sign-in and any remaining Entra setup. Live Teams access remains disabled.
 
 ## Capabilities and Constraints
 
@@ -33,7 +33,7 @@ The repository contains a reference architecture, an executable simulator-first 
 - `docs\technical-design.md`: requirements and interaction semantics.
 - `docs\detailed-architecture.md`: proposed component and data contracts.
 - `docs\adr\0005-graph-budgets-and-explicit-write-outcomes.md`: explicit delivery states and safe handling of uncertainty.
-- `src\`, `infra\`, and `.github\workflows\`: dev implementation and deployment definitions, not proof of cloud rollout or production capacity.
+- `src\`, `infra\`, and `.github\workflows\`: dev implementation and deployment definitions; remote GitHub workflow execution and production capacity are not demonstrated.
 - `docs\dev-validation.md`: correctness evidence and outstanding approval/live-integration gates.
 
 ## Product Principles

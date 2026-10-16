@@ -357,9 +357,17 @@ function Feed(props: FeedProps) {
 
 function Login({ onSignedIn, error }: { onSignedIn: () => Promise<void>; error: string }) {
   const [local, setLocal] = useState(false);
+  const [localAvailable, setLocalAvailable] = useState(false);
   const [password, setPassword] = useState("");
   const [actorId, setActorId] = useState("alex");
   const [message, setMessage] = useState(error);
+  useEffect(() => {
+    let active = true;
+    api<{ localAuth: boolean }>("/auth/config")
+      .then(config => { if (active) setLocalAvailable(config.localAuth); })
+      .catch(error => { if (active) setMessage(problem(error)); });
+    return () => { active = false; };
+  }, []);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     try {
@@ -373,7 +381,7 @@ function Login({ onSignedIn, error }: { onSignedIn: () => Promise<void>; error: 
     <p className="notice">Dev environment · Generated content only · Not connected to Teams</p>
     {message && <p role="alert">{message}</p>}
     <a className="primary sign-in" href="/auth/signin">Sign in with Microsoft</a>
-    <button className="local-toggle" onClick={() => setLocal(!local)} aria-expanded={local}>Local development sign-in</button>
+    {localAvailable && <button className="local-toggle" onClick={() => setLocal(!local)} aria-expanded={local}>Local development sign-in</button>}
     {local && <form onSubmit={e => void submit(e)}><label htmlFor="actor">Test persona</label><select id="actor" value={actorId} onChange={e => setActorId(e.target.value)}>
       <option value="alex">Alex Morgan</option><option value="sam">Sam Rivera</option><option value="jordan">Jordan Lee (restricted)</option><option value="taylor">Taylor Chen (history restricted)</option>
     </select><label htmlFor="password">Development password</label><input id="password" autoComplete="current-password" type="password" required value={password} onChange={e => setPassword(e.target.value)} />

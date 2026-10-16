@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
 <!--
-THESIS: Compare four ways to simplify the same messaging task.
+THESIS: Compare messaging layouts and three ways to reach a new colleague within Split View.
 OWN-WORLD: Shared Clawpilot theme, Segoe UI, quiet borders, schematic layout previews.
 STORY: Understand each structural trade-off and open any independently runnable demo.
 FIRST VIEWPORT: Direct introduction followed by a labeled layout preview and working link.
@@ -9,8 +9,8 @@ FORM: Vertical comparison with equally weighted alternatives; no recommended pro
 -->
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Four simple, clickable messaging UI concepts in pure HTML, CSS, and JavaScript.">
-<title>Four ways to keep it simple - Messaging prototypes</title>
+<meta name="description" content="Three Split View outreach flows and four messaging layouts, all standalone and interactive with fictional people.">
+<title>Messaging and reaching colleagues - UI prototypes</title>
 <script>(() => {
     const param = new URLSearchParams(window.location.search).get("clawpilotTheme");
     const theme =
@@ -114,14 +114,33 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .mini-workspace .mini-message { border: 1px solid var(--cp-border); border-radius: 6px; padding: 8px; }
 footer { border-top: 1px solid var(--cp-border); color: var(--cp-text-muted); padding-top: 24px; margin-top: 24px; font-size: 0.8125rem; max-width: 72ch; }
 footer p { margin: 0 0 8px; }
+.collection-heading { margin: 52px 0 12px; font-size: 1.75rem; font-weight: 650; line-height: 1.25; }
+.collection-intro { max-width: 72ch; color: var(--cp-text-muted); margin: 0 0 24px; }
+.outreach-options { margin-bottom: 48px; border-top: 1px solid var(--cp-border); }
+.outreach-option { display: grid; grid-template-columns: 220px minmax(0, 1fr) auto; gap: 24px; align-items: baseline; padding: 24px 0; border-bottom: 1px solid var(--cp-border); }
+.outreach-option h3 { font-size: 1.125rem; font-weight: 650; margin: 0 0 4px; }
+.outreach-option p { font-size: 0.875rem; margin: 0; }
+.outreach-option .detail { color: var(--cp-text-muted); margin-top: 6px; }
+.outreach-option .open { white-space: nowrap; }
+@media (max-width: 720px) { .outreach-option { grid-template-columns: 1fr; gap: 8px; } }
 @media (max-width: 720px) { header { padding: 16px 20px; } main { padding: 40px 20px; } h1 { font-size: 2rem; } .concept { grid-template-columns: 1fr; gap: 24px; } .diagram { max-width: 360px; } .intro { margin-bottom: 24px; } }
 </style>
 </head>
 <body>
 <header><strong>Messaging / UI explorations</strong><button type="button" id="theme-toggle">Switch theme</button></header>
 <main>
-<h1>Four ways to keep<br>the conversation simple.</h1>
-<p class="intro">The same chats, channels, and sample messages. Four different ways to find your place, read the context, and reply. No installation. No connection to Teams.</p>
+<h1>Find your conversations.<br>Reach your colleagues.</h1>
+<p class="intro">Explore three ways to start a one-to-one conversation, built on the current Split View. The original four layout explorations are below. No installation. No connection to Teams.</p>
+<section aria-labelledby="outreach-title">
+<h2 class="collection-heading" id="outreach-title">Starting a conversation</h2>
+<p class="collection-intro">Same Split View, different entry points. Every flow lets you verify a fictional colleague, start a demo chat, or return to an existing conversation without creating a duplicate.</p>
+<div class="outreach-options">
+<article class="outreach-option"><div><h3>New chat</h3><p>You know who to contact.</p></div><div><p>New chat → search a name or email → choose a recipient → write.</p><p class="detail">The smallest addition to today's app. Try Priya for a new chat, or Maya for an existing one.</p></div><a class="open" href="05-new-chat.html" data-local-link>Try new chat <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a></article>
+<article class="outreach-option"><div><h3>People directory</h3><p>You know the role, not the name.</p></div><div><p>Browse or search → filter a department → inspect a profile → message.</p><p class="detail">A discoverable home for people. Try &quot;IT support&quot;, or compare the two Jordan Lees by role and email.</p></div><a class="open" href="06-people-directory.html" data-local-link>Try directory <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a></article>
+<article class="outreach-option"><div><h3>Message from a profile</h3><p>You met them in a discussion.</p></div><div><p>Select a channel author or participant → inspect their profile → message.</p><p class="detail">Keep the shared context nearby. Open Priya's profile in Design review, or Maya's existing chat.</p></div><a class="open" href="07-contextual-profile.html" data-local-link>Try profiles <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a></article>
+</div></section>
+<h2 class="collection-heading" id="layout-title">The original layout explorations</h2>
+<p class="collection-intro">Four ways to browse, read, and reply. Split View is the basis of the current dev app and the new outreach flows above.</p>
 <section class="concept" aria-labelledby="title-split">
 <div class="diagram mini-split" aria-hidden="true"><div class="mini-nav"><span class="mini-line short"></span><span class="mini-line"></span><div class="mini-selected"><span class="mini-line"></span></div><span class="mini-line"></span><span class="mini-line short"></span><span class="mini-line"></span></div><div class="mini-content"><div class="mini-heading"><span class="mini-line short"></span></div><div class="mini-message"><span class="mini-line short"></span><span class="mini-line"></span><span class="mini-line short"></span></div><div class="mini-message self"><span class="mini-line"></span><span class="mini-line short"></span></div><div class="mini-compose"><span class="mini-line"></span></div></div></div>
 <div><h2 id="title-split">Split view</h2><p class="description">A familiar list. A conversation beside it.</p><p class="detail">Find a conversation on the left and keep the context on the right. Replies get their own side panel.</p><p class="tradeoff">Best for quick switching. Needs more room on desktop.</p><a class="open" href="01-split-view.html" data-local-link>Open split view <svg class="" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a></div>

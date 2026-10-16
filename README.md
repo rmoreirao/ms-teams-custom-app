@@ -4,7 +4,7 @@ A technical design for a responsive web application that exposes Microsoft Teams
 
 The reference design separates application capacity from Microsoft Graph capacity. Recent reads and real-time delivery scale in Azure; user-authored writes remain subject to Teams permissions, latency, and throttling limits.
 
-> **Simulator-first dev implementation.** The repository now includes a .NET 10 BFF/API and worker, a React Split View frontend, synthetic fixtures, Bicep, and GitHub Actions definitions. Local correctness/browser checks pass. Azure rollout is blocked: the selected subscription is disabled/read-only, and directory/provisioning approvals are outstanding. Live Teams integration is disabled. SLOs remain proposed targets; production capacity has not been demonstrated.
+> **Simulator-first dev implementation, deployed in Sweden Central.** [Open the dev Web App](https://teamsrefdev-unc3jasrpkgbo-web-htdnfyf3dbbjbca2.b02.azurefd.net). Public readiness and desktop/mobile browser checks pass; sign-in consent is provisioned, and authenticated journeys await fresh Entra sign-in and any remaining first-use setup. Live Teams integration remains disabled. SLOs are proposed targets, not demonstrated production capacity.
 
 ## Run the dev application
 
@@ -26,6 +26,8 @@ Run `.\scripts\Validate.ps1 -Browser` for build, unit/component, authenticated A
 
 | Document | Purpose |
 | --- | --- |
+| [Live Teams implementation plan](docs/live-integration-plan.md) | Dependency-ordered work packages for the final event-driven projection, live Graph integration, scaling, and recovery |
+| [Entra configuration and rebuild](docs/entra-configuration.md) | Current identity provisioning contract, reusable rebuild sequence, federation/consent distinctions, and planned live desired-state automation |
 | [Dev setup and deployment](docs/dev-guide.md) | Executable components, private-network Azure bootstrap, Entra prerequisites, approvals, GitHub Actions, and cleanup |
 | [Test data and scenarios](docs/testing.md) | Fixture identities, repeatable seeding/reset, browser scenarios, and live Teams prerequisites |
 | [Functional validation evidence](docs/dev-validation.md) | Local results and the explicit distinction between validated, blocked, and unexecuted work |
@@ -52,6 +54,18 @@ Every file is self-contained HTML, CSS, and JavaScript with the same fictional s
 **Demo controls** expose loading/unavailable views, rejected/uncertain sends, simulated offline/reconnect behavior, and reset. A status check resolves the original uncertain demo send without creating a second message. Offline mode does not queue sends. All state lives in memory and resets on refresh; nothing connects to Teams or persists messages on the device. There is no real authentication, authorization, message synchronization, or Graph confirmation.
 
 The four layouts remain standalone alternatives; **Split View is selected for the executable dev frontend**, not asserted as a production acceptance decision. [Prototype design notes](prototypes/DESIGN.md) describe their common rules and differences.
+
+### Reach someone new: three Split View prototypes
+
+These additional prototypes explore **one-to-one outreach** without changing the dev app. Open them directly from disk or use [the prototype comparison](prototypes/index.html).
+
+| Prototype | How to reach a colleague |
+| --- | --- |
+| [New chat](prototypes/05-new-chat.html) | Search a known name or email, verify the recipient, then write |
+| [People directory](prototypes/06-people-directory.html) | Find someone by role or department, inspect their profile, then message |
+| [Message from a profile](prototypes/07-contextual-profile.html) | Select a channel author or participant and start a direct conversation from their profile |
+
+Each flow reuses an existing direct chat, preserves per-person drafts, and adds a new chat to recents on its first demo send. Try Priya Nair for a new conversation, Maya Chen for an existing one, or the two Jordan Lees to compare role/email disambiguation. All profiles and messages are fictional; nothing reaches your organization or Teams. Group-chat creation is outside this exploration.
 
 ## Architecture at a glance
 

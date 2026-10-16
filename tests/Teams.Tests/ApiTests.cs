@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -18,6 +19,37 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
     {
         using var client = factory.CreateClient();
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/conversations")).StatusCode);
+    }
+    [Fact]
+    public async Task InlineScriptHashesMatchBrowserNormalizedHtml()
+    {
+        using var client = factory.CreateClient();
+        var response = await client.GetAsync("/");
+        response.EnsureSuccessStatusCode();
+        var html = await response.Content.ReadAsStringAsync();
+        var policy = string.Join(" ", response.Headers.GetValues("Content-Security-Policy"));
+        var scripts = Regex.Matches(html, @"<script\b[^>]*>([\s\S]*?)</script>")
+            .Select(m => m.Groups[1].Value).Where(s => !string.IsNullOrWhiteSpace(s)).ToArray();
+        Assert.NotEmpty(scripts);
+        foreach (var script in scripts)
+        {
+            var normalized = script.Replace("\r\n", "\n").Replace('\r', '\n');
+            var hash = Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(normalized)));
+            Assert.Contains($"'sha256-{hash}'", policy);
+        }
+        Assert.DoesNotContain("'unsafe-inline'", policy);
+    }
+    [Fact]
+    public async Task PublicAuthConfigurationContainsNoCredentials()
+    {
+        using var client = factory.CreateClient();
+        var response = await client.GetAsync("/auth/config");
+        response.EnsureSuccessStatusCode();
+        var value = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(value.GetProperty("localAuth").GetBoolean());
+        Assert.True(value.GetProperty("simulated").GetBoolean());
+        Assert.Equal(2, value.EnumerateObject().Count());
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
     }
     [Fact]
     public async Task LoginReadSendAndCsrfProtectionWork()

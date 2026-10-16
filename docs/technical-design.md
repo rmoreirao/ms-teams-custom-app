@@ -582,6 +582,8 @@ A simulator capacity pass is not a G1/G2 proof for real Graph. A service's nomin
 
 ## 12. Implementation stages
 
+The selected engineering direction is to complete the event-driven bounded projection, not a direct-read MVP. The [live integration implementation plan](live-integration-plan.md) expands these stages into dependency-ordered work packages against the existing code. The [Entra configuration and rebuild runbook](entra-configuration.md) separates current executable provisioning from the planned live identity/consent contract. G0 approval for business data remains required.
+
 | Stage | Deliverable and exit condition |
 | --- | --- |
 | 1. Prerequisites | Approve the applicable ADR 0007/G0 privacy profile, then confirm tenant licensing, consent, resource scope, message policy, regions, retention, and Azure quotas |
@@ -591,7 +593,7 @@ A simulator capacity pass is not a G1/G2 proof for real Graph. A service's nomin
 | 5. Validation | Execute separate capacity, real Graph, mobile, correctness, and recovery tracks |
 | 6. Deployment review | Record gate evidence, unresolved risks, accepted SLOs, cost envelope, and operational ownership |
 
-Implementation should use versioned interfaces and infrastructure as code. Add application modules and build/test tooling when executable implementation begins; this documentation repository does not imply those components already exist.
+Implementation should use versioned interfaces and infrastructure as code. The current `src\`, `infra\`, and tooling implement the simulator-first dev slice; they do not establish that the production modules, live configuration, or acceptance gates are complete.
 
 ## 13. Risks and deployment decisions
 

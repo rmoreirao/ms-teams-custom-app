@@ -4,6 +4,9 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 Push-Location $root
 try {
+    & (Join-Path $root 'scripts\Check-Scripts.ps1')
+    & (Join-Path $root 'tests\Scripts\EntraBootstrap.Tests.ps1')
+    & (Join-Path $root 'tests\Scripts\SignInConsent.Tests.ps1')
     Push-Location (Join-Path $root 'src\Web')
     try {
         npm ci --no-audit --no-fund

@@ -28,7 +28,8 @@ jobs:
       EVENTS_CLIENT_ID: ${{ vars.TEAMS_EVENTS_CLIENT_ID }}
       ACTOR_IDS: ${{ vars.TEAMS_FIXTURE_ACTOR_IDS }}
       REGISTRY: ${{ vars.AZURE_REGISTRY_NAME }}
-      COSMOS_LOCATION: ${{ vars.AZURE_COSMOS_LOCATION || 'westeurope' }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'swedencentral' }}
+      COSMOS_LOCATION: ${{ vars.AZURE_COSMOS_LOCATION || vars.AZURE_LOCATION || 'swedencentral' }}
       REDIS_SKU: ${{ vars.AZURE_REDIS_SKU || 'Balanced_B0' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -81,6 +82,7 @@ jobs:
             webClientId = @{ value = $env:WEB_CLIENT_ID }
             eventsClientId = @{ value = $env:EVENTS_CLIENT_ID }
             fixtureActorIds = @{ value = @(ConvertFrom-Json $env:ACTOR_IDS) }
+            location = @{ value = $env:AZURE_LOCATION }
             cosmosLocation = @{ value = $env:COSMOS_LOCATION }
             redisSku = @{ value = $env:REDIS_SKU }
           }

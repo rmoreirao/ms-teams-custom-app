@@ -21,7 +21,19 @@ Pop-Location
 
 Build the frontend and backend first when invoking the browser runner directly. CI uses Release; local defaults use Debug. Set `DOTNET_CONFIGURATION` to match an existing build when necessary.
 
-`REFERENCE_BASE_URL` can target an existing dev origin, but the supplied local-login scenarios are not an Entra sign-in automation suite. Do not run them against Azure and call that real identity validation. For Entra validation, use a separately authenticated Playwright context after human MFA/password-change/consent and keep its state outside source/artifacts. Never upload cookies, capability URLs, credentials, or unredacted identity traces.
+`REFERENCE_BASE_URL` can target an existing dev origin, but the supplied local-login scenarios are not an Entra sign-in automation suite. Do not run them against Azure and call that real identity validation. For Entra validation, use the opt-in check below or a separately authenticated Playwright context after human MFA/password-change/consent, keeping its state outside source/artifacts. Never upload cookies, capability URLs, credentials, or unredacted identity traces.
+
+## Opt-in password and TOTP sign-in check
+
+`npm run test:entra` from `src\Web` runs a separate, read-only authentication check against an explicitly selected deployed app. It is not invoked by the local browser suite or CI. It requires a dedicated fixture user with completed first-use setup and an approved software OATH registration; it does not disable MFA, change a password, grant consent, enroll a method, or send Teams messages.
+
+The command explicitly loads the repository-root `.env`. That file is plaintext, ignored by Git and excluded from Docker builds; keep it private and out of screenshots, logs and uploaded artifacts. Do not use `VITE_` prefixes for authentication secrets. `.env.example` lists the inputs: the approved origin, tenant/client IDs, expected fixture object ID and username, plus `TEST_USER`, `TEST_USER_PASSWORD`, and `TEST_USER_TOTP_SECRET`. The secret is the retained Base32 setup key, not a rotating code or a QR/push-registration URL. Enter all secrets locally, never in a shared transcript. Nonsecret inputs can instead be supplied as process environment variables.
+
+Quote password values, especially when they contain `#`: an unquoted hash begins a comment rather than remaining part of the password. Duplicate password entries or unquoted hashes are rejected before a browser is opened. Choose quoting that preserves the password's actual characters; never paste it into diagnostic output.
+
+Run `npm run check:entra` and `npm run test:entra:unit` before the live check. The unit checks use public RFC 6238 vectors, locally fulfilled mock sign-in pages and a loopback-only session API; they never load `.env` or send sign-in requests to Entra. They require the same Edge/Chromium browser as the live check. The live command uses a fresh, temporary browser context, validates the Entra authority/client/callback/sign-in scopes before credential entry, selects authenticator TOTP when needed, and requires both password and TOTP submission followed by the expected Entra-backed `/api/session`. Frontend business APIs, including real-time negotiation, are blocked during this auth-only check. Unexpected consent, security setup, redirects or rejected credentials stop the check without credential retries. Persistent sign-in is declined only when its heading and a real No button are visible; a checkbox or Cancel/Back control is not sufficient. After that prompt, a bounded, read-only session check uses the shared cookie jar rather than waiting for the frontend page to remain open or render. Only an HTTP 200 session matching the expected fixture and Entra mode is success; a redirect, anonymous response or home-page load alone is not. The browser closes afterward.
+
+The command uses the browser library directly rather than the test reporter, so it creates no authentication screenshots, traces, videos, saved browser state or error-context snapshots. Failure output is deliberately sanitized because browser-library errors can include credentials or authorization URLs. Only fixed endpoint categories, HTTP statuses, script-error counts and the failed phase are reported, never URLs, cookies or payloads. `DEBUG` and `PWDEBUG` must be unset. A successful result explicitly reports the app's `simulated` flag; authentication success is not evidence of real Teams integration.
 
 ## Fixture manifest and personas
 
@@ -63,6 +75,14 @@ For a single known operation, `GET /api/conversations/{id}/operations/{operation
 ## Infrastructure and deployment validation
 
 Compile both `infra\main.bicep` and `infra\subscription.bicep` with Bicep 0.48.1+. Parse scripts with `scripts\Check-Scripts.ps1` and validate workflows with actionlint. Run actual Azure what-if only with approved environment inputs.
+
+`tests\Scripts\EntraBootstrap.Tests.ps1` exercises subscription/tenant isolation, resumable bootstrap checkpoints, Sweden region propagation, the network prerequisite and the application identity gate without network access. Infrastructure-only evaluation may proceed with incomplete test-user provisioning, but an application deployment must reject absent fixture identities before contacting Azure.
+
+`scripts\Test-DeployedApp.ps1` verifies the real public application shell/assets, fixture/Redis readiness, anonymous API denial, disabled local sign-in and the canonical Entra redirect. The current Sweden browser smoke also verifies both themes with zero CSP violations and no local-login option. These public checks do not replace authenticated business journeys: the first real test login currently requires completion of Entra security enrollment by the user.
+
+`OidcCallbackTests` separately exercises the actual OIDC/MSAL authorization-code path behind a simulated internal HTTP proxy. Its controlled token endpoint captures the redemption form and checks that `redirect_uri` equals the public HTTPS authorization callback, with PKCE retained. This catches callback mismatches that redirect-only smoke cannot detect, without sending synthetic codes to real Entra. A fresh real user login remains necessary for final session acceptance.
+
+If sign-in shows **"Need admin approval"**, resolve the separate sign-in consent gate described in the dev guide. `tests\Scripts\SignInConsent.Tests.ps1` covers the opt-in consent helper without contacting Entra: no-write planning, four user-specific standard scopes, idempotency, broader-grant refusal and assignment restriction. No CI test grants real tenant consent.
 
 After authorized deployment, validate private DNS and data-plane managed identities from inside the VNet, direct-origin denial, Front Door/WAF, private PubSub backend/public authenticated clients, protected upstream admission, session continuity, Cosmos transaction conflicts, broker redelivery/DLQ purge, and real cache/identity failures. These cloud checks have not been substituted with mocks or declared passed by local tests.
 

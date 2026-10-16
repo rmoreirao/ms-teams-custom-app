@@ -23,6 +23,8 @@ public sealed class Messaging(IStateStore store, IGraphTransport graph, ICommand
             throw new AppError(401, "authentication_required", "This account no longer has access.");
         var value = await store.GetAsync(actor.TenantId, id, ct)
             ?? throw new AppError(404, "access_denied", "Conversation is not available.");
+        if (store is ILiveStateStore live)
+            value = value with { Value = value.Value with { Members = [await live.GetMemberAsync(actor, id, false, ct)] } };
         Authorize(actor, value.Value);
         return value;
     }
@@ -31,6 +33,7 @@ public sealed class Messaging(IStateStore store, IGraphTransport graph, ICommand
     {
         if (await store.IsBlockedAsync(actor.TenantId, actor.Id, ct))
             throw new AppError(401, "authentication_required", "This account no longer has access.");
+        if (store is ILiveStateStore live) return (await live.CatalogAsync(actor, null, ct)).Items;
         var conversations = await store.ListAsync(actor.TenantId, ct);
         return conversations.Where(c => c.TenantId == actor.TenantId && c.Members.Any(m => m.Id == actor.Id && m.Active))
             .Select(c => new ConversationView(c.Id, c.Title, c.Kind, c.Team, c.Revision)).ToArray();
@@ -45,6 +48,19 @@ public sealed class Messaging(IStateStore store, IGraphTransport graph, ICommand
         var member = Authorize(actor, conversation);
         var boundary = cursor is null ? null
             : JsonSerializer.Deserialize<PageBoundary>(tokens.Validate(actor, id, $"page:{conversation.Epoch}:{parent}", cursor));
+        if (store is ILiveStateStore live)
+        {
+            var parentMessage = parent is null ? null : await live.MessageAsync(actor.TenantId, id, parent, null, ct);
+            if (parent is not null && (parentMessage is null || parentMessage.Deleted ||
+                parentMessage.CreatedAt < member.HistoryFrom || parentMessage.CreatedAt < Now.AddDays(-7)))
+                throw new AppError(404, "access_denied", "Thread is not available.");
+            var messages = await live.MessagesAsync(actor, id, parent, member.HistoryFrom, boundary?.At, boundary?.Id, ct);
+            var nextCursor = messages.Count > 20 ? tokens.Issue(actor, id, $"page:{conversation.Epoch}:{parent}",
+                JsonSerializer.Serialize(new PageBoundary(messages[19].CreatedAt, messages[19].Id)), TimeSpan.FromMinutes(15)) : null;
+            return new(messages.Take(20).OrderBy(m => m.CreatedAt).ToArray(), nextCursor, conversation.Revision,
+                tokens.Issue(actor, id, $"command:{conversation.Epoch}", Guid.NewGuid().ToString("N"), TimeSpan.FromMinutes(5)),
+                false, parentMessage);
+        }
         if (parent is not null && !conversation.Messages.Any(m => m.Id == parent && m.ParentId is null &&
             m.CreatedAt >= member.HistoryFrom && m.CreatedAt >= Now.AddDays(-7) && !m.Deleted))
             throw new AppError(404, "access_denied", "Thread is not available.");
@@ -63,6 +79,7 @@ public sealed class Messaging(IStateStore store, IGraphTransport graph, ICommand
     public async Task<ChangePage> ChangesAsync(Actor actor, string id, long after, CancellationToken ct)
     {
         var conversation = (await GetAuthorizedAsync(actor, id, ct)).Value;
+        if (store is ILiveStateStore) return new([], conversation.Revision, after < conversation.Revision);
         var oldest = conversation.Changes.Count == 0 ? conversation.Revision : conversation.Changes.Min(c => c.Revision);
         return new(conversation.Changes.Where(c => c.Revision > after).ToArray(), conversation.Revision, after < oldest - 1);
     }
@@ -73,6 +90,7 @@ public sealed class Messaging(IStateStore store, IGraphTransport graph, ICommand
             command.Body.Length > 4096 || command.Body.IndexOf('\0') >= 0)
             throw new AppError(400, "invalid_message", "Use a valid operation ID and 1-4096 characters.");
         var conversation = (await GetAuthorizedAsync(actor, id, ct)).Value;
+        if (store is ILiveStateStore liveAuthority) await liveAuthority.GetMemberAsync(actor, id, true, ct);
         var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
             JsonSerializer.Serialize(new { command.Body, command.ParentId }))));
         var existing = await store.GetOperationAsync(actor.TenantId, id, command.OperationId, ct);
@@ -88,8 +106,11 @@ public sealed class Messaging(IStateStore store, IGraphTransport graph, ICommand
         if (command.ParentId is not null)
         {
             var member = Authorize(actor, conversation);
-            if (conversation.Kind != "channel" || !conversation.Messages.Any(m => m.Id == command.ParentId &&
-                m.ParentId is null && !m.Deleted && m.CreatedAt >= member.HistoryFrom && m.CreatedAt >= Now.AddDays(-7)))
+            var parentMessage = store is ILiveStateStore liveParents
+                ? await liveParents.MessageAsync(actor.TenantId, id, command.ParentId, null, ct)
+                : conversation.Messages.SingleOrDefault(m => m.Id == command.ParentId && m.ParentId is null);
+            if (conversation.Kind != "channel" || parentMessage is null || parentMessage.Deleted ||
+                parentMessage.CreatedAt < member.HistoryFrom || parentMessage.CreatedAt < Now.AddDays(-7))
                 throw new AppError(400, "invalid_parent", "The reply's parent is not available.");
         }
         var operation = new SendOperation(command.OperationId, actor.TenantId, id, actor.Id, fingerprint,
@@ -106,6 +127,7 @@ public sealed class Messaging(IStateStore store, IGraphTransport graph, ICommand
                 ?? throw new AppError(503, "operation_unavailable", "Operation evidence is temporarily unavailable."));
         }
         conversation = (await GetAuthorizedAsync(actor, id, ct)).Value;
+        if (store is ILiveStateStore freshAuthority) await freshAuthority.GetMemberAsync(actor, id, true, ct);
         operation = stored.Value with { State = OperationState.Dispatching };
         if (!await store.SaveOperationAsync(stored with { Value = operation }, ct))
             return View((await store.GetOperationAsync(actor.TenantId, id, operation.Id, ct))!.Value);

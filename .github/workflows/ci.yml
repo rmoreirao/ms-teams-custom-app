@@ -42,9 +42,12 @@ jobs:
           az bicep install --version v0.48.1
           az bicep build --file infra/main.bicep --outfile "$RUNNER_TEMP/main.json"
           az bicep build --file infra/subscription.bicep --outfile "$RUNNER_TEMP/subscription.json"
-      - name: Parse management scripts
+      - name: Verify management scripts
         shell: pwsh
-        run: ./scripts/Check-Scripts.ps1
+        run: |
+          ./scripts/Check-Scripts.ps1
+          ./tests/Scripts/EntraBootstrap.Tests.ps1
+          ./tests/Scripts/SignInConsent.Tests.ps1
       - name: Correctness artifacts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -1,6 +1,7 @@
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
 param(
     [Parameter(Mandatory)][guid]$TenantId,
+    [guid]$SubscriptionId,
     [Parameter(Mandatory)][string]$InventoryPath,
     [ValidatePattern('^[a-z0-9-]{3,32}$')][string]$Prefix = 'teams-reference-dev',
     [ValidatePattern('^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')][string]$Repository = 'rmoreirao/ms-teams-custom-app',
@@ -12,6 +13,14 @@ $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..')) + [IO.Path]::D
 if ([IO.Path]::GetFullPath($InventoryPath).StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Identity and credential inventories must be outside the repository.'
 }
+$users = @()
+if (Test-Path -LiteralPath $InventoryPath) {
+    $previous = Get-Content -Raw -LiteralPath $InventoryPath | ConvertFrom-Json
+    if ($previous.tenantId -ne $TenantId.ToString() -or $previous.prefix -ne $Prefix) {
+        throw 'Existing identity inventory belongs to a different tenant or prefix.'
+    }
+    $users = @($previous.users)
+}
 if (-not $Apply) {
     Write-Output 'Plan: create/reuse four tagged application registrations and their service principals; configure GitHub dev-environment federation. Optional: create four dedicated unlicensed fixture users. No Graph message consent or licence purchase.'
     return
@@ -19,9 +28,10 @@ if (-not $Apply) {
 if (-not $PSCmdlet.ShouldProcess("$TenantId / $Prefix", 'Provision dev application identities and requested test users')) { return }
 $directory = Split-Path ([IO.Path]::GetFullPath($InventoryPath)) -Parent
 New-Item -ItemType Directory -Force -Path $directory | Out-Null
-$account = az account show --output json | ConvertFrom-Json
+$accountArguments = if ($PSBoundParameters.ContainsKey('SubscriptionId')) { @('--subscription', $SubscriptionId.ToString()) } else { @() }
+$account = az account show @accountArguments --output json | ConvertFrom-Json
 if ($LASTEXITCODE -or $account.tenantId -ne $TenantId.ToString()) { throw 'Sign in to the explicitly selected tenant first.' }
-$token = az account get-access-token --resource-type ms-graph --output json | ConvertFrom-Json
+$token = az account get-access-token @accountArguments --resource-type ms-graph --output json | ConvertFrom-Json
 if ($LASTEXITCODE) { throw 'Graph authentication failed.' }
 $headers = @{ Authorization = "Bearer $($token.accessToken)" }
 function Graph([string]$Method, [string]$Path, $Body = $null) {
@@ -35,6 +45,16 @@ if (-not $domain) { throw 'Initial tenant domain was not available.' }
 $owner = Graph GET 'me?$select=id'
 $tag = "teams-reference:$Prefix"
 $apps = @{}
+function Save-Inventory([bool]$Complete = $false) {
+    @{
+        schemaVersion = 1
+        tenantId = $TenantId.ToString()
+        prefix = $Prefix
+        applications = $apps
+        users = @($users)
+        bootstrapComplete = $Complete
+    } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $InventoryPath -Encoding utf8
+}
 foreach ($purpose in @('web', 'sync', 'events', 'deploy')) {
     $name = "$Prefix-$purpose"
     $existing = Graph GET "applications?`$filter=displayName eq '$name'"
@@ -59,6 +79,7 @@ foreach ($purpose in @('web', 'sync', 'events', 'deploy')) {
     $principals = Graph GET "servicePrincipals?`$filter=appId eq '$($app.appId)'"
     $principal = if ($principals.value.Count) { $principals.value[0] } else { Graph POST 'servicePrincipals' @{ appId = $app.appId } }
     $apps[$purpose] = @{ objectId = $app.id; clientId = $app.appId; principalId = $principal.id }
+    Save-Inventory
 }
 $federation = Graph GET "applications/$($apps.deploy.objectId)/federatedIdentityCredentials"
 if ('github-dev' -notin $federation.value.name) {
@@ -68,14 +89,6 @@ if ('github-dev' -notin $federation.value.name) {
     } | Out-Null
 } elseif (($federation.value | Where-Object name -eq 'github-dev').subject -ne "repo:${Repository}:environment:dev") {
     throw 'Existing GitHub federation belongs to another repository or environment.'
-}
-$users = @()
-if (Test-Path -LiteralPath $InventoryPath) {
-    $previous = Get-Content -Raw -LiteralPath $InventoryPath | ConvertFrom-Json
-    if ($previous.tenantId -ne $TenantId.ToString() -or $previous.prefix -ne $Prefix) {
-        throw 'Existing identity inventory belongs to a different tenant or prefix.'
-    }
-    $users = @($previous.users)
 }
 if ($CreateTestUsers) {
     if (-not $IsWindows) { throw 'This bootstrap stores initial credentials with Windows DPAPI. Run on Windows or provide a separately approved secret-storage implementation.' }
@@ -100,6 +113,7 @@ if ($CreateTestUsers) {
             $password = $null
         }
         $users += @{ persona = $persona; id = $user.id; upn = $upn }
+        Save-Inventory
     }
 }
 Graph PATCH "servicePrincipals/$($apps.web.principalId)" @{ appRoleAssignmentRequired = $true } | Out-Null
@@ -111,8 +125,7 @@ foreach ($user in $users) {
         } | Out-Null
     }
 }
-$inventory = @{ schemaVersion = 1; tenantId = $TenantId.ToString(); prefix = $Prefix; applications = $apps; users = $users }
-$inventory | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $InventoryPath -Encoding utf8
+Save-Inventory -Complete $true
 Write-Output "Identity inventory saved privately to $InventoryPath. No licences or Teams message permissions were assigned."
 $headers.Clear()
 $token = $null
