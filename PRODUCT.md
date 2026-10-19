@@ -16,12 +16,13 @@ Expose authorized Microsoft Teams chats and channels in a responsive, focused we
 
 ## Operating Context
 
-The repository contains a reference architecture, a simulator-first dev application deployed in Sweden Central, and four standalone UI prototypes. The dev frontend follows the selected Split View prototype. Local hosting uses explicit test credentials and volatile server memory; Azure uses real Entra and managed services with synthetic content. Public readiness and desktop/mobile rendering pass. Sign-in consent is provisioned; authenticated Azure journeys await fresh sign-in and any remaining Entra setup. Live Teams access remains disabled.
+The repository contains a reference architecture, an explicit basic real-Teams GraphPilot deployment in Sweden Central, and standalone UI prototypes. The executable frontend follows Split View with the New chat search/destination flow. Local simulator hosting uses explicit test credentials and volatile memory. The hosted basic mode uses real Entra/delegated Graph with three users and dedicated synthetic Teams resources; each user passed chat/channel/post/reply read-back journeys. Source UI changes are not automatically deployed. The stronger event-driven production mode remains gated.
 
 ## Capabilities and Constraints
 
-- Dev scope: browse authorized chats/channels, read bounded recent pages, send simulator messages, reply in threads, receive updates, and safely track delivery uncertainty.
+- Dev scope: browse authorized chats/channels, read bounded recent pages, send messages, reply in threads, and safely track delivery uncertainty. Local simulator mode is distinct from hosted real-Teams GraphPilot, which refreshes every 30 seconds.
 - Split View is selected for dev; the four portable prototypes remain available for comparison.
+- New chat searches existing authorized chat titles and opens the existing composer without sending or creating a conversation. Directory/email lookup, person profiles and arbitrary new-chat creation are not enabled. GraphPilot offers only the dedicated approved test chat; it does not imply one-to-one recipients.
 - Each prototype is plain HTML, CSS, and JavaScript, opens directly from disk, and needs no backend, framework, installation, or build.
 - Prototype state resets on refresh. Dev browser drafts stay in memory; local server data lasts until process restart, while Azure configuration uses Cosmos persistence and an explicit retention window.
 - Production delivery must distinguish pending, confirmed, rejected, and unknown outcomes. The demos illustrate these distinctions without asserting real Graph confirmation.

@@ -21,6 +21,16 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/conversations")).StatusCode);
     }
     [Fact]
+    public async Task RetiredActorCannotUseLocalSignIn()
+    {
+        using var client = factory.CreateClient();
+        var csrf = await client.GetFromJsonAsync<JsonElement>("/auth/csrf");
+        using var login = new HttpRequestMessage(HttpMethod.Post, "/auth/local");
+        login.Headers.Add("X-CSRF-TOKEN", csrf.GetProperty("token").GetString());
+        login.Content = JsonContent.Create(new { actorId = "retired", password = factory.Password });
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.SendAsync(login)).StatusCode);
+    }
+    [Fact]
     public async Task InlineScriptHashesMatchBrowserNormalizedHtml()
     {
         using var client = factory.CreateClient();

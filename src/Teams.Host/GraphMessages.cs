@@ -13,7 +13,8 @@ public static partial class GraphMessages
     {
         if (path.Length > 4096 || path.Contains('?') || path.Contains('#') || path.Contains('\\'))
             throw new AppError(400, "notification_resource_invalid", "Notification resource is invalid.");
-        var normalized = ODataSegment().Replace(path.TrimStart('/'), m => $"{m.Groups[1].Value}/{Uri.EscapeDataString(m.Groups[2].Value.Replace("''", "'"))}");
+        var normalized = ODataSegment().Replace(path.TrimStart('/'), m =>
+            $"{m.Groups[1].Value}/{Uri.EscapeDataString(Uri.UnescapeDataString(m.Groups[2].Value.Replace("''", "'")))}");
         return string.Join('/', normalized.Split('/').Select(part => Uri.EscapeDataString(Uri.UnescapeDataString(part))));
     }
     public static Message Parse(JsonElement data, string? parent = null)
@@ -24,6 +25,7 @@ public static partial class GraphMessages
         var modified = data.TryGetProperty("lastModifiedDateTime", out var at) && at.ValueKind == JsonValueKind.String
             ? at.GetDateTimeOffset() : created;
         var deleted = data.TryGetProperty("deletedDateTime", out var deletedAt) && deletedAt.ValueKind == JsonValueKind.String;
+        if (deleted && deletedAt.GetDateTimeOffset() > modified) modified = deletedAt.GetDateTimeOffset();
         var actor = "";
         var author = "Teams";
         if (data.TryGetProperty("from", out var from) && from.ValueKind == JsonValueKind.Object &&

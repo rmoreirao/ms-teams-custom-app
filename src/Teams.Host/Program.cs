@@ -25,13 +25,16 @@ using StackExchange.Redis;
 using Teams.Core;
 using Teams.Host;
 using Teams.Infrastructure;
+using OpenTelemetry.Metrics;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 65536);
+builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize =
+    builder.Configuration["App:GraphMode"] == "Live" ? 2 * 1024 * 1024 : 65536);
 builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase)));
 var config = builder.Configuration;
 if (config["APPLICATIONINSIGHTS_CONNECTION_STRING"] is { Length: > 0 } monitor)
-    builder.Services.AddOpenTelemetry().UseAzureMonitor(o => o.ConnectionString = monitor);
+    builder.Services.AddOpenTelemetry().WithMetrics(o => o.AddMeter(LiveTelemetry.MeterName))
+        .UseAzureMonitor(o => o.ConnectionString = monitor);
 builder.Services.AddRateLimiter(options =>
 {
     options.AddPolicy("local-login", context => RateLimitPartition.GetFixedWindowLimiter(
@@ -50,27 +53,50 @@ var tenant = config["App:TenantId"] ?? throw new InvalidOperationException("App:
 var fixtureIds = config.GetSection("App:FixtureActorIds").Get<string[]>() ?? [];
 var role = config["App:Role"] ?? "Api";
 var localAuth = config["App:Auth"] == "Local";
-if (fixtureIds.Length != 4 || fixtureIds.Distinct().Count() != 4 || fixtureIds.Any(string.IsNullOrWhiteSpace))
-    throw new InvalidOperationException("Four distinct fixture actor IDs are required.");
-if (role is not ("Api" or "All" or "Worker" or "Seed" or "Verify" or "Reset"))
+var live = config["App:GraphMode"] == "Live";
+var pilot = config["App:GraphMode"] == "GraphPilot";
+var simulated = !live && !pilot;
+var pilotOptions = config["GraphPilot:Configuration"] is { Length: > 0 } pilotConfiguration
+    ? JsonSerializer.Deserialize<GraphPilotOptions>(pilotConfiguration, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+        ?? throw new InvalidOperationException("GraphPilot configuration is empty.")
+    : config.GetSection("GraphPilot").Get<GraphPilotOptions>() ?? new();
+var liveOptions = config["Live:Configuration"] is { Length: > 0 } liveConfiguration
+    ? JsonSerializer.Deserialize<LiveOptions>(liveConfiguration, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+        ?? throw new InvalidOperationException("Live configuration is empty.")
+    : config.GetSection("Live").Get<LiveOptions>() ?? new();
+if (config["App:GraphMode"] is not ("Simulator" or "Live" or "GraphPilot"))
+    throw new InvalidOperationException("App:GraphMode must explicitly select Simulator, GraphPilot or Live.");
+if (live) liveOptions.Validate(tenant, local, localAuth, role);
+if (pilot) pilotOptions.Validate(tenant, role, local, localAuth, fixtureIds);
+if (!live && (fixtureIds.Length != 3 || fixtureIds.Distinct().Count() != 3 || fixtureIds.Any(string.IsNullOrWhiteSpace)))
+    throw new InvalidOperationException("Three distinct fixture actor IDs are required.");
+if (role is not ("Api" or "All" or "Worker" or "Seed" or "Verify" or "Reset" or "Receiver" or "Projector" or "Delivery" or "Control"))
     throw new InvalidOperationException("App:Role is not a supported host role.");
 if ((local || localAuth || role == "All") && !builder.Environment.IsDevelopment() && !builder.Environment.IsEnvironment("Testing"))
     throw new InvalidOperationException("Memory persistence, local credentials and combined hosting are development/test only.");
-if (config["App:GraphMode"] != "Simulator")
-    throw new InvalidOperationException("Live Teams readiness is blocked. Only explicit Simulator mode is enabled in this delivery.");
+if (!live && role is ("Receiver" or "Projector" or "Delivery" or "Control"))
+    throw new InvalidOperationException("Independent live roles require explicit Live mode.");
 if (!local && localAuth) throw new InvalidOperationException("Azure deployments require Entra authentication.");
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<Simulator>();
-builder.Services.AddSingleton<IPrincipalRevocations>(sp => sp.GetRequiredService<IStateStore>());
-builder.Services.AddSingleton<IGraphTransport>(sp => sp.GetRequiredService<Simulator>());
-builder.Services.AddScoped<Messaging>();
+if (simulated) builder.Services.AddSingleton<Simulator>();
+if (!pilot) builder.Services.AddSingleton<IPrincipalRevocations>(sp => sp.GetRequiredService<IStateStore>());
+if (live || pilot) builder.Services.AddScoped<IGraphTransport>(sp => sp.GetRequiredService<GraphTransport>());
+else builder.Services.AddSingleton<IGraphTransport>(sp => sp.GetRequiredService<Simulator>());
+if (!live || role == "Api") builder.Services.AddScoped<Messaging>();
 builder.Services.AddSingleton<ICommandTokens, CommandTokens>();
 builder.Services.AddAntiforgery(o => { o.HeaderName = "X-CSRF-TOKEN"; o.Cookie.HttpOnly = true; o.Cookie.SameSite = SameSiteMode.Strict; });
 builder.Services.AddAuthorization();
-builder.Services.AddHttpClient<GraphTransport>(c => c.Timeout = TimeSpan.FromSeconds(20));
-if (!localAuth) builder.Services.AddScoped<IGraphAccessTokenSource, DelegatedGraphTokens>();
+builder.Services.AddHttpClient<GraphTransport>(c => c.Timeout = TimeSpan.FromSeconds(20))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+if (!localAuth && (!live || role == "Api"))
+{
+    builder.Services.AddScoped<DelegatedGraphTokens>();
+    builder.Services.AddScoped<IGraphAccessTokenSource>(sp => sp.GetRequiredService<DelegatedGraphTokens>());
+    builder.Services.AddScoped<IGraphReadTokenSource>(sp => sp.GetRequiredService<DelegatedGraphTokens>());
+}
+else if (live) builder.Services.AddScoped<IGraphAccessTokenSource, DisabledGraphTokens>();
 else builder.Services.AddScoped<IGraphAccessTokenSource, DisabledGraphTokens>();
-var protection = builder.Services.AddDataProtection().SetApplicationName("TeamsReference.Dev.v1");
+var protection = builder.Services.AddDataProtection().SetApplicationName(live ? "TeamsReference.Live.v1" : "TeamsReference.Dev.v1");
 if (local)
 {
     builder.Services.AddDistributedMemoryCache();
@@ -83,7 +109,7 @@ if (local)
 else
 {
     var credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions { ManagedIdentityClientId = config["AzureClientId"] });
-    if (role == "Api")
+    if (role == "Api" || live && role == "Control")
     {
         var redisOptions = ConfigurationOptions.Parse(config["Azure:Redis"] ?? throw new InvalidOperationException("Azure:Redis is required."));
         redisOptions.Ssl = true;
@@ -92,9 +118,14 @@ else
         var redis = await ConnectionMultiplexer.ConnectAsync(redisOptions);
         builder.Services.AddSingleton<IConnectionMultiplexer>(redis);
         builder.Services.AddStackExchangeRedisCache(o => o.ConnectionMultiplexerFactory = () => Task.FromResult<IConnectionMultiplexer>(redis));
-        protection.PersistKeysToStackExchangeRedis(redis, "data-protection:dev:v1")
-            .ProtectKeysWithAzureKeyVault(new Uri(config["Azure:ProtectionKey"] ?? throw new InvalidOperationException("Azure:ProtectionKey is required.")), credential);
-        builder.Services.AddSingleton<ICommandBudget>(new RedisBudget(redis, config["AzureAd:ClientId"] ?? throw new InvalidOperationException("AzureAd:ClientId is required.")));
+        if (role == "Api")
+            protection.PersistKeysToStackExchangeRedis(redis, live ? $"data-protection:live:{tenant}:{config["AzureAd:ClientId"]}:v1" : "data-protection:dev:v1")
+                .ProtectKeysWithAzureKeyVault(new Uri(config["Azure:ProtectionKey"] ?? throw new InvalidOperationException("Azure:ProtectionKey is required.")), credential);
+        var budget = new RedisBudget(redis, config["AzureAd:ClientId"] ?? throw new InvalidOperationException("AzureAd:ClientId is required."));
+        builder.Services.AddSingleton<ICommandBudget>(live ? new LiveCommandBudget(budget, liveOptions) : budget);
+        if (pilot)
+            builder.Services.AddSingleton<IGraphCallBudget>(new RedisGraphCallBudget(redis, tenant,
+                config["AzureAd:ClientId"]!, 100, 250));
     }
     else
     {
@@ -105,29 +136,58 @@ else
     {
         ConnectionMode = ConnectionMode.Gateway,
         SerializerOptions = new CosmosSerializationOptions { PropertyNamingPolicy = CosmosPropertyNamingPolicy.CamelCase },
+        ConsistencyLevel = live ? ConsistencyLevel.Strong : null,
         RequestTimeout = TimeSpan.FromSeconds(10),
         MaxRetryAttemptsOnRateLimitedRequests = 2,
         MaxRetryWaitTimeOnRateLimitedRequests = TimeSpan.FromSeconds(5)
     });
     builder.Services.AddSingleton(cosmos);
-    builder.Services.AddSingleton<IStateStore>(new CosmosStateStore(cosmos.GetContainer("teams", "state")));
+    if (live)
+    {
+        builder.Services.AddSingleton<IPartitionDocuments>(new CosmosPartitionDocuments(cosmos.GetContainer("teams", "live-state")));
+        if (role == "Api") builder.Services.AddSingleton<IRecentMessageCache, RedisRecentMessages>();
+        builder.Services.AddKeyedSingleton<IPartitionDocuments>("control",
+            new CosmosPartitionDocuments(cosmos.GetContainer("teams", "live-control")));
+        builder.Services.AddSingleton<ILiveStateStore>(sp => new LiveStateStore(sp.GetRequiredService<IPartitionDocuments>(),
+            sp.GetRequiredService<TimeProvider>(), new CosmosPartitionDocuments(cosmos.GetContainer("teams", "live-authority")),
+            sp.GetService<IRecentMessageCache>(), liveOptions.Resources.Select(r => r.Id).ToHashSet(StringComparer.Ordinal),
+            liveOptions.Resources.ToDictionary(r => r.Id, StringComparer.Ordinal)));
+        builder.Services.AddSingleton<IStateStore>(sp => sp.GetRequiredService<ILiveStateStore>());
+    }
+    else if (pilot)
+    {
+        builder.Services.AddHttpContextAccessor();
+        builder.Services.AddSingleton(pilotOptions);
+        builder.Services.AddKeyedSingleton<IStateStore>("pilot-journal", new CosmosStateStore(cosmos.GetContainer("teams", "state")));
+        builder.Services.AddSingleton<IPrincipalRevocations>(sp => sp.GetRequiredKeyedService<IStateStore>("pilot-journal"));
+        builder.Services.AddHttpClient<IGraphPilotReader, GraphPilotClient>()
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+        builder.Services.AddScoped<IStateStore>(sp => new GraphPilotStore(
+            sp.GetRequiredKeyedService<IStateStore>("pilot-journal"), sp.GetRequiredService<IGraphPilotReader>(),
+            pilotOptions, sp.GetRequiredService<IHttpContextAccessor>(), tenant, fixtureIds,
+            sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<GraphPilotStore>>()));
+    }
+    else builder.Services.AddSingleton<IStateStore>(new CosmosStateStore(cosmos.GetContainer("teams", "state")));
     var bus = new ServiceBusClient(config["Azure:ServiceBus"], credential);
     builder.Services.AddSingleton(bus);
     builder.Services.AddSingleton<IEventInbox>(new ServiceBusInbox(bus, "notifications"));
     var pubsub = new WebPubSubServiceClient(new Uri(config["Azure:PubSub"] ?? throw new InvalidOperationException("Azure:PubSub is required.")), "messaging", credential);
     builder.Services.AddSingleton(pubsub);
     builder.Services.AddSingleton<IRealtime>(sp => new AzureRealtime(pubsub, sp.GetRequiredService<IPrincipalRevocations>()));
+    if (live) builder.Services.AddLiveRuntime(liveOptions, tenant, role, credential);
 }
 
 if (localAuth)
 {
     builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie();
 }
-else
+else if (!live || role == "Api")
 {
     builder.Services.AddAuthentication(OpenIdConnectDefaults.AuthenticationScheme)
         .AddMicrosoftIdentityWebApp(config.GetSection("AzureAd"))
-        .EnableTokenAcquisitionToCallDownstreamApi().AddDistributedTokenCaches();
+        .EnableTokenAcquisitionToCallDownstreamApi(pilot ? GraphPilotOptions.Scopes : live ?
+            liveOptions.Resources.Select(r => r.Kind == "chat" ? "ChatMessage.Send" : "ChannelMessage.Send").Distinct() : null)
+        .AddDistributedTokenCaches();
     builder.Services.AddCanonicalOidcCallback(config["App:PublicOrigin"]);
     builder.Services.Configure<MsalDistributedTokenCacheAdapterOptions>(o =>
     {
@@ -142,7 +202,7 @@ else
         {
             var id = context.Principal?.FindFirstValue("oid") ??
                 context.Principal?.FindFirstValue("http://schemas.microsoft.com/identity/claims/objectidentifier");
-            if (id is null || !fixtureIds.Contains(id))
+            if (id is null || !live && !fixtureIds.Contains(id))
             {
                 context.Fail("This dev application is limited to the approved fixture identities.");
                 return Task.CompletedTask;
@@ -164,6 +224,7 @@ else
         policy.AddAuthenticationSchemes("PubSub").RequireAuthenticatedUser().RequireClaim("roles", "PubSub.Callback")
             .RequireAssertion(context => context.User.FindFirstValue("oid") == config["Callbacks:PrincipalId"]));
 }
+else builder.Services.AddAuthentication();
 builder.Services.AddSingleton<SessionTickets>();
 builder.Services.AddOptions<CookieAuthenticationOptions>(CookieAuthenticationDefaults.AuthenticationScheme)
     .Configure<SessionTickets>((o, tickets) =>
@@ -186,6 +247,13 @@ if (localAuth && (string.IsNullOrWhiteSpace(config["LocalAuth:PasswordHash"]) ||
 if (local || role is "Seed" or "Verify" or "Reset")
 {
     var stateStore = app.Services.GetRequiredService<IStateStore>();
+    if (config["App:RetiredFixtureActorId"] is { Length: > 0 } retiredActorId)
+    {
+        if (live || role != "Seed")
+            throw new InvalidOperationException("Actor migration is restricted to the explicitly configured synthetic seed job.");
+        await Fixtures.RetireActorAsync(stateStore, tenant, fixtureIds, retiredActorId, TimeProvider.System, CancellationToken.None);
+        app.Logger.LogInformation("Migrated the retired fixture actor without resetting messages or operation evidence.");
+    }
     if (role == "Reset")
     {
         if (!config.GetValue<bool>("App:AllowSyntheticReset"))
@@ -252,7 +320,9 @@ app.Use(async (context, next) =>
     if (context.User.Identity?.IsAuthenticated == true && context.Request.Path.StartsWithSegments("/api"))
     {
         var actor = Current(context);
-        if (actor.TenantId != tenant || !fixtureIds.Contains(actor.Id) || await context.RequestServices.GetRequiredService<IPrincipalRevocations>()
+        if (live && !liveOptions.AdmissionEnabled && context.Request.Path != "/api/session")
+            throw new AppError(503, "live_admission_disabled", "Live user admission has not been approved.");
+        if (actor.TenantId != tenant || !live && !fixtureIds.Contains(actor.Id) || await context.RequestServices.GetRequiredService<IPrincipalRevocations>()
             .IsBlockedAsync(tenant, actor.Id, context.RequestAborted))
             throw new AppError(401, "authentication_required", "This session no longer has access. Sign in again.");
     }
@@ -267,13 +337,36 @@ app.UseAuthorization();
 app.MapGet("/health/live", () => Results.Ok(new { status = "live" }));
 app.MapGet("/health/ready", async (IStateStore store, HttpContext c, CancellationToken ct) =>
 {
+    if (pilot)
+    {
+        await c.RequestServices.GetRequiredKeyedService<IStateStore>("pilot-journal").GetAsync(tenant, pilotOptions.Resources[0].Id, ct);
+        await c.RequestServices.GetRequiredService<IConnectionMultiplexer>().GetDatabase().PingAsync();
+        return Results.Ok(new { status = "ready", mode = "graph-pilot", role, actors = fixtureIds.Length });
+    }
+    if (live)
+    {
+        if (role != "Receiver")
+        {
+            var resource = liveOptions.Resources[0];
+            var metadata = await store.GetAsync(tenant, resource.Id, ct);
+            if (metadata is null || metadata.Value.Epoch != liveOptions.WriterEpoch)
+                throw new AppError(503, "live_preparing", "Live onboarding or writer ownership is not ready.");
+        }
+        return Results.Ok(new { status = "ready", mode = "live", role, admission = liveOptions.AdmissionEnabled });
+    }
     await Fixtures.VerifyAsync(store, tenant, fixtureIds, ct);
     if (!local) await c.RequestServices.GetRequiredService<IConnectionMultiplexer>().GetDatabase().PingAsync();
     return Results.Ok(new { status = "ready", mode = "simulator", fixtureVersion = Fixtures.Version });
 });
+if (live && role != "Api")
+{
+    if (role == "Receiver") app.MapGraphCallbacks();
+    app.Run();
+    return;
+}
 app.MapGet("/auth/csrf", (HttpContext c, IAntiforgery antiforgery) =>
     Results.Ok(new { token = antiforgery.GetAndStoreTokens(c).RequestToken }));
-app.MapGet("/auth/config", () => Results.Ok(new { localAuth, simulated = true }));
+app.MapGet("/auth/config", () => Results.Ok(new { localAuth, simulated }));
 app.MapGet("/auth/signin", () => localAuth ? Results.Redirect("/") :
     Results.Challenge(new AuthenticationProperties { RedirectUri = "/" }, [OpenIdConnectDefaults.AuthenticationScheme]));
 app.MapPost("/auth/local", async (HttpContext c, IAntiforgery csrf) =>
@@ -316,13 +409,23 @@ api.MapGet("/session", (HttpContext c, IAntiforgery csrf) =>
     {
         actor.Id,
         actor.Name,
-        simulated = true,
+        simulated,
         localAuth,
-        scenarioAdmin = fixtureIds.Length > 0 && actor.Id == fixtureIds[0],
+        scenarioAdmin = simulated && fixtureIds.Length > 0 && actor.Id == fixtureIds[0],
+        basicValidation = pilot,
         csrf = csrf.GetAndStoreTokens(c).RequestToken
     });
 });
-api.MapGet("/conversations", (HttpContext c, Messaging service, CancellationToken ct) => service.ListAsync(Current(c), ct));
+api.MapGet("/conversations", async (string? cursor, HttpContext c, Messaging service, IStateStore state, ICommandTokens commands, CancellationToken ct) =>
+{
+    if (state is not ILiveStateStore liveState) return await service.ListAsync(Current(c), ct);
+    var actor = Current(c);
+    var decoded = cursor is null ? null : commands.Validate(actor, "catalog", "catalog-page", cursor);
+    var page = await liveState.CatalogAsync(actor, decoded, ct);
+    if (page.Cursor is not null)
+        c.Response.Headers["X-Next-Cursor"] = commands.Issue(actor, "catalog", "catalog-page", page.Cursor, TimeSpan.FromMinutes(5));
+    return page.Items;
+});
 api.MapGet("/conversations/{id}/messages", (string id, string? cursor, string? parent, long? minimumRevision,
     HttpContext c, Messaging service, CancellationToken ct) => service.ReadAsync(Current(c), id, cursor, parent, minimumRevision ?? 0, ct));
 api.MapGet("/conversations/{id}/changes", (string id, long? after, HttpContext c, Messaging service, CancellationToken ct) =>
@@ -336,6 +439,7 @@ api.MapGet("/conversations/{id}/operations/{operationId}", (string id, string op
     service.StatusAsync(Current(c), id, operationId, ct));
 api.MapPost("/realtime/negotiate", async (HttpContext c) =>
 {
+    if (pilot) return Results.Ok(new { transport = "poll", intervalSeconds = 30 });
     if (local) return Results.Ok(new { transport = "sse", url = "/api/realtime/events" });
     if (!config.GetValue<bool>("App:RealtimeAdmissionReady"))
         throw new AppError(503, "realtime_preparing", "Real-time admission is awaiting deployment readiness.");
@@ -365,6 +469,8 @@ if (local)
         finally { realtime.Unsubscribe(subscription.Id); }
     });
 }
+if (simulated)
+{
 api.MapPost("/simulator/next", (ScenarioRequest request, HttpContext c, Simulator simulator) =>
 {
     RequireAdmin(c);
@@ -413,6 +519,15 @@ app.Map("/callbacks/graph/{**path}", () => Results.Json(new
     code = "live_graph_disabled",
     message = "Teams licensing, consent and live callback readiness are not approved."
 }, statusCode: 503));
+}
+else if (pilot)
+{
+    app.Map("/callbacks/graph/{**path}", () => Results.Json(new
+    {
+        code = "pilot_uses_delegated_reads",
+        message = "Basic validation uses delegated Graph reads, not the production notification pipeline."
+    }, statusCode: 503));
+}
 if (!local)
 {
     app.MapMethods("/callbacks/pubsub", ["OPTIONS", "POST"], async (HttpContext c, IPrincipalRevocations revocations) =>
@@ -431,7 +546,8 @@ if (!local)
         using var payload = await JsonDocument.ParseAsync(c.Request.Body, cancellationToken: c.RequestAborted);
         var user = payload.RootElement.GetProperty("userId").GetString();
         var parts = user?.Split(':');
-        if (parts is not { Length: 2 } || parts[0] != tenant || !fixtureIds.Contains(parts[1]) ||
+        if (live && !liveOptions.AdmissionEnabled) throw new AppError(403, "live_admission_disabled", "Live admission is disabled.");
+        if (parts is not { Length: 2 } || parts[0] != tenant || !live && !fixtureIds.Contains(parts[1]) ||
             await revocations.IsBlockedAsync(tenant, parts[1], c.RequestAborted))
             throw new AppError(403, "access_denied", "This connection is not authorized.");
         return Results.Ok(new { userId = user, groups = Array.Empty<string>() });

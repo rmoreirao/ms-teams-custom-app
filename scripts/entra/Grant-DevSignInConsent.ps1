@@ -6,9 +6,11 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $inventory = Get-Content -Raw -LiteralPath $InventoryPath | ConvertFrom-Json
-if ($inventory.bootstrapComplete -ne $true -or $inventory.users.Count -ne 4 -or
-    @($inventory.users.id | Sort-Object -Unique).Count -ne 4) {
-    throw 'Complete the four-user identity bootstrap before preparing sign-in consent.'
+if ($inventory.bootstrapComplete -ne $true -or $inventory.users.Count -ne 3 -or
+    @($inventory.users.id | Sort-Object -Unique).Count -ne 3 -or
+    @($inventory.users | Where-Object { $_.persona -notin @('alex', 'sam', 'jordan') -or [string]::IsNullOrWhiteSpace($_.id) }).Count -or
+    @($inventory.users.persona | Sort-Object -Unique).Count -ne 3) {
+    throw 'Complete the three-user identity bootstrap before preparing sign-in consent.'
 }
 $account = az account show --subscription $SubscriptionId --output json | ConvertFrom-Json
 if ($LASTEXITCODE -or $account.tenantId -ne $inventory.tenantId) { throw 'Subscription and identity inventory tenant do not match.' }
@@ -65,10 +67,10 @@ try {
         $plan += @{ user = $user.id; existing = $current; complete = $complete }
     }
     if (-not $Apply) {
-        Write-Output 'Plan only: consent for four assigned users, scopes openid profile offline_access; no tenant-wide grant or message permissions. Use -Apply only after explicit approval.'
+        Write-Output 'Plan only: consent for three assigned users, scopes openid profile offline_access; no tenant-wide grant or message permissions. Use -Apply only after explicit approval.'
         return
     }
-    if (-not $PSCmdlet.ShouldProcess("$($inventory.tenantId) / $($application.appId)", 'Grant only openid profile offline_access for the four assigned fixture users')) { return }
+    if (-not $PSCmdlet.ShouldProcess("$($inventory.tenantId) / $($application.appId)", 'Grant only openid profile offline_access for the three assigned fixture users')) { return }
     foreach ($item in $plan) {
         if ($item.complete) { continue }
         if ($item.existing) {
@@ -84,7 +86,7 @@ try {
         }
     }
     $verified = @(Read-Grants)
-    if ($verified.Count -ne 4 -or @($verified | Where-Object { $_.consentType -ne 'Principal' -or $_.principalId -notin $inventory.users.id }).Count) {
+    if ($verified.Count -ne 3 -or @($verified | Where-Object { $_.consentType -ne 'Principal' -or $_.principalId -notin $inventory.users.id }).Count) {
         throw 'Unexpected consent records appeared during verification; review them explicitly.'
     }
     foreach ($user in $inventory.users) {
@@ -93,7 +95,7 @@ try {
             throw 'Sign-in consent verification failed; inspect the existing records before retrying.'
         }
     }
-    Write-Output 'Verified user-specific sign-in consent for four fixture users. No tenant-wide or Teams message permissions were granted.'
+    Write-Output 'Verified user-specific sign-in consent for three fixture users. No tenant-wide or Teams message permissions were granted.'
 } finally {
     $headers.Clear()
     $token = $null

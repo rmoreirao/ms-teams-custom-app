@@ -13,11 +13,14 @@ param eventsClientId string
 param pubsubName string
 param pubsubPrincipalId string
 param enableRealtimeAdmission bool = false
+param graphMode string = 'Simulator'
+param graphPilotConfig object = {}
 @secure()
 param insightsConnectionString string
-@minLength(4)
-@maxLength(4)
+@minLength(3)
+@maxLength(3)
 param fixtureActorIds array
+param retiredFixtureActorId string = ''
 param cosmosEndpoint string
 param redisEndpoint string
 param busEndpoint string
@@ -37,7 +40,6 @@ resource endpoint 'Microsoft.Cdn/profiles/afdEndpoints@2024-02-01' = {
 }
 var common = [
   { name: 'App__Store', value: 'Cosmos' }
-  { name: 'App__GraphMode', value: 'Simulator' }
   { name: 'App__Auth', value: 'Entra' }
   { name: 'App__TenantId', value: tenantId }
   { name: 'AzureAd__TenantId', value: tenantId }
@@ -74,6 +76,8 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
         resources: { cpu: json('0.5'), memory: '1Gi' }
         env: concat(common, actors, [
           { name: 'App__Role', value: 'Api' }
+          { name: 'App__GraphMode', value: graphMode }
+          { name: 'GraphPilot__Configuration', value: string(graphPilotConfig) }
           { name: 'AzureClientId', value: apiClientId }
           { name: 'AZURE_CLIENT_ID', value: apiClientId }
           { name: 'AzureAd__ClientCredentials__0__SourceType', value: 'SignedAssertionFromManagedIdentity' }
@@ -105,6 +109,7 @@ resource worker 'Microsoft.App/containerApps@2024-03-01' = {
         resources: { cpu: json('0.5'), memory: '1Gi' }
         env: concat(common, actors, [
           { name: 'App__Role', value: 'Worker' }
+          { name: 'App__GraphMode', value: 'Simulator' }
           { name: 'AzureClientId', value: workerMi.properties.clientId }
           { name: 'AZURE_CLIENT_ID', value: workerMi.properties.clientId }
         ])
@@ -133,6 +138,8 @@ resource seed 'Microsoft.App/jobs@2024-03-01' = {
         resources: { cpu: json('0.5'), memory: '1Gi' }
         env: concat(common, actors, [
           { name: 'App__Role', value: 'Seed' }
+          { name: 'App__GraphMode', value: 'Simulator' }
+          { name: 'App__RetiredFixtureActorId', value: retiredFixtureActorId }
           { name: 'AzureClientId', value: workerMi.properties.clientId }
           { name: 'AZURE_CLIENT_ID', value: workerMi.properties.clientId }
         ])

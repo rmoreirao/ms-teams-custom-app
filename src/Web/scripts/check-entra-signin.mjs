@@ -3,19 +3,29 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
-import { describeEndpoint, generateTotp, readPageState, readSettings, SignInCheckError, validatePasswordEntry, verifyAuthorization, waitForSession } from "./entra-signin.mjs";
+import { credentialKeys, describeEndpoint, generateTotp, readPageState, readSettings, SignInCheckError, validatePasswordEntry, verifyAuthorization, waitForSession } from "./entra-signin.mjs";
+import { applyPilotSettings, validateTeams } from "./teams-validation.mjs";
 
 let stage = "load local configuration";
 
 async function main() {
+  if (process.argv.length > 4 || process.argv[3] && process.argv[3] !== "--teams")
+    throw new SignInCheckError("Specify one fixture account and optional --teams validation.");
+  const account = process.argv[2] ?? "alex";
+  const teams = process.argv[3] === "--teams";
+  const keys = credentialKeys(account);
   const envPath = resolve(import.meta.dirname, "..", "..", "..", ".env");
-  validatePasswordEntry(readFileSync(envPath, "utf8"));
+  validatePasswordEntry(readFileSync(envPath, "utf8"), keys.password);
   loadEnvFile(envPath);
-  const settings = readSettings(process.env);
+  const settingsPath = process.env.PILOT_VALIDATION_SETTINGS;
+  const pilotMetadata = settingsPath ? JSON.parse(readFileSync(settingsPath, "utf8")) : null;
+  if (pilotMetadata) applyPilotSettings(pilotMetadata, account);
+  if (teams && !settingsPath) throw new SignInCheckError("PILOT_VALIDATION_SETTINGS must name the private approved resource inventory.");
+  const settings = readSettings(process.env, account);
   stage = "launch an isolated browser";
   const browser = await chromium.launch({
     headless: true,
-    ...(process.platform === "win32" ? { channel: "msedge" } : {}),
+    channel: settings.browserChannel,
   });
   /** @type {import("@playwright/test").Page | undefined} */
   let currentPage;
@@ -56,7 +66,8 @@ async function main() {
     const authorization = verifyAuthorization(challenge.headers().location, settings);
     stage = "open the approved Entra authorization page";
     await page.goto(authorization, { waitUntil: "domcontentloaded" });
-    const used = { accountPicker: false, username: false, password: false, alternate: false, otpOption: false, otp: false, staySignedIn: false };
+    const used = { accountPicker: false, username: false, password: false, alternate: false, otpOption: false, otp: false,
+      staySignedIn: false, allowRegistrationDeferral: settings.allowRegistrationDeferral, registrationDeferred: false };
     let previousState = "authorization";
     authentication: for (let step = 0; step < 10; step++) {
       stage = `wait for the next state after ${previousState}`;
@@ -70,7 +81,13 @@ async function main() {
       if (state === "unexpected-origin") throw new SignInCheckError("Stopped before entering credentials on an unexpected origin.");
       if (state === "unexpected-restart") throw new SignInCheckError("Entra restarted the sign-in flow; no automatic credential retry was attempted.");
       if (state === "consent") throw new SignInCheckError("Entra requested consent; no permissions were granted.");
-      if (state === "setup") throw new SignInCheckError("Entra requires user-performed password or security-info setup.");
+      if (state === "setup") {
+        await delay(1500);
+        const candidate = await context.request.get(`${settings.origin}/api/session`, { maxRedirects: 0 });
+        if (candidate.status() === 200) break authentication;
+        if (!page.isClosed() && await page.evaluate(readPageState, { origin: settings.origin, used }) !== "setup") continue;
+        throw new SignInCheckError("Entra requires user-performed password or security-info setup.");
+      }
       if (state?.startsWith("rejected-")) {
         const providerCode = await page.evaluate(() => /\bAADSTS\d+\b/.exec(document.body?.innerText ?? "")?.[0]);
         throw new SignInCheckError(`Entra reported ${state}${providerCode ? ` (${providerCode})` : ""}; no credential retry was attempted.`);
@@ -121,6 +138,11 @@ async function main() {
           used.staySignedIn = true;
           await page.getByRole("button", { name: "No", exact: true }).click();
           break authentication;
+        case "optional-registration":
+          used.registrationDeferred = true;
+          await page.getByRole("link", { name: "Not now", exact: true })
+            .or(page.getByRole("button", { name: "Not now", exact: true })).first().click();
+          break;
         default:
           throw new SignInCheckError("An unsupported authentication state was reached.");
       }
@@ -130,16 +152,24 @@ async function main() {
       throw new SignInCheckError("A fresh password-plus-TOTP sign-in was not demonstrated.");
     }
     const session = await waitForSession(context.request, settings);
+    const teamsProof = teams && settingsPath && pilotMetadata ?
+      await validateTeams(context, page, settings, pilotMetadata, settingsPath, value => { stage = value; }) : null;
     console.log(JSON.stringify({
+      account: settings.account,
+      browser: settings.browserChannel,
       authenticated: true,
       expectedFixtureMatched: true,
       freshTotpChallengeCompleted: true,
+      optionalRegistrationDeferred: used.registrationDeferred,
       localAuth: false,
       simulated: session.simulated,
-      teamsOperationsPerformed: false,
+      teamsOperationsPerformed: teams,
+      ...(teamsProof ? { teamsProof } : {}),
     }, null, 2));
   } catch (error) {
     console.error(JSON.stringify({
+      account: settings.account,
+      browser: settings.browserChannel,
       phase: stage,
       endpoint: describeEndpoint(currentPage?.url() ?? "", settings.origin),
       pageClosed: currentPage?.isClosed() ?? true,

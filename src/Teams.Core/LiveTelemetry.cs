@@ -1,0 +1,29 @@
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
+
+namespace Teams.Core;
+
+public static class LiveTelemetry
+{
+    public const string MeterName = "TeamsReference.Live";
+    private static readonly Meter Meter = new(MeterName, "1.0.0");
+    public static readonly Counter<long> GraphAttempts = Meter.CreateCounter<long>("teamsref_graph_attempts");
+    public static readonly Counter<long> GraphDeferred = Meter.CreateCounter<long>("teamsref_graph_deferred");
+    public static readonly Counter<long> AcceptedNotifications = Meter.CreateCounter<long>("teamsref_notification_accepted");
+    public static readonly Counter<long> FilteredNotifications = Meter.CreateCounter<long>("teamsref_notification_filtered");
+    public static readonly Counter<long> ProjectionChanges = Meter.CreateCounter<long>("teamsref_projection_changes");
+    public static readonly Counter<long> DeliveryPages = Meter.CreateCounter<long>("teamsref_delivery_pages");
+    public static readonly Counter<long> DeliveryRecipients = Meter.CreateCounter<long>("teamsref_delivery_recipients");
+    public static readonly Counter<long> WriteOutcomes = Meter.CreateCounter<long>("teamsref_write_outcomes");
+    public static readonly Counter<long> Failures = Meter.CreateCounter<long>("teamsref_worker_failures");
+    private static readonly Histogram<double> Duration = Meter.CreateHistogram<double>("teamsref_dependency_duration_ms", "ms");
+    public static void Failure(string component) =>
+        Failures.Add(1, new KeyValuePair<string, object?>("component", component));
+    public static IDisposable Measure(string operation) => new Measurement(operation);
+    private sealed class Measurement(string operation) : IDisposable
+    {
+        private readonly long started = Stopwatch.GetTimestamp();
+        public void Dispose() => Duration.Record(Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+            new KeyValuePair<string, object?>("operation", operation));
+    }
+}

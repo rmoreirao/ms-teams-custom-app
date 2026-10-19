@@ -2,10 +2,13 @@
 param(
     [Parameter(Mandatory)][uri]$PublicOrigin,
     [Parameter(Mandatory)][guid]$TenantId,
-    [Parameter(Mandatory)][guid]$WebClientId
+    [Parameter(Mandatory)][guid]$WebClientId,
+    [ValidateSet('Simulator', 'GraphPilot', 'Live')][string]$ExpectedMode = 'Simulator',
+    [switch]$ExpectAdmission
 )
 $ErrorActionPreference = 'Stop'
-if ($PublicOrigin.Scheme -ne 'https' -or $PublicOrigin.AbsolutePath -ne '/' -or $PublicOrigin.Query -or $PublicOrigin.Fragment) {
+if ($PublicOrigin.Scheme -ne 'https' -or $PublicOrigin.AbsolutePath -ne '/' -or $PublicOrigin.Query -or
+    $PublicOrigin.Fragment -or $PublicOrigin.UserInfo -or $PublicOrigin.Port -ne 443) {
     throw 'Use the deployed HTTPS origin without a path, query or fragment.'
 }
 $handler = [Net.Http.HttpClientHandler]::new()
@@ -13,6 +16,7 @@ $handler.AllowAutoRedirect = $false
 $client = [Net.Http.HttpClient]::new($handler)
 $client.Timeout = [TimeSpan]::FromSeconds(20)
 $client.BaseAddress = $PublicOrigin
+Import-Module (Join-Path $PSScriptRoot 'DeploymentContract.psm1') -Force
 try {
     $homepage = $client.GetAsync('/').GetAwaiter().GetResult()
     if ([int]$homepage.StatusCode -ne 200) { throw "Application shell returned HTTP $([int]$homepage.StatusCode)." }
@@ -26,17 +30,12 @@ try {
     $ready = $client.GetAsync('/health/ready').GetAwaiter().GetResult()
     if ([int]$ready.StatusCode -ne 200) { throw "Dependency readiness returned HTTP $([int]$ready.StatusCode)." }
     $health = $ready.Content.ReadAsStringAsync().GetAwaiter().GetResult() | ConvertFrom-Json
-    if ($health.status -ne 'ready' -or $health.mode -ne 'simulator' -or $health.fixtureVersion -ne 'split-view-v1') {
-        throw 'Dependency readiness did not confirm the expected simulator fixture environment.'
-    }
     $anonymous = $client.GetAsync('/api/session').GetAwaiter().GetResult()
-    if ([int]$anonymous.StatusCode -ne 401) { throw 'Anonymous API access did not fail closed with HTTP 401.' }
     $capability = $client.GetAsync('/auth/config').GetAwaiter().GetResult()
     if ([int]$capability.StatusCode -ne 200) { throw 'Public sign-in capability configuration is unavailable.' }
     $authConfig = $capability.Content.ReadAsStringAsync().GetAwaiter().GetResult() | ConvertFrom-Json
-    if ($authConfig.localAuth -ne $false -or $authConfig.simulated -ne $true) {
-        throw 'Deployed sign-in configuration does not match the protected simulator environment.'
-    }
+    Test-AppDeploymentContract -ExpectedMode $ExpectedMode -Health $health -AuthConfig $authConfig `
+        -AnonymousStatus ([int]$anonymous.StatusCode) -ExpectAdmission $ExpectAdmission.IsPresent
     $local = $client.PostAsync('/auth/local', [Net.Http.StringContent]::new('{}')).GetAwaiter().GetResult()
     if ([int]$local.StatusCode -ne 404) { throw 'Local development sign-in is reachable on the deployed application.' }
 
@@ -55,13 +54,15 @@ try {
     [pscustomobject]@{
         origin = $PublicOrigin.AbsoluteUri.TrimEnd('/')
         status = 'passed'
-        mode = 'simulator'
+        mode = if ($ExpectedMode -eq 'GraphPilot') { 'graph-pilot' } else { $ExpectedMode.ToLowerInvariant() }
         fixtureVersion = $health.fixtureVersion
         frontend = 'loaded'
         anonymousApi = 'denied'
         localSignIn = 'disabled'
         entraRedirect = 'validated'
         authenticatedJourneys = 'not_tested'
+        graphIntegration = 'not_tested'
+        productionAcceptance = 'not_certified'
     }
 } finally {
     $client.Dispose()

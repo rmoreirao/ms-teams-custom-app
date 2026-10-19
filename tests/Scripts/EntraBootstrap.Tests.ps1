@@ -101,9 +101,24 @@ try {
             -ParametersPath $workloadParameters -Image $image
         throw 'Missing fixture identities were incorrectly accepted by application deployment.'
     } catch {
-        if ($_.Exception.Message -ne 'Four distinct approved Entra fixture actor IDs are required before deploying application workloads.') { throw }
+        if ($_.Exception.Message -ne 'Three distinct approved Entra fixture actor IDs are required before deploying application workloads.') { throw }
     }
     if ($testState.accountCalls.Count -ne $calls) { throw 'Invalid application identities triggered an Azure call.' }
+    foreach ($invalidActors in @(
+        ,@('alex', 'sam', 'sam')
+        ,@('alex', 'sam', 'jordan', 'unexpected')
+    )) {
+        @{ parameters = @{ fixtureActorIds = @{ value = $invalidActors } } } |
+            ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $workloadParameters
+        try {
+            & (Join-Path $root 'scripts\Deploy-Dev.ps1') -SubscriptionId $subscription -ResourceGroup 'rg-unit-test' `
+                -ParametersPath $workloadParameters -Image $image
+            throw 'An invalid three-user fixture set was accepted.'
+        } catch {
+            if ($_.Exception.Message -ne 'Three distinct approved Entra fixture actor IDs are required before deploying application workloads.') { throw }
+        }
+    }
+    if ($testState.accountCalls.Count -ne $calls) { throw 'Invalid fixture cardinality reached Azure.' }
 
     $before = $testState.graphCalls.Count
     try {
@@ -116,7 +131,7 @@ try {
     if ($testState.graphCalls.Count -ne $before -or $testState.accountCalls.Count -ne $calls) {
         throw 'Cross-tenant inventory validation occurred after an external call.'
     }
-    Write-Output 'Passed 6 isolated deployment checks: explicit subscription, partial checkpoint, Sweden region, network prerequisite, application identity gate, and early tenant mismatch denial.'
+    Write-Output 'Passed isolated deployment checks: explicit subscription, partial checkpoint, Sweden region, network prerequisite, three-user identity gates (missing/duplicate/extra), and early tenant mismatch denial.'
 } finally {
     Remove-Item -LiteralPath (Join-Path $temporary 'identity.json') -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath (Join-Path $temporary 'workload.parameters.json') -ErrorAction SilentlyContinue

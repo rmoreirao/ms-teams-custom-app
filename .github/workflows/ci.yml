@@ -36,18 +36,23 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Web App scenarios
         working-directory: src/Web
-        run: npm run test:e2e
+        run: npm run check:entra && npm run test:entra:unit && npm run test:e2e
       - name: Compile Bicep
         run: |
           az bicep install --version v0.48.1
           az bicep build --file infra/main.bicep --outfile "$RUNNER_TEMP/main.json"
           az bicep build --file infra/subscription.bicep --outfile "$RUNNER_TEMP/subscription.json"
+          az bicep build --file infra/live.bicep --outfile "$RUNNER_TEMP/live.json"
       - name: Verify management scripts
         shell: pwsh
         run: |
           ./scripts/Check-Scripts.ps1
           ./tests/Scripts/EntraBootstrap.Tests.ps1
           ./tests/Scripts/SignInConsent.Tests.ps1
+          ./tests/Scripts/IdentityProfile.Tests.ps1
+          ./tests/Scripts/LiveDeployment.Tests.ps1
+          ./tests/Scripts/DeploymentContract.Tests.ps1
+          ./tests/Scripts/GraphPilotDeployment.Tests.ps1
       - name: Correctness artifacts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

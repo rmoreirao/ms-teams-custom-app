@@ -2,11 +2,14 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementation in progress; production admission remains gated |
+| Status | Repository implementation verified; live activation and production acceptance remain gated |
+| Last implementation update | 2026-10-19; see execution status and remaining release work below |
+| Current hosted validation | User selected basic functionality on existing infrastructure before the stronger rollout. Explicit GraphPilot passed all three users' real chat/post/reply journeys; see [basic validation evidence](graph-pilot.md). |
 | Direction selected | 2026-10-16: complete the scalable, event-driven projection architecture, not a direct-Graph-read MVP |
 | Existing baseline | .NET 10 API/BFF, React frontend, simulator, and single-region Azure dev deployment |
-| Architecture | [Technical design](technical-design.md), [detailed architecture](detailed-architecture.md), ADRs 0001-0008 |
+| Architecture | [Technical design](technical-design.md), [detailed architecture](detailed-architecture.md), ADRs 0001-0009 |
 | Rebuild contract | [Entra configuration and rebuild runbook](entra-configuration.md) |
+| Implemented runtime | [Configuration, rollout, policy contract and remaining limits](live-runtime.md) |
 
 ## 1. Outcome and boundaries
 
@@ -29,9 +32,11 @@ Selecting this engineering direction does not approve copying existing business 
 
 A confirmed send uses the same projection engine immediately, without waiting for its notification. Its later notification must merge idempotently. Graph ETags are opaque; application revisions are not Graph sequence numbers. Ambiguous version evidence triggers bounded repair rather than guessed ordering.
 
-## 3. Current implementation gaps
+## 3. Simulator baseline and implementation scope
 
-| Surface | Current evidence | Required change |
+This table records the baseline used to scope the work, not a claim that these gaps still exist unchanged. The execution-status table below is the current source of implementation status.
+
+| Surface | Simulator baseline | Required change |
 | --- | --- | --- |
 | Runtime selection | `src\Teams.Host\Program.cs` rejects non-simulator mode, selects the simulator, and returns fixed simulator metadata | Explicit, validated live configuration; no fallback to simulator; live readiness/admission independent of fixture readiness |
 | Graph transport | `GraphTransport.cs` implements delegated POSTs, but not live reads, subscription control, or uncertainty resolution | Endpoint-specific clients/token contexts, structured Graph errors, claims/consent challenges, shared budgets, and exact-evidence resolution where available |
@@ -50,17 +55,19 @@ Dependencies identify implementation prerequisites, not permission to execute ch
 
 ### Execution status
 
+**Basic validation delivered:** after the user deferred additional infrastructure, the existing API was updated to delegated GraphPilot mode. Alex, Sam and Jordan each completed fresh password/TOTP and actual Teams chat/channel/post/reply creation plus read-back. This validates the agreed basic functionality, not production `Live` acceptance. ADR 0010 records the scope change; the stronger work-package gates below remain intentionally separate.
+
 | Package | Status | Evidence / remaining gate |
 | --- | --- | --- |
-| W0 | Blocked for live deployment; engineering assumptions recorded | Retain the existing global-cloud, single-tenant BFF and event-driven projection. No production-data approval, authoritative entitlement integration, approved live resources/licences, sustainable write mix, cost envelope, or regional recovery acceptance has been supplied. Implement locally without granting access or provisioning. |
-| W1 | In progress | Implementing versioned desired state and offline-verifiable Entra reconciliation; no directory changes executed |
-| W2 | Pending | Production persistence implementation |
-| W3 | Pending | Live Graph/authentication implementation |
-| W4 | Pending | Rich-notification implementation |
-| W5 | Pending | Outbox/read/catch-up implementation |
-| W6 | Pending | Control/entitlement/lifecycle implementation and external authority contract |
-| W7 | Pending | Scalable role definitions; actual sizing remains an external gate |
-| W8 | Blocked for production release | G0-G7 require actual environment, Graph, capacity, and recovery evidence; local implementation cannot certify them |
+| W0 | Deployment gate; engineering decisions recorded | Retain the global-cloud, single-tenant BFF and event-driven projection. Deployment-specific G0 approval, authoritative policy endpoint, resource/licence evidence, sustainable write mix, cost envelope and recovery acceptance must be supplied before activation. Code work did not grant access or provision resources. |
+| W1 | Implemented locally; tenant evidence pending | Schema/example and Plan/Apply/Verify/Export, user/group admission, exact consent/federation checks, explicit opt-in trust rotation with preflight-race refusal, partial resume, rediscovery and no-write WhatIf tests. Licence purchases/assignment and optional RSC installation remain approval/endpoint-specific steps; no real grants applied. |
+| W2 | Implemented and verified locally; Cosmos acceptance pending | Separate projection/authority/control and lease documents, bounded catalog/message paging, immutable logical-to-Graph mapping, Strong-consistency profile, source leases, tombstones, change journal, atomic outbox and dispatch-epoch claims. Real Cosmos query/transaction/index/hot-key behavior remains an environment gate. |
+| W3 | Implemented and verified locally; real Graph acceptance pending | Delegated writes and background-only clients, opaque paging guards, whole-operation deadlines and payload bounds, shared permits/cooldowns, explicit interaction/unknown outcomes. Pre-token cancellation is definite non-dispatch; post-dispatch uncertainty never triggers automatic replay. Real consent/Conditional Access and budgets remain gates. |
+| W4 | Implemented and verified locally; service acceptance pending | Signed publisher/tenant/audience validation, scope-filtered encrypted durable intake, authenticated decryption, lock-managed consumer, stale-lifecycle refusal, schema checks and repair-before-DLQ cleanup. Real notification versions, lock loss, key rotation and webhook deadlines remain environment checks. |
+| W5 | Implemented locally; service/capacity evidence pending | Cosmos change-feed outbox dispatch with lease container, duplicate-safe Service Bus delivery queue, conditional page claims/checkpoints and atomic completion/revision watermark. Includes replay/continuation-loss/claim-expiry/coalescing tests; no tenant outbox polling on the normal path. Real broker/change-feed and high-fan-out capacity still require evidence. |
+| W6 | Implemented policy-feed integration and lifecycle; deployment binding pending | Leased renewal/reauthorization, exact-correlated uncertain subscription recovery, bounded repair including replies, generation-fenced coverage, bounded-concurrent policy refresh, key-version references and fail-closed authenticated policy adapter. ADR 0009 records the unattended choice not to invent Graph-only history/DLP guarantees. Deployment must supply the approved service and prove rotation/restore behavior. |
+| W7 | Implemented and verified locally; operational acceptance pending | Five scoped identities/workloads, change-feed leases, queue scalers, private edge/WAF, gated deployment, CI, body-free OpenTelemetry counters/timings, opt-in queue/worker alerts and operations workbook. Actual sizing, metric ingestion/routing and SLO/capacity evidence remain deployment gates. |
+| W8 | Release/readiness/recovery procedures implemented; live execution gated | Read-only simulator/live deployment contract checks and staged/fenced recovery procedures are documented. Actual G0-G7, tenant/Azure integration, capacity/soak and regional recovery acceptance have not been executed or certified. |
 
 | ID | Work package | Depends on | Deliverable and exit condition |
 | --- | --- | --- | --- |
@@ -75,6 +82,16 @@ Dependencies identify implementation prerequisites, not permission to execute ch
 | W8 | Complete recovery and production release | W0-W7 | Pass the applicable G0-G7 gates with separate Graph and Azure evidence, rebuild/restore evidence, writer fencing, regional-state guarantees, rollback/stop procedures, and operational ownership. |
 
 The first end-to-end milestone is one approved chat and one channel traversing W1-W5 using the final paths. Include the minimum subscription and authorization lifecycle needed to keep that slice safe. This is an implementation milestone, not a disposable direct-read architecture or permission for broad ingestion.
+
+### Local verification evidence
+
+On 2026-10-19, the current shared checkout passed 89 Release backend tests, the frontend build/type-check and six component tests, and all ten isolated local browser scenarios. The browser run used a task-owned free port because 5367 was occupied; its server shut down afterward. A concurrently added fixture test's locator was corrected to the existing "Opening team Group chat" accessible name without changing fixture access semantics.
+
+The management script/module parser and offline bootstrap, sign-in consent, identity reconciliation, live-deployment and deployment-contract suites passed. All three deployment templates, including nested monitoring definitions, compiled with the available Azure CLI Bicep 0.46.1; CI remains pinned to 0.48.1. The modified CI workflow passed actionlint 1.7.7 (external shell/Python analyzers disabled). These are current-checkout results, not proof of real tenant, broker/Key Vault/Cosmos, capacity, recovery or remote-workflow acceptance.
+
+Current code is staged for an independently approved live rollout; this task did not change the hosted deployment. Configuration and production-acceptance gates are listed explicitly in the [live runtime guide](live-runtime.md#correctness-retention-and-current-limits). Local code completion does not mark G0-G7, authority binding or live rollout as passed.
+
+The repository implementation selects the explicit policy-feed boundary in ADR 0009. It does not silently substitute an invented Graph-membership-only authority when no organizational policy service has been supplied. This resolves the code-side integration choice while preserving the deployment's obligation to provide and approve that authority before live activation.
 
 ## 5. Design requirements within the work packages
 
@@ -125,7 +142,7 @@ W1 and W7 must make a fresh environment reproducible without a transcript or cop
 | Deployment outputs and release mapping | Export every role's identity IDs and actual public/callback origins; generate approved runtime settings and workflow variables without reusing stale IDs |
 | Rebuild/restore evidence | Cover same-tenant Azure rebuild, lost inventory, fresh tenant, principal/key rotation, fresh sign-in, notification renewal, and retained operation/authority state |
 
-These are planned contracts, not existing scripts or a claim that Bicep manages Entra consent. The [Entra runbook](entra-configuration.md) identifies the available commands and their limits.
+The desired-state schema/reconciler, user/group assignments, explicitly approved named-trust rotation, directory checkpoints, gated workload template, change-feed/delivery state, operational definitions and deployment-output export are implemented. Licence purchases/assignment, unlisted access removal, actual acceptance evidence and regional restore execution remain separately approved operations. Bicep does not manage Entra consent. The [Entra runbook](entra-configuration.md) identifies exact commands and limits.
 
 ## 7. Acceptance and rollout
 
@@ -152,4 +169,4 @@ Do not direct application stress traffic at Graph. Roll out only within approved
 | Technical/detailed architecture and relevant ADRs | Update actual partition, consistency, subscription, credential, scaling, and recovery choices; record material departures with an ADR |
 | Testing and validation evidence | Add production-path scenarios and measured results separately from existing local/simulator/public-smoke evidence |
 
-No live code, provisioning, consent, licence assignment, commit, or push is performed by publishing this plan.
+The repository-side live foundation has been implemented. No Azure provisioning, tenant consent, licence assignment, business-content access, commit, or push was performed as part of this implementation.

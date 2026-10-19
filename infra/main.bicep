@@ -9,10 +9,16 @@ param cosmosLocation string = location
 param redisSku string = 'Balanced_B0'
 param webClientId string
 param eventsClientId string
+@maxLength(3)
 param fixtureActorIds array = []
+@description('Explicit one-time simulator membership migration. Preserve messages; clear after the seed job succeeds.')
+param retiredFixtureActorId string = ''
 param deployWorkloads bool = false
 param provisionRbac bool = true
 param enableRealtimeAdmission bool = false
+@allowed(['Simulator', 'GraphPilot'])
+param graphMode string = 'Simulator'
+param graphPilotConfig object = {}
 @description('Immutable registry image reference, including @sha256: digest. Required for workload deployment.')
 param image string = ''
 param tags object = {
@@ -298,8 +304,11 @@ module workloads './modules/workloads.bicep' = if (deployWorkloads) {
     pubsubName: pubsub.name
     pubsubPrincipalId: pubsub.identity.principalId
     enableRealtimeAdmission: enableRealtimeAdmission
+    graphMode: graphMode
+    graphPilotConfig: graphPilotConfig
     insightsConnectionString: insights.properties.ConnectionString
     fixtureActorIds: fixtureActorIds
+    retiredFixtureActorId: retiredFixtureActorId
     cosmosEndpoint: cosmos.properties.documentEndpoint
     redisEndpoint: '${cache.properties.hostName}:10000'
     busEndpoint: '${bus.name}.servicebus.windows.net'

@@ -2,8 +2,8 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Current simulator runbook plus explicitly planned live-integration configuration |
-| Reviewed | 2026-10-16 against repository scripts, Bicep, and Microsoft documentation |
+| Status | Simulator rebuild runbook, deployed three-user delegated GraphPilot configuration, and locally verified production identity reconciliation; no production app-only message grants applied |
+| Reviewed | 2026-10-19 against repository scripts, Bicep, and local correctness evidence |
 | Implementation plan | [Live Teams integration plan](live-integration-plan.md), particularly W0/W1/W7/W8 |
 | Current deployment | See the [dev guide](dev-guide.md) for the selected tenant/subscription and Sweden Central deployment; do not treat historical IDs as reusable defaults |
 
@@ -13,12 +13,14 @@ An identity inventory is not a rebuild specification. Reuse logical names, owner
 
 | Layer | Current implementation | Planned final contract |
 | --- | --- | --- |
-| Desired state | Script parameters, hard-coded dev identity purposes/federation, Bicep, and workflow variables | A versioned, schema-validated nonsecret environment/identity profile with explicit permission and assignment policy |
-| Resolved state | Private `identity.json` schema version 1 contains tenant, prefix, application IDs, fixture users, and `bootstrapComplete` | Extend/migrate the inventory to include bindings, grants, deployment outputs, subscription/key metadata, checkpoints, and the desired profile version/hash |
+| Desired state | `infra\identity\profile.schema.json` and `profile.example.json`; `Sync-Identity.ps1` validates exact tenant, purposes, grants, users/groups, callback principals, and federation | Complete the deployment-specific endpoint/installation matrix and approval evidence; RSC installation is not automated |
+| Resolved state | Legacy `identity.json` schema version 1 is preserved; the reconciler writes a separate schema-v2 inventory with IDs, grants, federation, profile hash and reconciliation checkpoints | Live subscription/key/repair state resides in Cosmos; back up and recover it separately from directory inventory |
 | Credentials | Initial fixture passwords are DPAPI-protected XML outside the repository; the web client uses managed-identity federation | Protected references and explicit rotation/recovery procedures; separate client-authentication and notification-decryption keys |
 | Evidence | Current deployment/validation notes and manual CLI inspection | Read-only live drift/verification output and readiness evidence, stored privately without tokens or message bodies |
 
-There is no final-profile parser, live permission reconciler, or one-command production rebuild today. Do not pass the planned fields below to existing scripts and assume they take effect.
+The reconciler has local safety coverage and was applied/verified against Entra for the approved **basic GraphPilot** profile. That profile sets `basicGraphValidation=true`, exactly three assigned users, and user-specific `Principal` grants for `openid profile offline_access Chat.Read ChatMessage.Send Channel.ReadBasic.All ChannelMessage.Read.All ChannelMessage.Send`. The five additional delegated scopes are not production background permissions. See the [basic-mode rebuild/run/evidence guide](graph-pilot.md), including temporary resource-creation permissions and their verified cleanup.
+
+There is still no one-command production rebuild: platform preparation, policy authority, licences, consent approvals, trust rotation/removal, and production integration/recovery evidence remain explicit steps. The simulator bootstrap scripts do not consume the new profile. Do not run the sign-in-only consent helper against the broader approved pilot grants or remove those grants to make it pass.
 
 ## 2. Current registrations and trust
 
@@ -57,11 +59,16 @@ The managed-identity federation method uses a user-assigned identity in the same
 
 | Command | Preview/read-only behavior | Mutation and limits |
 | --- | --- | --- |
-| `scripts\entra\Bootstrap-Dev.ps1` | Without `-Apply`, prints provisioning intent; it is not a live directory diff | `-Apply` plus `ShouldProcess` creates/reuses tagged apps/SPs and GitHub trust. `-CreateTestUsers` creates/reuses four tagged unlicensed users and their web assignments. It grants no message permissions or licences. |
-| `scripts\entra\Grant-DevSignInConsent.ps1` | Without `-Apply`, reads and validates the selected tenant, application, assignments, and existing grants | `-Apply` plus `ShouldProcess` grants only `openid profile offline_access` to the four assigned users using `Principal` grants. Refuses broader/unexpected grants, including Teams scopes. |
+| `scripts\entra\Bootstrap-Dev.ps1` | Without `-Apply`, prints provisioning intent; it is not a live directory diff | `-Apply` plus `ShouldProcess` creates/reuses tagged apps/SPs and GitHub trust. `-CreateTestUsers` creates/reuses three tagged unlicensed users (Alex, Sam, Jordan) and their web assignments. It grants no message permissions or licences. |
+| `scripts\entra\Grant-DevSignInConsent.ps1` | Without `-Apply`, reads and validates the selected tenant, application, assignments, and existing grants | `-Apply` plus `ShouldProcess` grants only `openid profile offline_access` to the three assigned users using `Principal` grants. Refuses broader/unexpected grants, including Teams scopes. |
 | `scripts\entra\Complete-Dev.ps1` | Use `-WhatIf` to preview intent; this does not inspect live drift | Has **no `-Apply` switch**. Without `-WhatIf`, confirmation permits redirect/federation/role changes. Refuses an existing web FIC with a different subject; it does not rotate trust or remove old PubSub assignments. |
 | `scripts\New-DevPlatform.ps1` | Without `-Apply`, performs Azure subscription what-if and prerequisite checks | `-Apply` plus `ShouldProcess` provisions the dev platform/RBAC, not Graph consent or workload images |
-| `scripts\Deploy-Dev.ps1` | Without `-Apply`, validates fixture inputs and runs resource-group what-if | `-Apply` deploys **synthetic dev** workloads and runs the fixture job. `-EnableRealtimeAdmission` is a later rollout step, not live Graph enablement. |
+| `scripts\Deploy-Dev.ps1` | Without `-Apply`, validates workload inputs and runs resource-group what-if | Defaults to simulator workloads/fixture seed. Explicit GraphPilot mode configures the API and skips seeding, but still uses full-platform Bicep; prefer the API-only helper for routine pilot releases. `-EnableRealtimeAdmission` is a later simulator rollout step, not production Graph enablement. |
+| `scripts\entra\New-GraphPilotResources.ps1` | Without `-Apply`, validates private inventory and reports the dedicated resource plan | Approved apply creates only the tagged test resources, using checkpointed creation and a temporary setup application removed afterward; never substitutes business conversations. |
+| `scripts\entra\Prepare-GraphPilot.ps1` | Reads actual deployment/federation and scope metadata; writes prepared private files | Creates the three-user profile, workload parameters and validation metadata outside the repository; changes no permissions. |
+| `scripts\Deploy-GraphPilot.ps1` | Default plan and `-WhatIf` do not mutate or write patch snapshots | Approved apply updates only the existing API template, preserving platform/sizing and requiring the requested revision plus public readiness; never seeds fixtures. |
+| `scripts\entra\Sync-Identity.ps1` | Defaults to `-Mode Plan`: live read-only diff. `-Mode Verify` fails on drift. `-Mode Export` writes a private schema-v2 inventory, subject to `ShouldProcess`. | `-Mode Apply` requires confirmation; user/group admission and consent changes additionally require `-ApprovePermissionChanges`. Changed named trust requires `-ApproveTrustRotation` and a pre-mutation live-state recheck. Broader/unlisted access is refused, not removed. |
+| `scripts\Deploy-Live.ps1` | Defaults to actual Azure what-if with workload, RBAC, synchronization and admission switches all off; validates private platform and Strong Cosmos consistency | `-Apply` requires confirmation. Separate opt-ins select workload deployment, RBAC, synchronization and admission. Exports actual role IDs privately; never seeds fixtures, grants Entra consent, or changes licences. |
 
 Use an authorized operator and Graph client/token for each directory action. Azure Contributor does not grant Entra administration, and an administrator role alone does not add missing permissions to the calling client. Do not grant directory administration or consent-management roles to ordinary deployment/runtime identities.
 
@@ -107,13 +114,13 @@ Existing tagged users are reused, not given new passwords. Missing DPAPI credent
 .\scripts\entra\Grant-DevSignInConsent.ps1 -SubscriptionId $subscription -InventoryPath $inventory
 ```
 
-Review its read-only result; use `-Apply` only after approving the exact four-user sign-in grants. No Teams scopes are included. If the application already has broader live grants, this simulator-specific helper intentionally refuses; do not remove those grants to make it pass.
+Review its read-only result; use `-Apply` only after approving the exact three-user sign-in grants. No Teams scopes are included. If the application already has broader live grants, this simulator-specific helper intentionally refuses; do not remove those grants to make it pass.
 
 ### Step 4: provision platform and initial workloads
 
 Follow [platform and first workload deployment](dev-guide.md#platform-and-first-workload-deployment), including provider/feature registration, actual what-if, quota/cost approval, image digest, private parameters, and an admission-disabled first deployment.
 
-Derive parameters from the selected inventory: `webClientId`, `eventsClientId`, and four fixture IDs in **alex, sam, jordan, taylor** order. Keep `location`, `cosmosLocation`, and `redisSku` explicit; current dev defaults are Sweden Central and Balanced B0. The environment-variable Bicep template uses separate `TEAMS_ACTOR_*` values; the GitHub workflow instead uses `TEAMS_FIXTURE_ACTOR_IDS` JSON.
+Derive parameters from the selected inventory: `webClientId`, `eventsClientId`, and three fixture IDs in **alex, sam, jordan** order. Keep `location`, `cosmosLocation`, and `redisSku` explicit; current dev defaults are Sweden Central and Balanced B0. The environment-variable Bicep template uses separate `TEAMS_ACTOR_*` values; the GitHub workflow instead uses `TEAMS_FIXTURE_ACTOR_IDS` JSON. Existing simulator data requires the explicit retired-actor migration in the [test guide](testing.md#fixture-manifest-and-personas) before three-user rollout; seeding never silently resets it.
 
 Read the actual resource-group release outputs:
 
@@ -142,7 +149,7 @@ Approve the private-origin connection, establish private service access, configu
 
 These steps restore simulator functionality only. An Azure rebuild does not assign Teams licences, grant live permissions, activate the reserved sync client, or implement Graph callbacks.
 
-## 5. Planned live permission and identity profile
+## 5. Live permission and identity profile
 
 The final environment profile must record the exact endpoint, API version, auth mode, permission value, consent scope, resource/installation boundary, purpose, and mutable-source reference. Resolve permission IDs against the target tenant's resource service principal; do not copy tenant-local principal IDs from another environment.
 
@@ -175,7 +182,7 @@ In a delegated grant, `clientId` is the **client service-principal object ID**, 
 
 Discover the Microsoft Graph resource service principal using its stable global application ID `00000003-0000-0000-c000-000000000000`; its service-principal object ID is tenant-local. Store permission values and types in desired state, then validate their resolved IDs and enabled status.
 
-Do not infer production `AllPrincipals` consent from the four-user simulator helper. The final planner must compare declared permissions, actual grants, user/group admission, and installation scope, and refuse unexpected broader access. Access removal is a separate approved operation, not implicit drift cleanup.
+Do not infer production `AllPrincipals` consent from the three-user simulator helper. The final planner must compare declared permissions, actual grants, user/group admission, and installation scope, and refuse unexpected broader access. Access removal is a separate approved operation, not implicit drift cleanup.
 
 ### Background credentials and rich-notification prerequisites
 
@@ -187,13 +194,26 @@ Client-authentication trust and notification encryption are separate. The subscr
 
 Track each subscription's actual accepted expiry, callbacks, lifecycle URL, resource scope, certificate ID, owner, and repair state privately. Teams subscriptions requested beyond one hour require a lifecycle URL. A subscription ID in an old inventory is not evidence that it still exists or is authorized.
 
-### Final automation to implement
+### Implemented reconciler and remaining automation
 
-W1 must provide read-only planning, explicit apply, export, and verification operations. Names and flags are to be established by implementation; they are not existing commands.
+Copy `infra\identity\profile.example.json` to a private environment-specific profile, replace the intentionally invalid zero tenant/subscription IDs, and populate only reviewed grants, assignments, callback principals, HTTPS redirects and exact federation subjects. Do not edit the public example into a credential inventory.
 
-Require schema/version validation; exact tenant/subscription/cloud matching; ownership-tag and object-ID checks; pagination; full preflight before mutation; explicit grant/rotation/removal approval; resumable per-step checkpoints; and read-after-write verification. Validate complete FIC issuer/subject/audience, redirects, grants, assignments, and key references, not only names.
+```powershell
+$profile = '<private-identity-profile.json>'
+$resolved = Join-Path $env:USERPROFILE ".teams-reference-live\$tenant\identity.resolved.json"
+.\scripts\entra\Sync-Identity.ps1 -ProfilePath $profile -InventoryPath $resolved -Mode Plan
+# Only after approval of the displayed changes and exact profile:
+.\scripts\entra\Sync-Identity.ps1 -ProfilePath $profile -InventoryPath $resolved -Mode Apply -ApprovePermissionChanges
+.\scripts\entra\Sync-Identity.ps1 -ProfilePath $profile -InventoryPath $resolved -Mode Verify
+```
 
-Reapplying unchanged desired state must be a no-op. Missing inventory must cause verified rediscovery or a clear failure, not creation of duplicate identities. Report unexpected broader permissions without silently retaining them as compliant or deleting them. Protect private outputs and never print tokens, passwords, client assertions, or decrypted content.
+`Apply` performs a complete read-only preflight before directory writes, checkpoints each successful operation and then verifies/exports the result. Offline checks cover interrupted consent followed by resume, no-op reapply, lost-inventory rediscovery, broad-grant/trust-drift refusal, and no file/directory writes under `-WhatIf`. Schema-v1 bootstrap inventory is not overwritten or silently migrated.
+
+The implemented sync profile requires `assignmentRequired=false` for rich notifications. The alternative Change Tracking-role configuration is not provisioned. `assignedGroups` supports approved web-app group admission; per-user delegated consent still requires that user to be directly assigned, or a separately approved `AllPrincipals` grant. Group-based assignment licensing and effective membership remain deployment checks.
+
+Changed named federation is visible in Plan and may be applied only with `-ApproveTrustRotation`. The reconciler rereads its exact name/issuer/subject/audience immediately before PATCH and refuses a concurrent change. Use an approved quiescence/overlap plan: replacing trust does not instantly revoke already-issued tokens. Unlisted federation removal, redirect replacement, callback-audience replacement and permission removals are not implicit cleanup. User/licence creation, RSC/Teams app installation and policy-service permission provisioning remain separate operations.
+
+For live workload staging and the profile-to-runtime mapping, use the [live runtime and rollout guide](live-runtime.md). Keep profile/grant declarations separate from actual accepted subscriptions and coverage state.
 
 For each privileged operation, document the supported administrator role and calling-client permission requirements. Routine CI/CD uses its environment federation and scoped Azure roles; it must not gain tenant consent or user/licence administration.
 
@@ -225,7 +245,7 @@ The final infrastructure must output resource, client, and principal IDs for eve
 | Notification key rotation or restored queue | Approved key references and retained versions needed for outstanding encrypted work | New subscriptions/key IDs, controlled overlap, old-payload decryption, ownership and coverage; never drop backlog silently |
 | Data/journal/control-state loss | Authoritative Teams content and surviving approved evidence | Restore and evaluate each state family; fence sends and stale authorization, reconcile coverage, and invalidate old command authority as required |
 
-For a changed web managed identity, the current finalization script requires a separately approved trust rotation. Sync federation/finalization is not implemented; W1 must add the corresponding explicit rotation path. Preflight the old and new principals and affected access, quiesce affected dispatch, establish only the approved trust/overlap, verify supported token use, then explicitly remove superseded trust/access. Do not delete the FIC to bypass its refusal and continue blindly.
+For a changed web or sync managed identity, the dev finalization script still refuses replacement trust. Use the live profile/reconciler's explicit named `-ApproveTrustRotation` path after reviewing the old/new trust, or a separately approved overlap/removal procedure. Preflight the principals and affected access, quiesce affected dispatch, verify supported token use, then explicitly remove superseded trust/access if the overlap approach was selected. Do not delete the FIC to bypass a refusal and continue blindly.
 
 PubSub replacement requires an assignment to the new principal and the matching runtime allowlist, followed by approved removal of superseded assignments. Redirect changes require the same coordinated treatment of the Entra registration, backend origin, and routing.
 

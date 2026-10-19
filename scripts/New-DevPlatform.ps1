@@ -13,7 +13,7 @@ $inventory = Get-Content -Raw -LiteralPath $InventoryPath | ConvertFrom-Json
 if (-not $inventory.applications.web.clientId -or -not $inventory.applications.events.clientId) {
     throw 'Create the web and callback application registrations before provisioning the platform.'
 }
-if ($inventory.bootstrapComplete -eq $false -or $inventory.users.Count -ne 4) {
+if ($inventory.bootstrapComplete -eq $false -or $inventory.users.Count -ne 3) {
     Write-Warning 'Entra bootstrap is incomplete. This deploys infrastructure only; authenticated application and fixture workloads remain gated.'
 }
 $account = az account show --subscription $SubscriptionId --output json | ConvertFrom-Json

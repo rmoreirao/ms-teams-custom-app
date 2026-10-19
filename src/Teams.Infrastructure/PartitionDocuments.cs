@@ -1,6 +1,4 @@
-using System.Collections.Concurrent;
 using System.Net;
-using System.Text.Json;
 using Microsoft.Azure.Cosmos;
 using Teams.Core;
 
@@ -8,11 +6,11 @@ namespace Teams.Infrastructure;
 
 public sealed record PartitionDocument(string Id, string Pk, string Kind, string TenantId, string ConversationId,
     string ActorId, DateTimeOffset At, long Revision, int Ttl, string Json, bool Pending = false, string Parent = "",
-    string SortTime = "", string SourceId = "");
+    string SortTime = "", string SourceId = "", int SchemaVersion = 1);
 public sealed record DocumentPage(IReadOnlyList<Versioned<PartitionDocument>> Items, string? Cursor);
 public sealed record DocumentFilter(string TenantId, string Kind, string? Pk = null, string? ActorId = null,
     string? ConversationId = null, DateTimeOffset? Since = null, bool? Pending = null, string? Parent = null,
-    DateTimeOffset? Before = null, string? BeforeId = null);
+    DateTimeOffset? Before = null, string? BeforeId = null, long? AfterRevision = null, bool OldestFirst = false);
 public sealed record DocumentWrite(PartitionDocument Value, string? ExpectedVersion);
 public interface IPartitionDocuments
 {
@@ -61,9 +59,12 @@ public sealed class MemoryPartitionDocuments : IPartitionDocuments
                 (f.ConversationId is null || v.Value.ConversationId == f.ConversationId) &&
                 (f.Since is null || v.Value.At >= f.Since) && (f.Pending is null || v.Value.Pending == f.Pending) &&
                 (f.Parent is null || v.Value.Parent == f.Parent) &&
+                (f.AfterRevision is null || v.Value.Revision > f.AfterRevision) &&
                 (f.Before is null || v.Value.At < f.Before || v.Value.At == f.Before &&
                     string.CompareOrdinal(v.Value.SourceId, f.BeforeId) > 0));
-            var ordered = f.Kind == "message"
+            var ordered = f.OldestFirst
+                ? query.OrderBy(v => v.Value.At).ThenBy(v => v.Value.Id, StringComparer.Ordinal)
+                : f.Kind == "message"
                 ? query.OrderByDescending(v => v.Value.At).ThenBy(v => v.Value.SourceId, StringComparer.Ordinal)
                 : query.OrderBy(v => v.Value.Id, StringComparer.Ordinal);
             var offset = cursor is null ? 0 : int.Parse(cursor, System.Globalization.CultureInfo.InvariantCulture);
@@ -112,19 +113,26 @@ public sealed class CosmosPartitionDocuments(Container container) : IPartitionDo
         }
         Add("actorId", f.ActorId); Add("conversationId", f.ConversationId);
         Add("sortTime", f.Since?.ToUniversalTime().ToString("O"), ">="); Add("pending", f.Pending); Add("parent", f.Parent);
+        Add("revision", f.AfterRevision, ">");
         if (f.Before is not null)
         {
             clauses.Add("(c.sortTime < @before OR (c.sortTime = @before AND c.sourceId > @beforeId))");
             parameters["@before"] = f.Before.Value.ToUniversalTime().ToString("O");
             parameters["@beforeId"] = f.BeforeId ?? "";
         }
-        var order = f.Kind == "message" ? "c.sortTime DESC, c.sourceId ASC" : "c.id";
+        var order = f.OldestFirst ? "c.sortTime ASC, c.id ASC" :
+            f.Kind == "message" ? "c.sortTime DESC, c.sourceId ASC" : "c.id";
         var query = new QueryDefinition($"SELECT * FROM c WHERE {string.Join(" AND ", clauses)} ORDER BY {order}");
         foreach (var parameter in parameters) query.WithParameter(parameter.Key, parameter.Value);
         using var iterator = container.GetItemQueryIterator<PartitionDocument>(query, cursor,
-            new QueryRequestOptions { PartitionKey = f.Pk is null ? null : new(f.Pk), MaxItemCount = limit });
-        var response = await iterator.ReadNextAsync(ct);
-        // Query results do not expose ETags through this model; callers re-read before conditional writes.
-        return new(response.Select(d => new Versioned<PartitionDocument>(d, "")).ToArray(), response.ContinuationToken);
+            new QueryRequestOptions { PartitionKey = f.Pk is null ? null : new(f.Pk), MaxItemCount = limit,
+                ResponseContinuationTokenLimitInKb = 2 });
+        for (var page = 0; page < 10; page++)
+        {
+            var response = await iterator.ReadNextAsync(ct);
+            if (response.Count != 0 || !iterator.HasMoreResults)
+                return new(response.Select(d => new Versioned<PartitionDocument>(d, "")).ToArray(), response.ContinuationToken);
+        }
+        throw new AppError(503, "projection_query_budget", "The bounded query could not locate a usable page.");
     }
 }

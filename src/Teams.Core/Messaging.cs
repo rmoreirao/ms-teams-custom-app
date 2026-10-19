@@ -79,7 +79,8 @@ public sealed class Messaging(IStateStore store, IGraphTransport graph, ICommand
     public async Task<ChangePage> ChangesAsync(Actor actor, string id, long after, CancellationToken ct)
     {
         var conversation = (await GetAuthorizedAsync(actor, id, ct)).Value;
-        if (store is ILiveStateStore) return new([], conversation.Revision, after < conversation.Revision);
+        if (store is ILiveStateStore live) return await live.ChangesAsync(actor, id, after, ct);
+        if (store is IDirectGraphReadStore) return new([], conversation.Revision, true);
         var oldest = conversation.Changes.Count == 0 ? conversation.Revision : conversation.Changes.Min(c => c.Revision);
         return new(conversation.Changes.Where(c => c.Revision > after).ToArray(), conversation.Revision, after < oldest - 1);
     }
@@ -141,7 +142,11 @@ public sealed class Messaging(IStateStore store, IGraphTransport graph, ICommand
             // Once dispatch began, transport failure says nothing about whether Graph committed.
             result = new(OperationState.Unknown, null, "Commitment could not be established. Do not resend.");
         }
-        return await ApplyResultAsync(actor, conversation.Id, operation.Id, result, CancellationToken.None);
+        var outcome = await ApplyResultAsync(actor, conversation.Id, operation.Id, result, CancellationToken.None);
+        if (!graph.Simulated) LiveTelemetry.WriteOutcomes.Add(1, new KeyValuePair<string, object?>("state", result.State.ToString()));
+        if (result.RetryAfter is { } delay && budget is IGraphThrottle throttle)
+            await throttle.CooldownAsync(actor, delay, CancellationToken.None);
+        return outcome;
     }
 
     public async Task<OperationView> StatusAsync(Actor actor, string conversationId, string operationId, CancellationToken ct)

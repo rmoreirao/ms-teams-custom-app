@@ -5,7 +5,7 @@ New-Item -ItemType Directory -Path $temporary | Out-Null
 $inventoryPath = Join-Path $temporary 'identity.json'
 $tenant = '11111111-1111-1111-1111-111111111111'
 $subscription = '22222222-2222-2222-2222-222222222222'
-$users = @('alex', 'sam', 'jordan', 'taylor') | ForEach-Object { @{ id = "user-$_"; persona = $_ } }
+$users = @('alex', 'sam', 'jordan') | ForEach-Object { @{ id = "user-$_"; persona = $_ } }
 @{
     tenantId = $tenant
     prefix = 'teams-reference-dev'
@@ -77,9 +77,9 @@ try {
         consentType = 'Principal'; principalId = 'user-alex'; scope = 'openid'
     })
     & $command -SubscriptionId $subscription -InventoryPath $inventoryPath -Apply -Confirm:$false
-    if ($consentTestState.writes.Count -ne 4) { throw 'Expected exactly four user-specific grants.' }
+    if ($consentTestState.writes.Count -ne 3) { throw 'Expected exactly three user-specific grants.' }
     & $command -SubscriptionId $subscription -InventoryPath $inventoryPath -Apply -Confirm:$false
-    if ($consentTestState.writes.Count -ne 4) { throw 'Repeated consent execution was not idempotent.' }
+    if ($consentTestState.writes.Count -ne 3) { throw 'Repeated consent execution was not idempotent.' }
 
     $consentTestState.grants.Add([pscustomobject]@{ id = 'existing-broad'; consentType = 'AllPrincipals'; scope = 'openid profile'; principalId = $null })
     try {
@@ -88,8 +88,8 @@ try {
     } catch {
         if ($_.Exception.Message -ne 'Existing broader or unexpected consent requires explicit review; nothing was changed.') { throw }
     }
-    if ($consentTestState.writes.Count -ne 4) { throw 'Broader consent caused unapproved changes.' }
-    $consentTestState.grants.RemoveAt(4)
+    if ($consentTestState.writes.Count -ne 3) { throw 'Broader consent caused unapproved changes.' }
+    $consentTestState.grants.RemoveAt(3)
     $consentTestState.assignmentRequired = $false
     try {
         & $command -SubscriptionId $subscription -InventoryPath $inventoryPath -Apply -Confirm:$false
@@ -97,7 +97,7 @@ try {
     } catch {
         if ($_.Exception.Message -ne 'The expected web service principal must require explicit user assignment.') { throw }
     }
-    Write-Output 'Passed 5 isolated consent checks: plan-only, exact four-user scopes, idempotency, broader-consent refusal, and assignment restriction.'
+    Write-Output 'Passed 5 isolated consent checks: plan-only, exact three-user scopes, idempotency, broader-consent refusal, and assignment restriction.'
 } finally {
     Remove-Item -LiteralPath $inventoryPath -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $temporary -ErrorAction SilentlyContinue

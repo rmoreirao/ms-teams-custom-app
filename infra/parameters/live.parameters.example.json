@@ -1,0 +1,40 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "prefix": { "value": "teamslive" },
+    "location": { "value": "swedencentral" },
+    "environmentId": { "value": "/subscriptions/<subscription>/resourceGroups/<dedicated-group>/providers/Microsoft.App/managedEnvironments/<private-environment>" },
+    "registryName": { "value": "<registry>" },
+    "cosmosAccountName": { "value": "<strong-consistency-account>" },
+    "serviceBusName": { "value": "<private-premium-namespace>" },
+    "redisName": { "value": "<private-nonpersistent-cache>" },
+    "pubsubName": { "value": "<pubsub-with-managed-identity>" },
+    "vaultName": { "value": "<private-vault>" },
+    "notificationKeyNames": { "value": ["graph-notification"] },
+    "webClientId": { "value": "00000000-0000-0000-0000-000000000000" },
+    "syncClientId": { "value": "00000000-0000-0000-0000-000000000000" },
+    "eventsClientId": { "value": "00000000-0000-0000-0000-000000000000" },
+    "logsWorkspaceId": { "value": "/subscriptions/<subscription>/resourceGroups/<dedicated-group>/providers/Microsoft.OperationalInsights/workspaces/<workspace>" },
+    "insightsConnectionString": { "value": "" },
+    "actionGroupId": { "value": "" },
+    "trustedProxyCidr": { "value": "10.40.0.0/23" },
+    "liveConfig": {
+      "value": {
+        "approvalReference": "<recorded-G0-and-resource-approval>",
+        "writerEpoch": 1,
+        "notificationCertificateId": "<active-certificate-id>",
+        "notificationCertificate": "<base64-DER-public-certificate>",
+        "notificationKeys": { "<active-certificate-id>": "https://<vault>.vault.azure.net/keys/graph-notification/<key-version>" },
+        "entitlementAuthority": "https://<approved-policy-service>",
+        "entitlementScope": "<approved-policy-audience>/.default",
+        "resources": [
+          { "id": "approved-chat", "kind": "chat", "title": "Approved chat", "team": null, "graphChatId": "<actual-chat-id>", "graphTeamId": null, "graphChannelId": null }
+        ],
+        "subscriptionScopes": [
+          { "id": "approved-chat", "path": "chats/<actual-chat-id>/messages" }
+        ]
+      }
+    }
+  }
+}

@@ -11,14 +11,14 @@ public sealed record Conversation(string Id, string TenantId, string Title, stri
     string? Team, List<Member> Members, List<Message> Messages, List<Change> Changes,
     long Revision = 0, long PublishedRevision = 0, bool CoverageReady = true,
     string? GraphChatId = null, string? GraphTeamId = null, string? GraphChannelId = null,
-    long Epoch = 0, List<Tombstone>? Tombstones = null);
+    long Epoch = 0, List<Tombstone>? Tombstones = null, DateTimeOffset? CoverageUntil = null, long RepairGeneration = 0);
 public enum OperationState { Pending, Dispatching, Confirmed, Rejected, Unknown }
 public sealed record SendOperation(string Id, string TenantId, string ConversationId, string ActorId,
     string Fingerprint, string Body, string? ParentId, OperationState State, DateTimeOffset CreatedAt,
     string? GraphMessageId = null, string? Error = null, long Epoch = 0);
 public sealed record Versioned<T>(T Value, string Version);
 public sealed record SendCommand(string OperationId, string Window, string Body, string? ParentId);
-public sealed record WriteResult(OperationState State, Message? Message, string? Error = null);
+public sealed record WriteResult(OperationState State, Message? Message, string? Error = null, TimeSpan? RetryAfter = null);
 public sealed record OperationView(string Id, OperationState State, string? MessageId, string? Error, bool Simulated);
 public sealed record ConversationView(string Id, string Title, string Kind, string? Team, long Revision);
 public sealed record MessagePage(IReadOnlyList<Message> Messages, string? Cursor, long Revision, string Window, bool Simulated, Message? ParentMessage = null);
@@ -57,9 +57,14 @@ public interface IGraphTransport
     Task<WriteResult> SendAsync(Actor actor, Conversation conversation, SendOperation operation, CancellationToken ct);
     Task<WriteResult?> ResolveAsync(Actor actor, Conversation conversation, SendOperation operation, CancellationToken ct);
 }
+public interface IDirectGraphReadStore { }
 public interface ICommandBudget
 {
     Task AcquireAsync(Actor actor, Conversation conversation, CancellationToken ct);
+}
+public interface IGraphThrottle
+{
+    Task CooldownAsync(Actor actor, TimeSpan delay, CancellationToken ct);
 }
 public interface IEventInbox
 {

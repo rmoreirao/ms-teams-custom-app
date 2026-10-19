@@ -1,15 +1,38 @@
 # Dev functional validation report
 
-**Outcome: the simulator-backed dev application is deployed in Sweden Central and passes public readiness, protection, and desktop/mobile browser checks. User-specific sign-in consent is verified; authenticated conversation/send journeys await a fresh Entra sign-in and any remaining first-use requirements.**
+**Current outcome (2026-10-19): GraphPilot real-Teams basic validation is deployed in Sweden Central. Alex, Sam and Jordan each passed fresh password/TOTP, dedicated chat/channel reads, chat send, channel post and thread reply with actual Graph creation IDs and matching author/content read-back. Optional passkey registration was deferred only through Entra's offered Not now control with explicit user approval; MFA/security policies were unchanged. See [current basic-mode evidence](graph-pilot.md).**
+
+The remaining report preserves the earlier simulator rollout and local-validation history; its old image/revision and pending-journey entries are not the current GraphPilot status. The current API revision is `teamsrefdev-unc3jasrpkgbo-api--0000004`; no additional Azure resource or size was provisioned. Temporary setup application/service-principal counts were both verified zero after resource creation.
+
+## New chat source integration (2026-10-19)
+
+The executable frontend now adopts `prototypes\05-new-chat.html` with an explicit backend-capability boundary. It searches authorized, loaded chat titles, opens the existing chat/composer without a business POST, preserves independent in-page drafts, supports paged discovery, and distinguishes loading, empty, no-match and unavailable states. It does not invent profile/email information or create new chats. GraphPilot offers its dedicated approved chat without implying a one-to-one recipient.
+
+| Local check | Result | Boundary |
+| --- | --- | --- |
+| React component regressions | **13 passed** | Includes catalog continuation/recovery, draft reuse, authorization expiry, honest capability labels and the retained 30-second pilot poll |
+| Browser journeys in installed Edge | **19 passed** | Actual local simulator read/send/post/reply, uncertainty across chat switching without duplicate POSTs, rejected/offline sends, authorized history, offboarding, search recovery, and mocked GraphPilot metadata |
+| Responsive/keyboard/theme checks | **Passed** | 1280px, 390px and 320px in light/dark; focus entry/return, Escape, Shift+Enter, IME non-submission, reduced motion, no horizontal overflow, zero business browser storage and no page-script errors |
+| Sampled rendered text contrast | **At least 4.5:1** | Actual computed colors in the discovery heading, copy, input, result identities/actions and notes in both themes; not a full accessibility certification |
+| Frontend production build/type-check | **Passed** | Vite build plus strict TypeScript; authentication-runner type-check also passed |
+| Backend contracts | **92 passed** | Debug xUnit suite; no backend/API contract changes in the UI integration |
+| Authentication-runner unit checks | **12 passed** | Controlled local checks only; no credentials loaded or live authentication performed |
+| Mechanical UI detector | **No deterministic findings** | Human visual comparison also performed against the served local reference |
+
+The live-validation helper now scopes conversation selection to navigation so the new search results cannot create ambiguous locators. This source UI is **not deployed** by this work. No real Graph write, cloud/identity mutation, consent, tenant setting, production-gate activation, commit or push was performed. Local simulator and mocked metadata checks do not replace the separate real-Teams evidence above.
+
+## Earlier deployment history
 
 **Application:** https://teamsrefdev-unc3jasrpkgbo-web-htdnfyf3dbbjbca2.b02.azurefd.net
+
+**2026-10-19 identity update:** Fresh unattended password/TOTP sign-ins are verified for Alex, Sam and Jordan with Chromium and expected Entra-backed `/api/session` responses. The source fixture dataset is now `split-view-v2` with these three personas; Jordan also covers the group-chat history cutoff. The deployment evidence below describes the earlier `split-view-v1` rollout and is not proof that the three-user image/data migration has been deployed. Final local credentials use `TEST_ALEX_*`, `TEST_SAM_*` and `TEST_JORDAN_*`; no credential values or session material belong in this report.
 
 | Context | Value |
 | --- | --- |
 | Validation date | Local application: 2026-10-15; deployment retries and region wiring: 2026-10-16 |
 | Source | Local implementation checks based on `fa09e7f`; deployment retry working tree based on `bb55dee`. This deployment work made no commits or pushes. |
 | Environment | Windows, .NET SDK 10.0.402, Node 22.14.0, npm 10.9.2, installed Edge |
-| Dataset | `split-view-v1`, six conversations, four authenticated synthetic personas |
+| Dataset | Source: `split-view-v2`, six conversations, three synthetic personas. Earlier hosted rollout: `split-view-v1`. |
 | Azure target | Subscription `67bfd3c6-6d7e-4a79-9a85-19f4a6928d7c`; resource group `rg-teams-reference-dev-swc`; region `swedencentral` |
 | API image | `acrteamsrefdevunc3jasrpkgbo.azurecr.io/teams-reference@sha256:15c16ae26cc95df0cd21790bc2d6a05d31f086299e9d51b2e4fb8d04e370d37c` (ACR `dt3`) |
 | Worker/seed image | Existing `dt2` image `sha256:119dcb11117bd12d0daf9c9c70435186ac423958f67ae7a4cdda2d0f13657905`; unaffected by the API-only callback fix |
@@ -114,14 +137,14 @@ The user next selected Germany West Central, where Redis B0/B3/B5 preflights fai
 
 Cosmos access is allowed in Germany West Central. Actual Germany subscription what-if attempts with Managed Redis Balanced B0, B3 and B5 each failed with `BadRequest`/`InvalidTemplateDeployment`, reporting insufficient capacity for this subscription in that region. No complete Germany apply was attempted after those failures. The reports are not successful capacity or deployed-app validation.
 
-Platform provisioning is independent of test-user creation, but application/seed deployment requires four distinct approved fixture actor IDs, enforced by the release script, nested workload template and host startup. Six isolated PowerShell checks cover this separation and the network prerequisite. No authentication bypass was introduced.
+Platform provisioning is independent of test-user creation, but application/seed deployment now requires three distinct approved fixture actor IDs, enforced by the release script, nested workload template and host startup. Isolated PowerShell checks cover this separation and the network prerequisite. No authentication bypass was introduced.
 
 | Gate | Current state |
 | --- | --- |
 | Enabled Azure target | Current subscription is Enabled; Sweden resources are deployed in their dedicated group. |
-| Directory bootstrap | Four tagged apps/principals, four test users, web assignments, redirect URI, managed-identity trust and callback role are configured. |
-| Sign-in consent | User approved and applied `openid profile offline_access` for the four assigned test users. Records and assignment restrictions are verified; fresh browser sign-in remains pending. |
-| Teams licensing | New tenant has E5 (no Teams) and Teams Enterprise subscriptions. Available seats, assigned users, consent and live-readiness remain unverified; no licences were purchased or assigned. |
+| Directory bootstrap | Four tagged apps/principals; the active test users are Alex, Sam and Jordan. Web assignments, redirect URI, managed-identity trust and callback role are configured. |
+| Sign-in consent | `openid profile offline_access` is approved for the three active assigned users; fresh password/TOTP sessions are verified. No Teams message permissions are implied. |
+| Teams licensing | Alex, Sam and Jordan have user-approved E5 (no Teams) and Teams Enterprise licences with Netherlands usage locations. Real Teams readiness still needs separate approval and evidence. |
 | Cloud deployment | Sweden rollout succeeded, real private-store seeding and public/browser smoke passed. Authenticated message/send/reconnect/revocation journeys await fresh sign-in and any remaining Entra first-use setup. Earlier-subscription resources remain separate and may still charge. |
 | Git publication and remote CI/CD | No branch changes, commits, pushes, or remote workflow execution. Environment protection/OIDC/RBAC setup remains a bootstrap action. |
 | Live Teams implementation/readiness | Runtime intentionally rejects live mode. Resource onboarding, current Graph entitlement/policy authority, rich callback/subscription/repair wiring and real-tenant validation remain unfinished. The isolated delegated-send transport is not a complete Teams integration. |

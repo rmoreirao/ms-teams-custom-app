@@ -19,9 +19,11 @@
         "properties": {
           "purpose": { "enum": ["web", "sync", "events", "deploy"] },
           "assignmentRequired": { "type": "boolean" },
+          "basicGraphValidation": { "type": "boolean" },
           "redirectUris": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^https://[^?#]+/auth/callback$" } },
           "logoutUrl": { "type": "string", "pattern": "^https://[^?#]+/$" },
           "assignedUsers": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/guid" } },
+          "assignedGroups": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/guid" } },
           "callbackPrincipals": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/guid" } },
           "applicationPermissions": { "$ref": "#/$defs/permissions" },
           "delegatedGrants": {

@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory)][string]$ProfilePath,
     [Parameter(Mandatory)][string]$InventoryPath,
     [ValidateSet('Plan', 'Apply', 'Verify', 'Export')][string]$Mode = 'Plan',
-    [switch]$ApprovePermissionChanges
+    [switch]$ApprovePermissionChanges,
+    [switch]$ApproveTrustRotation
 )
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
@@ -11,7 +12,11 @@ $inventoryFile = [IO.Path]::GetFullPath($InventoryPath)
 if ($inventoryFile.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Resolved identity inventories must be outside the repository.'
 }
+$profileHash = (Get-FileHash -LiteralPath $ProfilePath -Algorithm SHA256).Hash
 $json = Get-Content -Raw -LiteralPath $ProfilePath
+if ((Get-FileHash -LiteralPath $ProfilePath -Algorithm SHA256).Hash -ne $profileHash) {
+    throw 'Identity profile changed while it was being read.'
+}
 $schema = Join-Path $root 'infra\identity\profile.schema.json'
 if (-not (Test-Json -Json $json -SchemaFile $schema -ErrorAction Stop)) { throw 'Invalid identity profile.' }
 $profile = $json | ConvertFrom-Json
@@ -21,10 +26,18 @@ if ([guid]$profile.tenantId -eq [guid]::Empty -or [guid]$profile.subscriptionId 
 if (@($profile.applications.purpose | Sort-Object -Unique).Count -ne $profile.applications.Count) { throw 'Duplicate application purpose.' }
 foreach ($desired in $profile.applications) {
     if ($desired.purpose -eq 'web' -and -not $desired.assignmentRequired) { throw 'The web application must require explicit assignment.' }
+    if ($desired.purpose -eq 'sync' -and $desired.assignmentRequired) {
+        throw 'This implementation requires the documented rich-notification assignment policy on sync; Change Tracking role provisioning is not implemented.'
+    }
     if ($desired.purpose -ne 'sync' -and $desired.applicationPermissions) { throw 'Only sync may receive Graph application permissions.' }
     if ($desired.purpose -ne 'web' -and $desired.delegatedGrants) { throw 'Only web may receive delegated grants.' }
     if ($desired.purpose -ne 'web' -and $desired.assignedUsers) { throw 'Only web may admit users.' }
+    if ($desired.purpose -ne 'web' -and $desired.assignedGroups) { throw 'Only web may admit groups.' }
     if ($desired.purpose -ne 'events' -and $desired.callbackPrincipals) { throw 'Callback assignments belong to events.' }
+    if ($desired.basicGraphValidation -and ($desired.purpose -ne 'web' -or $desired.assignedUsers.Count -ne 3 -or
+        $desired.assignedGroups -or @($desired.delegatedGrants | Where-Object consentType -ne 'Principal').Count)) {
+        throw 'Basic Graph validation is restricted to the three directly assigned web users with Principal consent.'
+    }
     $principals = @()
     foreach ($grant in $desired.delegatedGrants) {
         if (($grant.consentType -eq 'Principal') -ne ($null -ne $grant.principalId)) { throw 'Principal grants require a user; AllPrincipals grants must not specify one.' }
@@ -32,7 +45,9 @@ foreach ($desired in $profile.applications) {
         if ($key -in $principals) { throw 'Duplicate delegated consent principal.' }
         $principals += $key
         if ($grant.consentType -eq 'Principal' -and $grant.principalId -notin $desired.assignedUsers) { throw 'Consent users must be explicitly assigned.' }
-        if (@($grant.scopes | Where-Object { $_ -notin @('openid', 'profile', 'offline_access', 'ChatMessage.Send', 'ChannelMessage.Send') }).Count) {
+        $allowedScopes = @('openid', 'profile', 'offline_access', 'ChatMessage.Send', 'ChannelMessage.Send')
+        if ($desired.basicGraphValidation) { $allowedScopes += @('Chat.Read', 'Channel.ReadBasic.All', 'ChannelMessage.Read.All') }
+        if (@($grant.scopes | Where-Object { $_ -notin $allowedScopes }).Count) {
             throw 'Web grants exceed the supported sign-in/send permission boundary.'
         }
     }
@@ -96,7 +111,7 @@ function Save-Inventory([bool]$Complete) {
     New-Item -ItemType Directory -Force -Path $directory | Out-Null
     $value = @{
         schemaVersion = 2; tenantId = $profile.tenantId; prefix = $profile.prefix
-        profileHash = (Get-FileHash -LiteralPath $ProfilePath -Algorithm SHA256).Hash
+        profileHash = $profileHash
         applications = $observed; reconciliationComplete = $Complete
         checkedAt = [DateTimeOffset]::UtcNow.ToString('O')
     }
@@ -119,7 +134,7 @@ try {
         if ($apps.Count -gt 1) { throw "Ambiguous application: $name" }
         $app = if ($apps.Count) { $apps[0] } else { $null }
         if ($app -and ($tag -notin $app.tags -or $app.signInAudience -ne 'AzureADMyOrg')) { throw "Application ownership/audience mismatch: $name" }
-        if ($previous -and $previous.applications.$purpose -and
+        if ($previous -and $previous.applications.$purpose.clientId -and
             ($null -eq $app -or $previous.applications.$purpose.clientId -ne $app.appId -or $previous.applications.$purpose.objectId -ne $app.id)) {
             throw "Inventory identity changed for $purpose; review replacement explicitly."
         }
@@ -141,7 +156,7 @@ try {
         $body = @{ displayName = $name; signInAudience = 'AzureADMyOrg'; tags = @($tag); requiredResourceAccess = $access }
         if ($purpose -eq 'web') {
             $body.web = @{ redirectUris = @($desired.redirectUris | Where-Object { $null -ne $_ }); implicitGrantSettings = @{ enableAccessTokenIssuance = $false; enableIdTokenIssuance = $false } }
-            if ($desired.logoutUrl) { $body.web.logoutUrl = $desired.logoutUrl }
+            $body.web.logoutUrl = $desired.logoutUrl
         }
         if ($purpose -eq 'events') {
             $body.appRoles = @(@{ id = '277c2a98-926e-469c-8bd4-eb51680d6377'; value = 'PubSub.Callback'; displayName = 'PubSub callback'
@@ -150,6 +165,11 @@ try {
         if (-not $app) { Step $purpose 'create-app' $body }
         else {
             $body.tags = @($app.tags)
+            if ($purpose -eq 'web' -and (
+                @($app.web.redirectUris | Where-Object { $_ -notin $desired.redirectUris }).Count -or
+                ($app.web.logoutUrl -and $app.web.logoutUrl -ne $desired.logoutUrl))) {
+                throw 'Existing web redirects/logout require explicit rotation; removal is not implicit reconciliation.'
+            }
             $declared = @($app.requiredResourceAccess | ForEach-Object { $resourceApp = $_.resourceAppId; $_.resourceAccess | ForEach-Object { "$resourceApp/$($_.type)/$($_.id)" } })
             $wanted = @($access | ForEach-Object { $resourceApp = $_.resourceAppId; $_.resourceAccess | ForEach-Object { "$resourceApp/$($_.type)/$($_.id)" } })
             if (@($declared | Where-Object { $_ -notin $wanted }).Count) { throw "Unexpected declared permissions on $purpose; explicit review required." }
@@ -168,20 +188,36 @@ try {
         if ($previous -and $previous.applications.$purpose.principalId -and
             $previous.applications.$purpose.principalId -ne $sp.id) { throw "Service principal changed for $purpose; review replacement explicitly." }
         if (-not $sp) { Step $purpose 'create-sp' }
-        if (-not $sp -or $sp.appRoleAssignmentRequired -ne $desired.assignmentRequired) { Step $purpose 'assignment-policy' @{ appRoleAssignmentRequired = $desired.assignmentRequired } }
+        if (-not $sp -or $sp.appRoleAssignmentRequired -ne $desired.assignmentRequired) {
+            Step $purpose 'assignment-policy' @{ appRoleAssignmentRequired = $desired.assignmentRequired } '' $true
+        }
+        if ($purpose -eq 'events' -and $app -and
+            @($app.identifierUris | Where-Object { $_ -cne "api://$($app.appId)" }).Count) {
+            throw 'Unexpected callback audience requires explicit rotation.'
+        }
         if ($purpose -eq 'events' -and $app -and -not (Same $app.identifierUris @("api://$($app.appId)"))) { Step $purpose 'audience' }
         elseif ($purpose -eq 'events' -and -not $app) { Step $purpose 'audience' }
         $fics = if ($app) { @(Collection "applications/$($app.id)/federatedIdentityCredentials") } else { @() }
         foreach ($fic in $fics) {
             $expected = @($desired.federatedCredentials | Where-Object name -CEQ $fic.name)
-            if ($expected.Count -ne 1 -or $expected[0].issuer -cne $fic.issuer -or $expected[0].subject -cne $fic.subject -or
-                -not (Same $expected[0].audiences $fic.audiences)) { throw "Unexpected or changed federation on $purpose; explicit rotation required." }
+            if ($expected.Count -ne 1) { throw "Unexpected federation on $purpose; explicit removal review required." }
+            if ($expected[0].issuer -cne $fic.issuer -or $expected[0].subject -cne $fic.subject -or
+                -not (Same $expected[0].audiences $fic.audiences)) {
+                if (-not $fic.id) { throw 'Existing federation has no stable object ID.' }
+                Step $purpose 'federation-rotation' @{
+                    issuer = $expected[0].issuer; subject = $expected[0].subject; audiences = @($expected[0].audiences)
+                } $fic.id
+                $steps[$steps.Count - 1].expected = @{
+                    name = $fic.name; issuer = $fic.issuer; subject = $fic.subject; audiences = @($fic.audiences)
+                }
+            }
         }
         foreach ($fic in $desired.federatedCredentials) { if ($fic.name -cnotin $fics.name) { Step $purpose 'federation' $fic } }
         $assignments = if ($sp) { @(Collection "servicePrincipals/$($sp.id)/appRoleAssignedTo") } else { @() }
         if ($purpose -eq 'web') {
             foreach ($assignment in $assignments) {
-                if ($assignment.principalId -notin $desired.assignedUsers -or $assignment.appRoleId -ne [guid]::Empty.ToString()) {
+                if ($assignment.principalId -notin (@($desired.assignedUsers) + @($desired.assignedGroups)) -or
+                    $assignment.appRoleId -ne [guid]::Empty.ToString()) {
                     throw 'Unexpected web admission assignment; explicit review required.'
                 }
             }
@@ -189,6 +225,10 @@ try {
         foreach ($user in $desired.assignedUsers) {
             $null = Graph GET "users/$user`?`$select=id"
             if ($user -notin $assignments.principalId) { Step $purpose 'user' @{ principalId = $user; appRoleId = [guid]::Empty.ToString() } '' $true }
+        }
+        foreach ($group in $desired.assignedGroups) {
+            $null = Graph GET "groups/$group`?`$select=id"
+            if ($group -notin $assignments.principalId) { Step $purpose 'group' @{ principalId = $group; appRoleId = [guid]::Empty.ToString() } '' $true }
         }
         if ($purpose -eq 'events') {
             foreach ($assignment in $assignments) {
@@ -228,14 +268,29 @@ try {
             if ($role.id -notin $roles.appRoleId) { Step $purpose 'role' @{ resourceId = $resource.id; appRoleId = $role.id } '' $true }
         }
         $observed[$purpose] = @{ objectId = $app.id; clientId = $app.appId; principalId = $sp.id
-            delegatedGrants = $grants; applicationGrants = $roles; federatedCredentials = $fics }
+            delegatedGrants = $grants; applicationGrants = $roles; federatedCredentials = $fics; admissionAssignments = $assignments }
     }
     Write-Output ("Identity {0}: {1} pending changes ({2})." -f $Mode, $steps.Count, (($steps | ForEach-Object { "$($_.purpose)/$($_.kind)" }) -join ', '))
+    if ((Get-FileHash -LiteralPath $ProfilePath -Algorithm SHA256).Hash -ne $profileHash) {
+        throw 'Identity profile changed during preflight; nothing was applied.'
+    }
     if ($Mode -eq 'Verify' -and $steps.Count) { throw 'Identity profile is not reconciled.' }
-    if ($Mode -eq 'Export') { Save-Inventory ($steps.Count -eq 0) }
-    if ($Mode -ne 'Apply' -or -not $steps.Count) { return }
+    if ($Mode -eq 'Export' -and $PSCmdlet.ShouldProcess($inventoryFile, 'Export resolved identity state')) {
+        Save-Inventory ($steps.Count -eq 0)
+    }
+    if ($Mode -ne 'Apply') { return }
+    if (-not $steps.Count) {
+        if (-not $previous -or -not $previous.reconciliationComplete -or
+            $previous.profileHash -ne $profileHash) {
+            if ($PSCmdlet.ShouldProcess($inventoryFile, 'Checkpoint verified identity state')) { Save-Inventory $true }
+        }
+        return
+    }
     if (@($steps | Where-Object permission).Count -and -not $ApprovePermissionChanges) { throw 'Explicit -ApprovePermissionChanges is required for consent or admission changes.' }
-    if (-not $PSCmdlet.ShouldProcess("$($profile.tenantId)/$($profile.prefix)", 'Apply preflighted identity changes; no automatic removal or rotation')) { return }
+    if (@($steps | Where-Object kind -eq 'federation-rotation').Count -and -not $ApproveTrustRotation) {
+        throw 'Explicit -ApproveTrustRotation is required for changed federation; no trust was modified.'
+    }
+    if (-not $PSCmdlet.ShouldProcess("$($profile.tenantId)/$($profile.prefix)", 'Apply preflighted identity changes and explicitly selected trust rotation; no implicit removals')) { return }
     Save-Inventory $false
     foreach ($step in $steps) {
         $ids = $observed[$step.purpose]
@@ -246,7 +301,16 @@ try {
             'assignment-policy' { $null = Graph PATCH "servicePrincipals/$($ids.principalId)" $step.body }
             'audience' { $null = Graph PATCH "applications/$($ids.objectId)" @{ identifierUris = @("api://$($ids.clientId)") } }
             'federation' { $null = Graph POST "applications/$($ids.objectId)/federatedIdentityCredentials" $step.body }
+            'federation-rotation' {
+                $current = Graph GET "applications/$($ids.objectId)/federatedIdentityCredentials/$($step.id)"
+                if ($current.name -cne $step.expected.name -or $current.issuer -cne $step.expected.issuer -or
+                    $current.subject -cne $step.expected.subject -or -not (Same $current.audiences $step.expected.audiences)) {
+                    throw 'Federation changed after preflight; rotation refused.'
+                }
+                $null = Graph PATCH "applications/$($ids.objectId)/federatedIdentityCredentials/$($step.id)" $step.body
+            }
             'user' { $step.body.resourceId = $ids.principalId; $null = Graph POST "servicePrincipals/$($ids.principalId)/appRoleAssignedTo" $step.body }
+            'group' { $step.body.resourceId = $ids.principalId; $null = Graph POST "servicePrincipals/$($ids.principalId)/appRoleAssignedTo" $step.body }
             'callback' { $step.body.resourceId = $ids.principalId; $null = Graph POST "servicePrincipals/$($ids.principalId)/appRoleAssignedTo" $step.body }
             'consent' {
                 if ($step.id) { $null = Graph PATCH "oauth2PermissionGrants/$($step.id)" @{ scope = $step.body.scope } }
@@ -257,7 +321,7 @@ try {
         Save-Inventory $false
     }
     & $PSCommandPath -ProfilePath $ProfilePath -InventoryPath $InventoryPath -Mode Verify
-    & $PSCommandPath -ProfilePath $ProfilePath -InventoryPath $InventoryPath -Mode Export
+    & $PSCommandPath -ProfilePath $ProfilePath -InventoryPath $InventoryPath -Mode Export -Confirm:$false
 } finally {
     $headers.Clear()
     $token = $null

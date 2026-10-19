@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { chromium } from "@playwright/test";
-import { describeEndpoint, generateTotp, readPageState, readSettings, SignInCheckError, validatePasswordEntry, verifyAuthorization, waitForSession } from "./entra-signin.mjs";
+import { credentialKeys, describeEndpoint, generateTotp, readPageState, readSettings, SignInCheckError, validatePasswordEntry, verifyAuthorization, waitForSession } from "./entra-signin.mjs";
 
 const seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
 const env = {
@@ -12,9 +12,9 @@ const env = {
   ENTRA_CLIENT_ID: "22222222-2222-2222-2222-222222222222",
   ENTRA_EXPECTED_ACTOR_ID: "33333333-3333-3333-3333-333333333333",
   ENTRA_EXPECTED_USERNAME: "alex@example.test",
-  TEST_USER: "alex@example.test",
-  TEST_USER_PASSWORD: "unit-test-password",
-  TEST_USER_TOTP_SECRET: seed,
+  TEST_ALEX_USER: "alex@example.test",
+  TEST_ALEX_PASSWORD: "unit-test-password",
+  TEST_ALEX_TOTP_SECRET: seed,
 };
 
 test("verifies the expected session independently of a closed page and rejects invalid sessions", async () => {
@@ -100,14 +100,47 @@ test("diagnostic endpoints never reveal URLs, query strings, fragments or unknow
   assert.equal(describeEndpoint("https://unexpected.example.test/private", env.REFERENCE_BASE_URL), "other-site");
 });
 
+test("defers only the explicitly offered registration campaign after password/TOTP and opt-in", async () => {
+  const browser = await chromium.launch({ headless: true, ...(process.platform === "win32" ? { channel: "msedge" } : {}) });
+  try {
+    const page = await browser.newPage();
+    let html = '<h1>Let&#39;s keep your account secure</h1><a href="#">Not now</a><button>Next</button>';
+    await page.route("**/*", route => route.fulfill({ contentType: "text/html", body: html }));
+    const input = {
+      origin: env.REFERENCE_BASE_URL,
+      used: { accountPicker: false, username: true, password: true, alternate: true, otpOption: true, otp: true,
+        staySignedIn: false, allowRegistrationDeferral: true, registrationDeferred: false },
+    };
+    await page.goto("https://login.microsoftonline.com/test");
+    assert.equal(await page.evaluate(readPageState, input), "optional-registration");
+    for (const used of [
+      { ...input.used, allowRegistrationDeferral: false },
+      { ...input.used, otp: false },
+      { ...input.used, password: false },
+      { ...input.used, registrationDeferred: true },
+    ]) assert.equal(await page.evaluate(readPageState, { ...input, used }), "setup");
+    html = '<h1>Let&#39;s keep your account secure</h1><button>Next</button>';
+    await page.goto("https://login.microsoftonline.com/test");
+    assert.equal(await page.evaluate(readPageState, input), "setup");
+    html = '<h1>Add a sign-in method</h1><button>Passkey</button><a>Not now</a>';
+    await page.goto("https://login.microsoftonline.com/test");
+    assert.equal(await page.evaluate(readPageState, input), "setup");
+    html = '<h1>Let&#39;s keep your account secure</h1><a>Not now</a><input id="idTxtBx_SAOTCC_OTC"><div id="idSpan_SAOTCC_ErrorMsg_Identity">Incorrect code</div>';
+    await page.goto("https://login.microsoftonline.com/test");
+    assert.equal(await page.evaluate(readPageState, input), "rejected-mfa");
+  } finally { await browser.close(); }
+  assert.equal(readSettings({ ...env, ENTRA_AUTH_PROFILE: "graph-pilot", ENTRA_DEFER_OPTIONAL_REGISTRATION: "true" }).allowRegistrationDeferral, true);
+  assert.throws(() => readSettings({ ...env, ENTRA_DEFER_OPTIONAL_REGISTRATION: "true" }), SignInCheckError);
+});
+
 test("rejects password truncation and ambiguous duplicate entries without exposing values", () => {
-  assert.throws(() => validatePasswordEntry("TEST_USER_PASSWORD=example#suffix"), SignInCheckError);
-  assert.throws(() => validatePasswordEntry("TEST_USER_PASSWORD=one\nTEST_USER_PASSWORD=two"), SignInCheckError);
+  assert.throws(() => validatePasswordEntry("TEST_ALEX_PASSWORD=example#suffix"), SignInCheckError);
+  assert.throws(() => validatePasswordEntry("TEST_ALEX_PASSWORD=one\nTEST_ALEX_PASSWORD=two"), SignInCheckError);
   for (const text of [
-    'TEST_USER_PASSWORD="example#suffix"',
-    "TEST_USER_PASSWORD='example#suffix'",
-    "TEST_USER_PASSWORD=example",
-    "# TEST_USER_PASSWORD=not-an-entry",
+    'TEST_ALEX_PASSWORD="example#suffix"',
+    "TEST_ALEX_PASSWORD='example#suffix'",
+    "TEST_ALEX_PASSWORD=example",
+    "# TEST_ALEX_PASSWORD=not-an-entry",
     "REFERENCE_BASE_URL=https://dev.example.test",
   ]) {
     assert.doesNotThrow(() => validatePasswordEntry(text));
@@ -115,9 +148,41 @@ test("rejects password truncation and ambiguous duplicate entries without exposi
 });
 
 test("validates the expected fixture and normalizes a copied Base32 seed", () => {
-  const settings = readSettings({ ...env, TEST_USER_TOTP_SECRET: seed.toLowerCase().replace(/.{8}/g, "$& ") });
+  const settings = readSettings({ ...env, TEST_ALEX_TOTP_SECRET: seed.toLowerCase().replace(/.{8}/g, "$& ") });
   assert.equal(settings.seed, seed);
   assert.equal(settings.origin, env.REFERENCE_BASE_URL);
+});
+
+test("selects only the explicitly supported test browsers", () => {
+  assert.equal(readSettings(env).browserChannel, "chromium");
+  assert.equal(readSettings({ ...env, ENTRA_TEST_BROWSER: "chromium" }).browserChannel, "chromium");
+  assert.equal(readSettings({ ...env, ENTRA_TEST_BROWSER: "msedge" }).browserChannel, "msedge");
+  assert.throws(() => readSettings({ ...env, ENTRA_TEST_BROWSER: "unsupported" }), SignInCheckError);
+});
+
+test("isolates all three named fixture credentials without account fallback", () => {
+  assert.equal(readSettings(env).account, "alex");
+  for (const account of ["alex", "sam", "jordan"]) {
+    const keys = credentialKeys(account);
+    const username = `${account}@example.test`;
+    const selected = {
+      ...env,
+      ENTRA_EXPECTED_USERNAME: username,
+      [keys.username]: username,
+      [keys.password]: "named-fixture-password",
+      [keys.seed]: seed,
+    };
+    const settings = readSettings(selected, account);
+    assert.equal(settings.username, username);
+    assert.equal(settings.password, "named-fixture-password");
+    assert.equal(settings.account, account);
+    assert.throws(() => readSettings({ ...selected, [keys.password]: "" }, account), SignInCheckError);
+    assert.throws(() => readSettings({ ...selected, ENTRA_EXPECTED_USERNAME: "unexpected@example.test" }, account), SignInCheckError);
+    assert.throws(() => validatePasswordEntry(`${keys.password}=example#suffix`, keys.password), SignInCheckError);
+    assert.throws(() => validatePasswordEntry(`${keys.password}=one\n${keys.password}=two`, keys.password), SignInCheckError);
+    assert.doesNotThrow(() => validatePasswordEntry(`${keys.password}="example#suffix"`, keys.password));
+  }
+  assert.throws(() => credentialKeys("unknown"), SignInCheckError);
 });
 
 test("rejects absent inputs, wrong identities, unsafe targets and credential logging", () => {
@@ -125,8 +190,8 @@ test("rejects absent inputs, wrong identities, unsafe targets and credential log
     assert.throws(() => readSettings({ ...env, [key]: "" }), SignInCheckError);
   }
   for (const override of [
-    { TEST_USER: "admin@example.test" },
-    { TEST_USER_TOTP_SECRET: "123456" },
+    { TEST_ALEX_USER: "admin@example.test" },
+    { TEST_ALEX_TOTP_SECRET: "123456" },
     { REFERENCE_BASE_URL: "http://dev.example.test" },
     { REFERENCE_BASE_URL: "https://user:password@dev.example.test" },
     { REFERENCE_BASE_URL: "https://dev.example.test/path" },
@@ -164,6 +229,22 @@ test("pins authorization to the expected Entra tenant, app, callback and sign-in
   const wrongTenant = new URL(url);
   wrongTenant.pathname = "/common/oauth2/v2.0/authorize";
   assert.throws(() => verifyAuthorization(wrongTenant.href, settings), SignInCheckError);
+});
+
+test("uses per-account object IDs and an explicit basic Graph scope profile", () => {
+  const settings = readSettings({
+    ...env, ENTRA_AUTH_PROFILE: "graph-pilot",
+    TEST_ALEX_OBJECT_ID: env.ENTRA_EXPECTED_ACTOR_ID,
+    TEST_ALEX_EXPECTED_USERNAME: env.TEST_ALEX_USER,
+    ENTRA_EXPECTED_ACTOR_ID: "", ENTRA_EXPECTED_USERNAME: "",
+  });
+  const url = new URL(`https://login.microsoftonline.com/${settings.tenantId}/oauth2/v2.0/authorize`);
+  url.searchParams.set("client_id", settings.clientId);
+  url.searchParams.set("redirect_uri", `${settings.origin}/auth/callback`);
+  url.searchParams.set("scope", "openid profile offline_access https://graph.microsoft.com/Chat.Read ChatMessage.Send Channel.ReadBasic.All ChannelMessage.Read.All ChannelMessage.Send");
+  assert.equal(verifyAuthorization(url.href, settings), url.href);
+  url.searchParams.set("scope", `${url.searchParams.get("scope")} Directory.ReadWrite.All`);
+  assert.throws(() => verifyAuthorization(url.href, settings), SignInCheckError);
 });
 
 test("matches the six-digit SHA1/30-second forms of RFC 6238 test vectors", () => {

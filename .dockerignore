@@ -3,6 +3,7 @@
 **/node_modules
 **/wwwroot
 .git
+.playwright-cli
 .env*
 artifacts
 prototypes

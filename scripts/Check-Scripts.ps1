@@ -1,7 +1,8 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $failed = $false
-Get-ChildItem -LiteralPath (Join-Path $root 'scripts') -Filter '*.ps1' -Recurse | ForEach-Object {
+Get-ChildItem -LiteralPath (Join-Path $root 'scripts') -Recurse -File |
+    Where-Object Extension -in @('.ps1', '.psm1') | ForEach-Object {
     $tokens = $null
     $errors = $null
     [Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null

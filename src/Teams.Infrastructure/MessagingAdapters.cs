@@ -88,7 +88,7 @@ public sealed class ServiceBusInbox(ServiceBusClient client, string queue) : IEv
     }
 }
 
-public sealed class RedisBudget(IConnectionMultiplexer redis, string clientId) : ICommandBudget
+public sealed class RedisBudget(IConnectionMultiplexer redis, string clientId) : ICommandBudget, IGraphThrottle
 {
     // A single hash keeps the global, tenant, conversation and actor permits in one Redis cluster slot.
     private const string Script = """
@@ -105,6 +105,7 @@ public sealed class RedisBudget(IConnectionMultiplexer redis, string clientId) :
         var channel = conversation.Kind == "channel";
         RedisValue[] values =
         [
+            $"cooldown:{actor.TenantId}", 0,
             $"global:{channel}", channel ? 3 : 7,
             $"tenant:{actor.TenantId}:{channel}", channel ? 25 : 63,
             $"conversation:{actor.TenantId}:{conversation.Id}", 1250,
@@ -113,6 +114,16 @@ public sealed class RedisBudget(IConnectionMultiplexer redis, string clientId) :
         var result = await redis.GetDatabase().ScriptEvaluateAsync(Script, [$"budget:{{{clientId}}}"], values);
         if ((long)result != 1)
             throw new AppError(429, "graph_capacity_exceeded", "The shared send budget is exhausted. Wait before a new attempt.");
+    }
+    public async Task CooldownAsync(Actor actor, TimeSpan delay, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        await redis.GetDatabase().ScriptEvaluateAsync("""
+            local t=redis.call('TIME'); local now=t[1]*1000+math.floor(t[2]/1000)
+            local previous=tonumber(redis.call('HGET',KEYS[1],ARGV[1]) or '0')
+            redis.call('HSET',KEYS[1],ARGV[1],math.max(previous,now+tonumber(ARGV[2])))
+            redis.call('EXPIRE',KEYS[1],math.max(86400,math.ceil(tonumber(ARGV[2])/1000)))
+            """, [$"budget:{{{clientId}}}"], [$"cooldown:{actor.TenantId}", (long)delay.TotalMilliseconds]);
     }
 }
 

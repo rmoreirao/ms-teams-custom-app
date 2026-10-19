@@ -36,12 +36,37 @@ public sealed class GraphTransportTests
         var graph = new GraphTransport(new HttpClient(new Handler(HttpStatusCode.Created, "{}")), new Tokens());
         Assert.Equal(OperationState.Unknown, (await graph.SendAsync(new("tenant", "alex", "Alex"), Conversation(), Operation(), default)).State);
     }
+    [Fact]
+    public async Task ThrottlingCarriesAnExplicitCooldownWithoutRetrying()
+    {
+        var handler = new Handler(HttpStatusCode.TooManyRequests, "{}");
+        var graph = new GraphTransport(new HttpClient(handler), new Tokens());
+        var result = await graph.SendAsync(new("tenant", "alex", "Alex"), Conversation(), Operation(), default);
+        Assert.Equal(OperationState.Rejected, result.State);
+        Assert.Equal(TimeSpan.FromSeconds(30), result.RetryAfter);
+        Assert.Equal(1, handler.Calls);
+    }
+    [Fact]
+    public async Task CancellationBeforeTokenAcquisitionIsDefinitiveNonDispatch()
+    {
+        var handler = new Handler(HttpStatusCode.Created, "{}");
+        var graph = new GraphTransport(new HttpClient(handler), new WaitingTokens());
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+        var result = await graph.SendAsync(new("tenant", "alex", "Alex"), Conversation(), Operation(), canceled.Token);
+        Assert.Equal(OperationState.Rejected, result.State);
+        Assert.Equal(0, handler.Calls);
+    }
     private static Conversation Conversation() => new("chat", "tenant", "Test", "chat", null, [], [], [], GraphChatId: "approved-chat");
     private static SendOperation Operation() => new(Guid.NewGuid().ToString(), "tenant", "chat", "alex", "fingerprint",
         "Synthetic contract test", null, OperationState.Dispatching, DateTimeOffset.UtcNow);
     private sealed class Tokens : IGraphAccessTokenSource
     {
         public Task<string> AcquireAsync(bool channel) => Task.FromResult("synthetic-token-not-a-credential");
+    }
+    private sealed class WaitingTokens : IGraphAccessTokenSource
+    {
+        public Task<string> AcquireAsync(bool channel) => new TaskCompletionSource<string>().Task;
     }
     private sealed class Handler(HttpStatusCode status, string json) : HttpMessageHandler
     {

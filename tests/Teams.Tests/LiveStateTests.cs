@@ -15,7 +15,7 @@ public sealed class LiveStateTests
     private async Task Prepare()
     {
         await store.CreateAsync(new("chat", "tenant", "Approved", "chat", null, [], [], [],
-            GraphChatId: "graph-chat"), default);
+            GraphChatId: "graph-chat", CoverageUntil: clock.GetUtcNow().AddMinutes(5)), default);
         await store.SetEntitlementAsync(new("tenant", "chat", "alex", "Alex", clock.GetUtcNow().AddDays(-7),
             clock.GetUtcNow(), clock.GetUtcNow().AddMinutes(1), "authority-1", true, true, 0), default);
     }
@@ -95,6 +95,84 @@ public sealed class LiveStateTests
         await store.ApplyAsync("tenant", "chat", Message("one", "second"), default);
         Assert.False((await store.GetAsync("tenant", "chat", default))!.Value.CoverageReady);
         Assert.Equal("first", (await store.MessageAsync("tenant", "chat", "one", null, default))!.Body);
+    }
+    [Fact]
+    public async Task AuthoritativeRepairCannotOverwriteAChangeThatArrivedDuringTheGet()
+    {
+        await Prepare();
+        await store.ApplyAsync("tenant", "chat", Message("one", "first"), default);
+        await store.ApplyAsync("tenant", "chat", Message("one", "second"), default);
+        var generation = (await store.GetAsync("tenant", "chat", default))!.Value.RepairGeneration;
+        await store.ApplyVerifiedAsync("tenant", "chat", Message("one", "second"), "version-first", default);
+        await store.SetCoverageAsync(new("tenant", "chat", true, clock.GetUtcNow(), null, null,
+            clock.GetUtcNow().AddMinutes(1), generation), default);
+        Assert.Equal("second", (await store.MessageAsync("tenant", "chat", "one", null, default))!.Body);
+        await Assert.ThrowsAsync<AppError>(() => store.ApplyVerifiedAsync("tenant", "chat", Message("one", "stale"), "version-first", default));
+    }
+    [Fact]
+    public async Task SupersededCoverageGenerationAndExpiredLeaseCannotReopenReads()
+    {
+        await Prepare();
+        var generation = (await store.GetAsync("tenant", "chat", default))!.Value.RepairGeneration;
+        await store.SetCoverageAsync(new("tenant", "chat", false, null, null, "gap"), default);
+        Assert.Equal("coverage_evidence_invalid", (await Assert.ThrowsAsync<AppError>(() =>
+            store.SetCoverageAsync(new("tenant", "chat", true, clock.GetUtcNow(), null, null,
+                clock.GetUtcNow().AddMinutes(1), generation), default))).Code);
+        Assert.False((await store.GetAsync("tenant", "chat", default))!.Value.CoverageReady);
+    }
+    [Fact]
+    public async Task SameAuthorityEvidenceCannotExtendALease()
+    {
+        await Prepare();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.SetEntitlementAsync(new("tenant", "chat", "alex", "Alex",
+            clock.GetUtcNow().AddDays(-7), clock.GetUtcNow(), clock.GetUtcNow().AddMinutes(2),
+            "authority-1", true, true, 0), default));
+    }
+    [Fact]
+    public async Task ChangesAreCommittedWithTheMessageAndLargeGapsRequireSnapshot()
+    {
+        await Prepare();
+        await store.ApplyAsync("tenant", "chat", Message("one"), default);
+        var first = await store.ChangesAsync(actor, "chat", 0, default);
+        Assert.False(first.ResetRequired);
+        Assert.Equal("one", Assert.Single(first.Changes).MessageId);
+        for (var i = 0; i < 105; i++) await store.ApplyAsync("tenant", "chat", Message($"message-{i}"), default);
+        Assert.True((await store.ChangesAsync(actor, "chat", 0, default)).ResetRequired);
+        await Assert.ThrowsAsync<AppError>(() => store.ChangesAsync(actor, "chat", -1, default));
+    }
+    [Fact]
+    public async Task StaleWriterCannotClaimAnOperationInANewerEpoch()
+    {
+        await Prepare();
+        var operation = new SendOperation(Guid.NewGuid().ToString(), "tenant", "chat", "alex", "fingerprint",
+            "", null, OperationState.Pending, clock.GetUtcNow());
+        Assert.True(await store.CreateOperationAsync(operation, default));
+        var recorded = (await store.GetOperationAsync("tenant", "chat", operation.Id, default))!;
+        var metadata = (await store.GetAsync("tenant", "chat", default))!;
+        Assert.True(await store.SaveAsync(metadata with { Value = metadata.Value with { Epoch = 1 } }, default));
+        await Assert.ThrowsAsync<AppError>(() =>
+            store.SaveOperationAsync(recorded with { Value = recorded.Value with { State = OperationState.Dispatching } }, default));
+        Assert.Equal(OperationState.Pending, (await store.GetOperationAsync("tenant", "chat", operation.Id, default))!.Value.State);
+    }
+    [Fact]
+    public async Task RemovedResourceIsNotServedDespiteRemainingAuthorityDocuments()
+    {
+        await Prepare();
+        var restricted = new LiveStateStore(documents, clock, approvedResources: new HashSet<string> { "different" });
+        Assert.Null(await restricted.GetAsync("tenant", "chat", default));
+        Assert.Empty((await restricted.CatalogAsync(actor, null, default)).Items);
+    }
+    [Fact]
+    public async Task LogicalIdCannotBeRetargetedToADifferentGraphConversation()
+    {
+        await Prepare();
+        var registry = new Dictionary<string, ApprovedResource>
+        {
+            ["chat"] = new("chat", "chat", "Different", null, "different-graph-chat", null, null)
+        };
+        var changed = new LiveStateStore(documents, clock, resourceRegistry: registry);
+        Assert.Equal("resource_mapping_changed", (await Assert.ThrowsAsync<AppError>(() => changed.GetAsync("tenant", "chat", default))).Code);
+        await Assert.ThrowsAsync<AppError>(() => changed.CatalogAsync(actor, null, default));
     }
     [Fact]
     public async Task PartitionBatchRejectsCrossConversationAndRollsBackConflicts()

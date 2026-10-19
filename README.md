@@ -4,7 +4,7 @@ A technical design for a responsive web application that exposes Microsoft Teams
 
 The reference design separates application capacity from Microsoft Graph capacity. Recent reads and real-time delivery scale in Azure; user-authored writes remain subject to Teams permissions, latency, and throttling limits.
 
-> **Simulator-first dev implementation, deployed in Sweden Central.** [Open the dev Web App](https://teamsrefdev-unc3jasrpkgbo-web-htdnfyf3dbbjbca2.b02.azurefd.net). Public readiness and desktop/mobile browser checks pass; sign-in consent is provisioned, and authenticated journeys await fresh Entra sign-in and any remaining first-use setup. Live Teams integration remains disabled. SLOs are proposed targets, not demonstrated production capacity.
+> **Basic real-Teams validation deployed in Sweden Central.** [Open the Web App](https://teamsrefdev-unc3jasrpkgbo-web-htdnfyf3dbbjbca2.b02.azurefd.net). Alex, Sam and Jordan completed real chat read/send, channel read/post and thread reply journeys through delegated Graph. This explicit `GraphPilot` mode reuses existing infrastructure and refreshes every 30 seconds; the stronger event-driven production mode remains gated. SLOs are proposed targets, not demonstrated production capacity.
 
 ## Run the dev application
 
@@ -26,8 +26,10 @@ Run `.\scripts\Validate.ps1 -Browser` for build, unit/component, authenticated A
 
 | Document | Purpose |
 | --- | --- |
+| [Basic real-Teams validation](docs/graph-pilot.md) | Deployed three-user scope, actual Graph read/write evidence, API-only releases, private configuration and MFA campaign handling |
 | [Live Teams implementation plan](docs/live-integration-plan.md) | Dependency-ordered work packages for the final event-driven projection, live Graph integration, scaling, and recovery |
-| [Entra configuration and rebuild](docs/entra-configuration.md) | Current identity provisioning contract, reusable rebuild sequence, federation/consent distinctions, and planned live desired-state automation |
+| [Live runtime and rollout](docs/live-runtime.md) | Implemented roles/configuration, policy-feed contract, staged deployment, correctness boundaries, and explicit production blockers |
+| [Entra configuration and rebuild](docs/entra-configuration.md) | Identity desired-state reconciliation, reusable rebuild sequence, federation/consent distinctions, and remaining manual approval/rotation steps |
 | [Dev setup and deployment](docs/dev-guide.md) | Executable components, private-network Azure bootstrap, Entra prerequisites, approvals, GitHub Actions, and cleanup |
 | [Test data and scenarios](docs/testing.md) | Fixture identities, repeatable seeding/reset, browser scenarios, and live Teams prerequisites |
 | [Functional validation evidence](docs/dev-validation.md) | Local results and the explicit distinction between validated, blocked, and unexecuted work |
@@ -55,9 +57,15 @@ Every file is self-contained HTML, CSS, and JavaScript with the same fictional s
 
 The four layouts remain standalone alternatives; **Split View is selected for the executable dev frontend**, not asserted as a production acceptance decision. [Prototype design notes](prototypes/DESIGN.md) describe their common rules and differences.
 
-### Reach someone new: three Split View prototypes
+### New chat in the application
 
-These additional prototypes explore **one-to-one outreach** without changing the dev app. Open them directly from disk or use [the prototype comparison](prototypes/index.html).
+The executable frontend now follows [the New chat reference](prototypes/05-new-chat.html): **New chat** beside Messages opens a searchable destination pane, and choosing a chat opens its existing composer with the draft intact. Keyboard focus follows the task; Escape closes search, and narrow screens show one task at a time. Selecting a destination sends nothing and creates no duplicate conversation.
+
+This is capability-aware, not an organization directory. Search uses authorized, loaded chat titles; pagination can load additional conversations. The backend does not expose directory profiles/email lookup or arbitrary chat creation. The UI explains that limitation instead of inventing people or reporting a fake new chat. In GraphPilot only the dedicated approved test chat is offered, including its existing group-chat semantics. Message delivery, channel replies, authorization, 30-second pilot refresh and in-memory-only drafts retain their existing contracts.
+
+### Reach someone new: three standalone Split View prototypes
+
+These standalone prototypes explore **one-to-one outreach**, including fictional capabilities not enabled in the app. Open them directly from disk or use [the prototype comparison](prototypes/index.html).
 
 | Prototype | How to reach a colleague |
 | --- | --- |

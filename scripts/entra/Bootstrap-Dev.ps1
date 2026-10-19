@@ -20,9 +20,12 @@ if (Test-Path -LiteralPath $InventoryPath) {
         throw 'Existing identity inventory belongs to a different tenant or prefix.'
     }
     $users = @($previous.users)
+    if (@($users | Where-Object persona -notin @('alex', 'sam', 'jordan')).Count) {
+        throw 'Inventory contains a retired or unknown fixture persona. Reconcile it explicitly before bootstrap.'
+    }
 }
 if (-not $Apply) {
-    Write-Output 'Plan: create/reuse four tagged application registrations and their service principals; configure GitHub dev-environment federation. Optional: create four dedicated unlicensed fixture users. No Graph message consent or licence purchase.'
+    Write-Output 'Plan: create/reuse four tagged application registrations and their service principals; configure GitHub dev-environment federation. Optional: create three dedicated unlicensed fixture users (alex, sam, jordan). No Graph message consent or licence purchase.'
     return
 }
 if (-not $PSCmdlet.ShouldProcess("$TenantId / $Prefix", 'Provision dev application identities and requested test users')) { return }
@@ -95,7 +98,7 @@ if ($CreateTestUsers) {
     $directory = Split-Path ([IO.Path]::GetFullPath($InventoryPath)) -Parent
     New-Item -ItemType Directory -Force -Path $directory | Out-Null
     $users = @()
-    foreach ($persona in @('alex', 'sam', 'jordan', 'taylor')) {
+    foreach ($persona in @('alex', 'sam', 'jordan')) {
         $upn = "$Prefix-$persona@$domain"
         $existing = Graph GET "users?`$filter=userPrincipalName eq '$upn'&`$select=id,department,userPrincipalName"
         if ($existing.value.Count) {

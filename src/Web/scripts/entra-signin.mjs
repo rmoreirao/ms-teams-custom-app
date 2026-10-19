@@ -3,6 +3,15 @@ import { setTimeout as delay } from "node:timers/promises";
 
 export class SignInCheckError extends Error {}
 
+/** @param {string} [account] */
+export function credentialKeys(account = "alex") {
+  if (!["alex", "sam", "jordan"].includes(account)) {
+    throw new SignInCheckError("Choose exactly one fixture account: alex, sam or jordan.");
+  }
+  const prefix = `TEST_${account.toUpperCase()}`;
+  return { username: `${prefix}_USER`, password: `${prefix}_PASSWORD`, seed: `${prefix}_TOTP_SECRET` };
+}
+
 /**
  * @param {import("@playwright/test").APIRequestContext} request
  * @param {Pick<ReturnType<typeof readSettings>, "origin" | "actorId">} settings
@@ -39,7 +48,8 @@ export async function waitForSession(request, settings, timeoutMs = 30_000) {
 
 /**
  * @param {{ origin: string, used: { accountPicker: boolean, username: boolean, password: boolean,
- * alternate: boolean, otpOption: boolean, otp: boolean, staySignedIn: boolean } }} input
+ * alternate: boolean, otpOption: boolean, otp: boolean, staySignedIn: boolean,
+ * allowRegistrationDeferral?: boolean, registrationDeferred?: boolean } }} input
  */
 export function readPageState({ origin, used }) {
   /** @param {Element | null} element @returns {element is HTMLElement} */
@@ -54,7 +64,6 @@ export function readPageState({ origin, used }) {
   if (location.origin !== "https://login.microsoftonline.com") return "unexpected-origin";
   const text = document.body?.innerText ?? "";
   if (/Need admin approval|Permissions requested|Review permissions/i.test(text)) return "consent";
-  if (/More information required|Keep your account secure|Update your password|Change your password/i.test(text)) return "setup";
   for (const [selector, state] of [
     ["#usernameError", "rejected-username"],
     ["#passwordError", "rejected-password"],
@@ -63,6 +72,14 @@ export function readPageState({ origin, used }) {
   ]) {
     if (visible(selector) && document.querySelector(selector)?.textContent?.trim()) return state;
   }
+  const registrationHeading = Array.from(document.querySelectorAll('h1, h2, [role="heading"], .text-title'))
+    .filter(isVisible).some(element => /^let['\u2019]s keep your account secure$/i.test(element.innerText.trim()));
+  const deferControl = Array.from(document.querySelectorAll('a, button, input[type="button"], input[type="submit"], [role="button"], [role="link"]'))
+    .filter(isVisible).some(element => /^not now$/i.test(
+      (element instanceof HTMLInputElement ? element.value : element.getAttribute("aria-label") ?? element.innerText).trim()));
+  if (used.allowRegistrationDeferral && !used.registrationDeferred && used.password && used.otp &&
+      !visible("#idTxtBx_SAOTCC_OTC") && registrationHeading && deferControl) return "optional-registration";
+  if (/More information required|Keep your account secure|Update your password|Change your password|Sign in faster with your face|Create a passkey|Add a sign-in method/i.test(text)) return "setup";
   if (used.password && visible('input[name="loginfmt"]') && !visible('input[name="passwd"]')) return "unexpected-restart";
   if (!used.accountPicker && visible("#otherTile")) return "account-picker";
   if (!used.username && visible('input[name="loginfmt"]')) return "username";
@@ -98,18 +115,24 @@ export function describeEndpoint(value, origin) {
   return "entra-other";
 }
 
-/** @param {string} text */
-export function validatePasswordEntry(text) {
-  const entries = text.split(/\r?\n/).filter(line => /^\s*(?:export\s+)?TEST_USER_PASSWORD\s*=/.test(line));
-  if (entries.length > 1) throw new SignInCheckError("Define TEST_USER_PASSWORD only once in .env.");
-  const value = entries[0]?.replace(/^\s*(?:export\s+)?TEST_USER_PASSWORD\s*=\s*/, "") ?? "";
+/** @param {string} text @param {string} [name] */
+export function validatePasswordEntry(text, name = "TEST_ALEX_PASSWORD") {
+  /** @type {string[]} */
+  const entries = [];
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
+    if (match && match[1] === name) entries.push(match[2]);
+  }
+  if (entries.length > 1) throw new SignInCheckError(`Define ${name} only once in .env.`);
+  const value = entries[0] ?? "";
   if (!['"', "'", "`"].some(quote => value.startsWith(quote)) && value.includes("#")) {
-    throw new SignInCheckError("Quote TEST_USER_PASSWORD in .env: an unquoted # starts a comment and truncates the loaded value.");
+    throw new SignInCheckError(`Quote ${name} in .env: an unquoted # starts a comment and truncates the loaded value.`);
   }
 }
 
-/** @param {NodeJS.ProcessEnv} env */
-export function readSettings(env) {
+/** @param {NodeJS.ProcessEnv} env @param {string} [account] */
+export function readSettings(env, account = "alex") {
+  const keys = credentialKeys(account);
   /** @param {string} name */
   const required = name => {
     const value = env[name];
@@ -119,6 +142,10 @@ export function readSettings(env) {
   if (env.DEBUG || env.PWDEBUG) {
     throw new SignInCheckError("Disable DEBUG and PWDEBUG before using authentication credentials.");
   }
+  const browserChannel = env.ENTRA_TEST_BROWSER ?? "chromium";
+  if (!["chromium", "msedge"].includes(browserChannel)) {
+    throw new SignInCheckError("ENTRA_TEST_BROWSER must be chromium or msedge.");
+  }
   const base = required("REFERENCE_BASE_URL");
   if (!URL.canParse(base)) throw new SignInCheckError("REFERENCE_BASE_URL is not a valid URL.");
   const url = new URL(base);
@@ -127,21 +154,28 @@ export function readSettings(env) {
   }
   const tenantId = required("ENTRA_TENANT_ID");
   const clientId = required("ENTRA_CLIENT_ID");
-  const actorId = required("ENTRA_EXPECTED_ACTOR_ID");
+  const actorId = env[`TEST_${account.toUpperCase()}_OBJECT_ID`] ?? required("ENTRA_EXPECTED_ACTOR_ID");
   const guid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (![tenantId, clientId, actorId].every(value => guid.test(value))) {
     throw new SignInCheckError("Expected tenant, client and fixture actor IDs must be GUIDs.");
   }
-  const username = required("TEST_USER").trim();
-  if (username.toLowerCase() !== required("ENTRA_EXPECTED_USERNAME").trim().toLowerCase()) {
-    throw new SignInCheckError("TEST_USER does not match the explicitly expected fixture account.");
+  const username = required(keys.username).trim();
+  const expectedUsername = env[`TEST_${account.toUpperCase()}_EXPECTED_USERNAME`] ?? required("ENTRA_EXPECTED_USERNAME");
+  if (username.toLowerCase() !== expectedUsername.trim().toLowerCase()) {
+    throw new SignInCheckError(`${keys.username} does not match the explicitly expected fixture account.`);
   }
-  const password = required("TEST_USER_PASSWORD");
-  const seed = required("TEST_USER_TOTP_SECRET").replace(/\s/g, "").toUpperCase();
+  const password = required(keys.password);
+  const seed = required(keys.seed).replace(/\s/g, "").toUpperCase();
   if (!/^[A-Z2-7]{16,}={0,6}$/.test(seed)) {
-    throw new SignInCheckError("TEST_USER_TOTP_SECRET must contain the Base32 setup key, not a verification code or QR URL.");
+    throw new SignInCheckError(`${keys.seed} must contain the Base32 setup key, not a verification code or QR URL.`);
   }
-  return { origin: url.origin, tenantId, clientId, actorId, username, password, seed };
+  const authProfile = env.ENTRA_AUTH_PROFILE ?? "signin";
+  if (!["signin", "graph-pilot"].includes(authProfile)) throw new SignInCheckError("ENTRA_AUTH_PROFILE must be signin or graph-pilot.");
+  const deferRegistration = env.ENTRA_DEFER_OPTIONAL_REGISTRATION ?? "false";
+  if (!["true", "false"].includes(deferRegistration) || deferRegistration === "true" && authProfile !== "graph-pilot")
+    throw new SignInCheckError("Optional registration deferral requires explicit graph-pilot opt-in.");
+  return { account, origin: url.origin, tenantId, clientId, actorId, username, password, seed, browserChannel, authProfile,
+    allowRegistrationDeferral: deferRegistration === "true" };
 }
 
 /**
@@ -151,12 +185,15 @@ export function readSettings(env) {
 export function verifyAuthorization(location, settings) {
   if (!location || !URL.canParse(location)) throw new SignInCheckError("The app did not return an absolute authorization URL.");
   const url = new URL(location);
-  const scopes = new Set((url.searchParams.get("scope") ?? "").split(/\s+/).filter(Boolean));
+  const scopes = new Set((url.searchParams.get("scope") ?? "").split(/\s+/).filter(Boolean)
+    .map(scope => scope.startsWith("https://graph.microsoft.com/") ? scope.slice("https://graph.microsoft.com/".length) : scope));
+  const expectedScopes = ["openid", "profile", "offline_access", ...(settings.authProfile === "graph-pilot" ?
+    ["Chat.Read", "ChatMessage.Send", "Channel.ReadBasic.All", "ChannelMessage.Read.All", "ChannelMessage.Send"] : [])];
   if (url.origin !== "https://login.microsoftonline.com" || url.username || url.password ||
       url.pathname.toLowerCase() !== `/${settings.tenantId.toLowerCase()}/oauth2/v2.0/authorize` ||
       url.searchParams.get("client_id")?.toLowerCase() !== settings.clientId.toLowerCase() ||
       url.searchParams.get("redirect_uri") !== `${settings.origin}/auth/callback` ||
-      scopes.size !== 3 || !["openid", "profile", "offline_access"].every(scope => scopes.has(scope))) {
+      scopes.size !== expectedScopes.length || !expectedScopes.every(scope => scopes.has(scope))) {
     throw new SignInCheckError("The authorization target differs from the approved tenant, application, callback or sign-in scopes.");
   }
   return url.href;

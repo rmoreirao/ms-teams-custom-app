@@ -18,6 +18,8 @@ ADR 0008 records approval of a synthetic-only dev boundary. That limited approva
 | [0006](0006-slo-driven-capacity-and-feasibility-validation.md) | Accepted for reference design | Separate SLO, Azure-capacity, and real Graph feasibility evidence |
 | [0007](0007-message-content-processing-and-storage-boundary.md) | Proposed | Select and approve the message-content processing/storage boundary before enabling the real-data path |
 | [0008](0008-simulator-first-single-region-development.md) | Accepted for dev scope; Sweden rollout deployed, authenticated validation pending | Single-region simulator-first delivery, Split View, private app/data services and authenticated public ACR; no regional recovery or load testing |
+| [0009](0009-live-projection-runtime-boundaries.md) | Selected for local implementation; production acceptance conditional | Independent live roles, separated authority/control/projection containers, explicit Strong consistency and disabled-by-default live gates |
+| [0010](0010-basic-delegated-teams-validation.md) | Accepted for three-user synthetic validation | Explicit basic delegated Graph reads/writes on existing infrastructure, with real three-user evidence; production architecture remains gated |
 
 ## Maintenance
 

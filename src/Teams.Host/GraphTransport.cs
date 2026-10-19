@@ -11,11 +11,18 @@ public interface IGraphAccessTokenSource
 {
     Task<string> AcquireAsync(bool channel);
 }
-public sealed class DelegatedGraphTokens(ITokenAcquisition tokens) : IGraphAccessTokenSource
+public interface IGraphReadTokenSource
 {
-    public async Task<string> AcquireAsync(bool channel)
+    Task<string> AcquireReadAsync(bool channel);
+}
+public sealed class DelegatedGraphTokens(ITokenAcquisition tokens) : IGraphAccessTokenSource, IGraphReadTokenSource
+{
+    public Task<string> AcquireAsync(bool channel) => AcquireScopesAsync([channel ? "ChannelMessage.Send" : "ChatMessage.Send"]);
+    public Task<string> AcquireReadAsync(bool channel) => AcquireScopesAsync(channel ?
+        ["ChannelMessage.Read.All", "Channel.ReadBasic.All"] : ["Chat.Read"]);
+    private async Task<string> AcquireScopesAsync(string[] scopes)
     {
-        try { return await tokens.GetAccessTokenForUserAsync([channel ? "ChannelMessage.Send" : "ChatMessage.Send"]); }
+        try { return await tokens.GetAccessTokenForUserAsync(scopes); }
         catch (MicrosoftIdentityWebChallengeUserException)
         {
             throw new AppError(401, "graph_interaction_required", "Sign in again to satisfy Graph consent or Conditional Access.");
@@ -31,32 +38,44 @@ public sealed class GraphTransport(HttpClient http, IGraphAccessTokenSource toke
     public bool Simulated => false;
     public async Task<WriteResult> SendAsync(Actor actor, Conversation conversation, SendOperation operation, CancellationToken ct)
     {
+        using var measurement = LiveTelemetry.Measure("graph-send");
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        ct = deadline.Token;
         var channel = conversation.Kind == "channel";
         var path = channel
             ? $"teams/{Part(conversation.GraphTeamId)}/channels/{Part(conversation.GraphChannelId)}/messages" +
               (operation.ParentId is null ? "" : $"/{Part(operation.ParentId)}/replies")
             : $"chats/{Part(conversation.GraphChatId)}/messages";
         string token;
-        try { token = await tokens.AcquireAsync(channel); }
+        try { token = await tokens.AcquireAsync(channel).WaitAsync(ct); }
         catch (AppError ex) when (ex.Status == 401)
         {
             return new(OperationState.Rejected, null, ex.Message);
+        }
+        catch (OperationCanceledException)
+        {
+            return new(OperationState.Rejected, null, "Token acquisition ended before Graph dispatch. No message was posted.");
         }
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri("https://graph.microsoft.com/v1.0/"), path));
         request.Headers.Authorization = new("Bearer", token);
         request.Headers.Add("client-request-id", Guid.NewGuid().ToString());
         request.Content = JsonContent.Create(new { body = new { contentType = "text", content = operation.Body } });
         // Deliberately no automatic POST retry: Graph does not promise this operation is idempotent.
+        LiveTelemetry.GraphAttempts.Add(1, new KeyValuePair<string, object?>("mode", "delegated"));
         using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         if (response.StatusCode == HttpStatusCode.Created)
         {
             try
             {
-                using var data = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
-                if (!data.RootElement.TryGetProperty("id", out var id) || id.GetString() is not { Length: > 0 } messageId ||
-                    !data.RootElement.TryGetProperty("createdDateTime", out var created) || !created.TryGetDateTimeOffset(out var at))
+                var data = await BoundedJson.ReadAsync(response.Content, 1024 * 1024, ct);
+                if (data.ValueKind != JsonValueKind.Object ||
+                    !data.TryGetProperty("id", out var id) || id.ValueKind != JsonValueKind.String ||
+                    id.GetString() is not { Length: > 0 } messageId ||
+                    !data.TryGetProperty("createdDateTime", out var created) || created.ValueKind != JsonValueKind.String ||
+                    !created.TryGetDateTimeOffset(out var at))
                     return new(OperationState.Unknown, null, "Graph created a message but confirmation evidence is incomplete.");
-                var version = data.RootElement.TryGetProperty("etag", out var etag) ? etag.GetString() : null;
+                var version = data.TryGetProperty("etag", out var etag) && etag.ValueKind == JsonValueKind.String ? etag.GetString() : null;
                 return new(OperationState.Confirmed, new(messageId, actor.Id, actor.Name, operation.Body, at, at,
                     operation.ParentId, SourceVersion: version ?? $"confirmed:{messageId}"));
             }
@@ -64,6 +83,17 @@ public sealed class GraphTransport(HttpClient http, IGraphAccessTokenSource toke
             {
                 return new(OperationState.Unknown, null, "Graph created a message but returned invalid confirmation evidence. Do not resend.");
             }
+            catch (AppError ex) when (ex.Code == "dependency_payload_too_large")
+            {
+                return new(OperationState.Unknown, null, "Graph confirmation exceeded the evidence limit. Check the original operation; do not resend.");
+            }
+        }
+        if (response.StatusCode == HttpStatusCode.TooManyRequests)
+        {
+            var delay = response.Headers.RetryAfter?.Delta ??
+                response.Headers.RetryAfter?.Date - DateTimeOffset.UtcNow ?? TimeSpan.FromSeconds(30);
+            return new(OperationState.Rejected, null, "Graph throttled this send. Wait before a new attempt.",
+                delay > TimeSpan.Zero ? delay : TimeSpan.FromSeconds(1));
         }
         if ((int)response.StatusCode is >= 400 and < 500 && response.StatusCode != HttpStatusCode.RequestTimeout)
             return new(OperationState.Rejected, null, $"Graph rejected this send ({(int)response.StatusCode}).");

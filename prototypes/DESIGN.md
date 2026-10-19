@@ -44,7 +44,7 @@ Each HTML file contains its own CSS, JavaScript, icons, and fixtures. It opens d
 
 ## Split View outreach extensions
 
-Three additional prototypes extend the selected dev implementation's Split View, without changing the app or the original four layouts. Their task mode is **Operate**: find the right colleague, confirm their identity, and start a one-to-one conversation. Group-chat creation is intentionally excluded.
+Three additional prototypes extend the selected dev implementation's Split View, without changing the original four layouts. Their task mode is **Operate**: find the right colleague, confirm their identity, and start a one-to-one conversation. Group-chat creation is intentionally excluded. The executable app now adopts the New chat surface with a narrower capability boundary: search existing authorized chat titles and reuse their composers. It does not copy the fictional people directory, profile/email claims or provisional chat creation; GraphPilot remains limited to its approved dedicated group chat.
 
 | File | Entry point | Discovery and confirmation | Trade-off |
 | --- | --- | --- | --- |

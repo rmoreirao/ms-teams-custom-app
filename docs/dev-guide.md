@@ -2,9 +2,9 @@
 
 ## Current status and boundaries
 
-This is a simulator-first dev application, not a completed Teams integration. The application is deployed in Sweden Central at https://teamsrefdev-unc3jasrpkgbo-web-htdnfyf3dbbjbca2.b02.azurefd.net. Public readiness and desktop/mobile browser checks pass. User-specific sign-in consent is now provisioned; authenticated conversation/send journeys await a fresh Entra sign-in and any remaining first-use setup. No remote GitHub workflow has run.
+The hosted application now runs explicit **GraphPilot** basic real-Teams validation in Sweden Central at https://teamsrefdev-unc3jasrpkgbo-web-htdnfyf3dbbjbca2.b02.azurefd.net. Alex, Sam and Jordan passed fresh password/TOTP and real chat/channel/post/reply read-back journeys. See the [basic Teams guide/evidence](graph-pilot.md) for the deployed scope, per-user permissions, API-only release command and approved optional passkey-campaign deferral. The simulator instructions below remain available for local/isolated scenarios; the stronger production `Live` architecture is still gated. No remote GitHub workflow has run.
 
-The active deployment target is subscription `67bfd3c6-6d7e-4a79-9a85-19f4a6928d7c`, tenant `f1640304-f816-412c-9e6f-4b6b818cf492`, and **Sweden Central** (`swedencentral`), explicitly selected by the user on 2026-10-16. The directory session now has Global Administrator; four dedicated test users and their application assignments are provisioned, and the web/callback managed-identity bindings are configured. No Graph message consent or licence assignment was performed.
+The active deployment target is subscription `67bfd3c6-6d7e-4a79-9a85-19f4a6928d7c`, tenant `f1640304-f816-412c-9e6f-4b6b818cf492`, and **Sweden Central** (`swedencentral`), explicitly selected by the user on 2026-10-16. The test identities are Alex, Sam and Jordan; their Teams Enterprise/E5 licences and Netherlands usage locations were assigned with user approval, and fresh unattended Chromium password/TOTP sessions are verified. The web/callback managed-identity bindings are configured. These sign-in checks grant no Graph message consent and do not prove live Teams readiness.
 
 Earlier Germany West Central what-if attempts failed for Redis Balanced B0/B3/B5 capacity. Sweden Central passed actual preflight and deployment. The working environment is `teamsrefdev-unc3jasrpkgbo-env-ready`, on `container-apps-ready`. An incomplete first environment was replaced after the required network feature was registered; data services and identities were preserved. Consult the validation report for the exact image, successful seed job and remaining authenticated-test boundary.
 
@@ -73,7 +73,7 @@ Verify current Sweden Central rates, quotas, and subscription policies; the figu
 
 ## Entra bootstrap
 
-For the current identity/trust contract, safe command modes, and same-tenant/new-tenant rebuild procedures, use [Entra configuration and environment rebuild](entra-configuration.md). Its live desired-state profile and permission reconciliation are planned work, not additional capabilities of the current scripts.
+For the current identity/trust contract, safe command modes, and same-tenant/new-tenant rebuild procedures, use [Entra configuration and environment rebuild](entra-configuration.md). Live desired-state reconciliation now uses the separate `Sync-Identity.ps1`; the existing dev scripts still consume their legacy inventory and do not enable live mode.
 
 Use the explicitly approved tenant/subscription, not whatever happens to be the CLI default. Keep the generated inventory outside the public repository.
 
@@ -87,9 +87,9 @@ az login --tenant $tenant
 .\scripts\entra\Bootstrap-Dev.ps1 -TenantId $tenant -SubscriptionId $subscription -InventoryPath $inventory -CreateTestUsers -Apply
 ```
 
-The bootstrap creates/reuses tagged `web`, `sync`, `events`, and `deploy` registrations/service principals, and optionally four dedicated unlicensed users. It grants no Graph message permissions or licences. User creation/role assignments may require an authorized directory administrator; stop on permission errors rather than substituting another tenant or identity.
+The bootstrap creates/reuses tagged `web`, `sync`, `events`, and `deploy` registrations/service principals, and optionally three dedicated unlicensed users: Alex, Sam and Jordan. It grants no Graph message permissions or licences. User creation/role assignments may require an authorized directory administrator; stop on permission errors rather than substituting another tenant or identity.
 
-Use `-SubscriptionId` on both directory scripts when multiple tenants are signed in; this selects the matching account/token without changing the shared Azure CLI default. Bootstrap verifies an existing inventory's tenant before changes and checkpoints successful creation with `bootstrapComplete=false`. Infrastructure-only deployment can proceed from valid web/callback application IDs, but application/fixture workloads still require four distinct approved actor IDs. Incomplete identities never enable an unauthenticated application or seed traffic.
+Use `-SubscriptionId` on both directory scripts when multiple tenants are signed in; this selects the matching account/token without changing the shared Azure CLI default. Bootstrap verifies an existing inventory's tenant before changes and checkpoints successful creation with `bootstrapComplete=false`. Infrastructure-only deployment can proceed from valid web/callback application IDs, but application/fixture workloads require three distinct approved actor IDs in Alex, Sam, Jordan order. Incomplete identities never enable an unauthenticated application or seed traffic.
 
 The web service principal requires assignment, with only the fixture users assigned by bootstrap. The runtime independently checks the fixture identity allowlist before issuing a BFF session; an arbitrary user from the same tenant is not admitted to this synthetic-only app.
 
@@ -97,11 +97,11 @@ Initial user passwords are stored as Windows-DPAPI-protected credential XML besi
 
 ### Sign-in consent is a separate prerequisite
 
-Creating users and assigning them to the web application does not grant consent to its sign-in scopes. The deployed web app requests only `openid profile offline_access`, dynamically during authorization. Its registration has no static Graph message permissions.
+Creating users and assigning them to the web application does not grant consent to its sign-in scopes. **Simulator mode** requests only `openid profile offline_access`. The currently deployed GraphPilot mode additionally has the five explicitly approved delegated read/send scopes described in the [basic Teams guide](graph-pilot.md), granted to the three users only.
 
 The user-reported **"Need admin approval"** screen is a consent gate, not another MFA enrollment screen. Inspection found no existing permission grant for the web service principal. An administrator must approve the required sign-in scopes; do not disable MFA, add Teams permissions, or make the app unassigned/public to work around it.
 
-`Grant-DevSignInConsent.ps1` prepares a least-privilege plan for the four already-assigned fixture users. It uses user-specific `Principal` grants rather than tenant-wide `AllPrincipals`, validates the tagged application and standard scopes, preserves assignment restrictions, and refuses unexpected broader existing grants.
+`Grant-DevSignInConsent.ps1` prepares a least-privilege plan for the three already-assigned fixture users. It uses user-specific `Principal` grants rather than tenant-wide `AllPrincipals`, validates the tagged application and standard scopes, preserves assignment restrictions, and refuses unexpected broader existing grants.
 
 ```powershell
 # Read-only validation; no consent is granted:
@@ -174,7 +174,7 @@ The initial admission-disabled revision uses process liveness as its platform re
 
 After rollout, run `scripts\Test-DeployedApp.ps1` with the public origin, tenant ID, and web client ID. It checks the compiled frontend, real fixture/Redis readiness, anonymous API denial, disabled local login, and the correct Entra authorization redirect. It explicitly reports authenticated browser journeys as not tested; complete first-use password/MFA interactions and run those scenarios separately.
 
-Initial credentials for this tenant are stored as DPAPI-protected `alex.credential.xml`, `sam.credential.xml`, `jordan.credential.xml`, and `taylor.credential.xml` beside the private tenant inventory. Use `Import-Clixml` locally to obtain the `PSCredential`; never copy credential output into source, CI logs or support artifacts. The observed first-login screen is **"Let's keep your account secure"**. Security enrollment/MFA and any initial password change must be completed by the user; they are not automated or disabled to unblock testing.
+Initial credentials for the three fixtures may be stored as DPAPI-protected `alex.credential.xml`, `sam.credential.xml`, and `jordan.credential.xml` beside the private tenant inventory. They are not the final passwords after first-use changes. Use `Import-Clixml` locally to obtain a still-valid initial `PSCredential`; never copy credential output into source, CI logs or support artifacts. Security enrollment/MFA and any initial password change must be completed by the user; they are not automated or disabled to unblock testing. Final local test credentials use the uniformly named `TEST_ALEX_*`, `TEST_SAM_*` and `TEST_JORDAN_*` keys described in the testing guide.
 
 ### Callback failures behind Front Door
 
@@ -190,7 +190,7 @@ CI builds/tests the app, runs Playwright scenarios, compiles Bicep, parses Power
 
 Before enabling `Deploy dev`, create the GitHub `dev` environment with a required reviewer and main-only deployment policy. Grant the deployment principal resource-group Contributor and registry-scoped AcrPush only after approving bootstrap. Do not grant subscription Owner or directory administration to the workflow.
 
-Set environment variables: `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_RESOURCE_GROUP`, `AZURE_DEPLOY_CLIENT_ID`, `AZURE_REGISTRY_NAME`, `TEAMS_WEB_CLIENT_ID`, `TEAMS_EVENTS_CLIENT_ID`, `TEAMS_FIXTURE_ACTOR_IDS` (four-element JSON array), and `TEAMS_BOOTSTRAP_COMPLETE=true` only after final bindings/private-origin readiness.
+Set environment variables: `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_RESOURCE_GROUP`, `AZURE_DEPLOY_CLIENT_ID`, `AZURE_REGISTRY_NAME`, `TEAMS_WEB_CLIENT_ID`, `TEAMS_EVENTS_CLIENT_ID`, `TEAMS_FIXTURE_ACTOR_IDS` (three-element JSON array in Alex, Sam, Jordan order), and `TEAMS_BOOTSTRAP_COMPLETE=true` only after final bindings/private-origin readiness.
 
 Set `AZURE_LOCATION=swedencentral`, `AZURE_COSMOS_LOCATION=swedencentral`, and `AZURE_REDIS_SKU=Balanced_B0`. Defaults now match the user-selected Sweden deployment. Do not reuse the old subscription's settings or Entra client/user IDs.
 
@@ -223,6 +223,8 @@ For teardown, first confirm the exact resource group and ownership/tags, stop tr
 
 The original tenant had no Microsoft 365 subscriptions. The newly selected tenant reports enabled Microsoft 365 E5 (no Teams) and Microsoft Teams Enterprise subscriptions. This confirms product availability, not available seats, per-user assignments, service provisioning, consent, or live-readiness approval. Dedicated test users still require an authorized administrator; no licences have been assigned by this deployment.
 
-Live mode additionally needs approved Graph permissions/resource scope, real entitlement/history/DLP authority, rich callback and subscription/repair implementation, credential/notification-key rotation, and real browser/integration evidence. See ADR 0008; this is not a configuration toggle that can safely be enabled immediately after licensing.
+Live mode additionally needs approved Graph permissions/resource scope, real entitlement/history/DLP authority, acceptance of the implemented callback/subscription/repair paths, credential/notification-key rotation, and real browser/integration evidence. See ADR 0008; this is not a configuration toggle that can safely be enabled immediately after licensing.
+
+The repository now contains a locally verified [live runtime foundation and staged deployment guide](live-runtime.md), including separate receiver/projector/delivery/control roles. Its rollout, real policy authority, Azure/Graph integration, capacity and recovery remain unaccepted; the hosted simulator boundary above has not changed. Use `Deploy-Live.ps1` only with the separately approved live platform/profile, never by changing `Deploy-Dev.ps1` or reusing its seed job.
 
 The selected implementation direction is the final event-driven projection, not a direct-Graph-read MVP. Follow the [live integration plan](live-integration-plan.md) for dependency-ordered delivery. This direction does not change the synthetic-only boundary or approve business-content storage, broader consent, licences, or a rebuild.

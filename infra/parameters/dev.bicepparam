@@ -10,5 +10,4 @@ param fixtureActorIds = [
   readEnvironmentVariable('TEAMS_ACTOR_ALEX')
   readEnvironmentVariable('TEAMS_ACTOR_SAM')
   readEnvironmentVariable('TEAMS_ACTOR_JORDAN')
-  readEnvironmentVariable('TEAMS_ACTOR_TAYLOR')
 ]

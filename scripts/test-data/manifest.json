@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "datasetVersion": "split-view-v1",
+  "datasetVersion": "split-view-v2",
   "dataClassification": "synthetic-only",
-  "personaOrder": ["alex", "sam", "jordan", "taylor"],
+  "personaOrder": ["alex", "sam", "jordan"],
   "conversations": [
     { "id": "chat-handover", "kind": "chat", "initialMessages": 45, "members": ["alex", "sam"] },
-    { "id": "chat-project", "kind": "chat", "initialMessages": 3, "members": ["alex", "sam", "taylor"], "historyRestrictedPersona": "taylor" },
+    { "id": "chat-project", "kind": "chat", "initialMessages": 3, "members": ["alex", "sam", "jordan"], "historyRestrictedPersona": "jordan" },
     { "id": "channel-general", "kind": "channel", "initialMessages": 6, "initialReplies": 2, "members": ["alex", "sam"] },
     { "id": "channel-updates", "kind": "channel", "initialMessages": 1, "members": ["alex", "sam"] },
     { "id": "chat-empty", "kind": "chat", "initialMessages": 0, "members": ["alex", "sam"] },

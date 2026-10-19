@@ -1047,7 +1047,9 @@ Deploy networking/identity/data dependencies before enabling traffic. Private en
 
 ### 8.2 Configuration contract
 
-The [Entra configuration and rebuild runbook](entra-configuration.md) maps current scripts, identity ID types, federation, consent, and deployment inputs, and defines the planned reproducible live configuration. The [live integration plan](live-integration-plan.md) sequences implementation; neither document implies the live paths are enabled.
+The [Entra configuration and rebuild runbook](entra-configuration.md) maps current scripts, identity ID types, federation, consent, and deployment inputs, including the implemented desired-state reconciler. The [live integration plan](live-integration-plan.md) records current implementation and remaining acceptance work; neither document implies live traffic is enabled.
+
+The locally implemented profile is detailed in [live runtime and rollout](live-runtime.md) and [ADR 0009](adr/0009-live-projection-runtime-boundaries.md): separate projection/authority/control and change-feed lease containers, explicit Strong-consistency Cosmos reads, change-feed-to-queue outbox dispatch, durable fan-out pages, independent host roles and disabled-by-default synchronization/admission. Local correctness coverage is not proof of reference-scale capacity or regional recovery.
 
 | Configuration family | Required content |
 | --- | --- |

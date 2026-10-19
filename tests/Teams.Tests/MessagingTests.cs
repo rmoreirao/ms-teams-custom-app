@@ -20,7 +20,7 @@ public sealed class MessagingTests
         tokens = new CommandTokens(new EphemeralDataProtectionProvider(), clock);
         simulator = new(clock, store);
         service = new(store, simulator, new MemoryBudget(clock), tokens, clock);
-        Fixtures.SeedAsync(store, "tenant", ["alex", "sam", "jordan", "taylor"], clock, default).GetAwaiter().GetResult();
+        Fixtures.SeedAsync(store, "tenant", ["alex", "sam", "jordan"], clock, default).GetAwaiter().GetResult();
     }
     private async Task<SendCommand> Command(string body = "A synthetic message", string? parent = null)
     {
@@ -75,6 +75,31 @@ public sealed class MessagingTests
             service.ReadAsync(new("tenant", "jordan", "Jordan"), "chat-handover", null, null, 0, default))).Status);
         Assert.Equal(404, (await Assert.ThrowsAsync<AppError>(() =>
             service.ReadAsync(alex with { TenantId = "other" }, "chat-handover", null, null, 0, default))).Status);
+    }
+    [Fact]
+    public async Task ThreeUserFixturesGiveJordanLimitedHistoryWithoutAccessToTheHandover()
+    {
+        var jordan = new Actor("tenant", "jordan", "Jordan");
+        var conversations = await service.ListAsync(jordan, default);
+        Assert.Equal(["chat-project", "chat-restricted"], conversations.Select(c => c.Id).Order().ToArray());
+        var page = await service.ReadAsync(jordan, "chat-project", null, null, 0, default);
+        Assert.Equal(2, page.Messages.Count);
+        Assert.DoesNotContain(page.Messages, message => message.Id == "fixture-5");
+        var existingMember = await service.ReadAsync(alex, "chat-project", null, null, 0, default);
+        Assert.Equal(3, existingMember.Messages.Count);
+        Assert.Equal(404, (await Assert.ThrowsAsync<AppError>(() =>
+            service.ReadAsync(jordan, "chat-handover", null, null, 0, default))).Status);
+    }
+    [Fact]
+    public void FixtureCreationRejectsMissingDuplicateAndExtraActors()
+    {
+        foreach (var ids in new[] {
+            new[] { "alex", "sam" },
+            new[] { "alex", "sam", "sam" },
+            new[] { "alex", "sam", "" },
+            new[] { "alex", "sam", "jordan", "unexpected" }
+        })
+            Assert.Throws<InvalidOperationException>(() => Fixtures.Create("tenant", ids, clock.GetUtcNow()));
     }
     [Fact]
     public async Task OperationStatusBelongsToItsActor()
@@ -197,7 +222,7 @@ public sealed class MessagingTests
     [Fact]
     public void DuplicateAndOutOfOrderNotificationsDoNotResurrectDeletedMessages()
     {
-        var conversation = Fixtures.Create("tenant", ["alex", "sam", "jordan", "taylor"], clock.GetUtcNow())[0];
+        var conversation = Fixtures.Create("tenant", ["alex", "sam", "jordan"], clock.GetUtcNow())[0];
         var original = conversation.Messages[0];
         Assert.Same(conversation, Projection.Apply(conversation, original, clock.GetUtcNow()));
         var deleted = original with { Deleted = true, Body = "", SourceVersion = "2", ModifiedAt = clock.GetUtcNow() };
@@ -210,7 +235,7 @@ public sealed class MessagingTests
     [Fact]
     public async Task SeedIsRepeatableWithoutResettingMessages()
     {
-        Assert.Equal(0, await Fixtures.SeedAsync(store, "tenant", ["alex", "sam", "jordan", "taylor"], clock, default));
+        Assert.Equal(0, await Fixtures.SeedAsync(store, "tenant", ["alex", "sam", "jordan"], clock, default));
         Assert.Equal(6, (await store.ListAsync("tenant", default)).Count);
     }
     [Fact]
@@ -235,18 +260,53 @@ public sealed class MessagingTests
     public async Task ResetInvalidatesOldCommandWindowsWithoutLosingOperationEvidence()
     {
         var command = await Command();
-        await Fixtures.ResetAsync(store, "tenant", ["alex", "sam", "jordan", "taylor"], clock, default);
+        await Fixtures.ResetAsync(store, "tenant", ["alex", "sam", "jordan"], clock, default);
         Assert.Equal(410, (await Assert.ThrowsAsync<AppError>(() => service.SendAsync(alex, "chat-handover", command, default))).Status);
-        await Fixtures.VerifyAsync(store, "tenant", ["alex", "sam", "jordan", "taylor"], default);
+        await Fixtures.VerifyAsync(store, "tenant", ["alex", "sam", "jordan"], default);
     }
     [Fact]
     public void ProjectionRemainsBelowCosmosItemLimitForWorstCaseUnicode()
     {
-        var value = Fixtures.Create("tenant", ["alex", "sam", "jordan", "taylor"], clock.GetUtcNow())[0];
+        var value = Fixtures.Create("tenant", ["alex", "sam", "jordan"], clock.GetUtcNow())[0];
         for (var i = 0; i < 200; i++)
             value = Projection.Apply(value, new(i.ToString(), "alex", "Alex", new string('\u65e5', 4096),
                 clock.GetUtcNow().AddSeconds(i), clock.GetUtcNow()), clock.GetUtcNow());
         Assert.True(Encoding.UTF8.GetByteCount(System.Text.Json.JsonSerializer.Serialize(value)) < 1_100_000);
+    }
+    [Fact]
+    public async Task ExplicitRetirementPreservesMessagesHistoryAndOperationEvidence()
+    {
+        var group = (await store.GetAsync("tenant", "chat-project", default))!;
+        var priorMember = group.Value.Members.Single(m => m.Id == "jordan");
+        await store.SaveAsync(group with { Value = group.Value with
+        {
+            Members = group.Value.Members.Select(m => m.Id == "jordan" ? m with { Id = "retired", Name = "Former fixture" } : m).ToList()
+        } }, default);
+        var command = await Command();
+        await service.SendAsync(alex, "chat-handover", command, default);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Fixtures.VerifyAsync(store, "tenant", ["alex", "sam", "jordan"], default));
+        await Fixtures.RetireActorAsync(store, "tenant", ["alex", "sam", "jordan"], "retired", clock, default);
+        var migrated = (await store.GetAsync("tenant", "chat-project", default))!.Value;
+        Assert.Equal(priorMember.HistoryFrom, migrated.Members.Single(m => m.Id == "jordan").HistoryFrom);
+        Assert.DoesNotContain(migrated.Members, m => m.Id == "retired");
+        Assert.Equal(group.Value.Messages, migrated.Messages);
+        Assert.Equal(group.Value.Epoch + 1, migrated.Epoch);
+        Assert.True(await store.IsBlockedAsync("tenant", "retired", default));
+        Assert.NotNull(await store.GetOperationAsync("tenant", "chat-handover", command.OperationId, default));
+        await Fixtures.VerifyAsync(store, "tenant", ["alex", "sam", "jordan"], default);
+        await Fixtures.RetireActorAsync(store, "tenant", ["alex", "sam", "jordan"], "retired", clock, default);
+        Assert.Equal(migrated.Epoch, (await store.GetAsync("tenant", "chat-project", default))!.Value.Epoch);
+    }
+    [Fact]
+    public async Task RetirementRefusesActiveActorsAndLiveResourceMappings()
+    {
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Fixtures.RetireActorAsync(store, "tenant", ["alex", "sam", "jordan"], "sam", clock, default));
+        var group = (await store.GetAsync("tenant", "chat-project", default))!;
+        await store.SaveAsync(group with { Value = group.Value with { GraphChatId = "real-chat" } }, default);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Fixtures.RetireActorAsync(store, "tenant", ["alex", "sam", "jordan"], "retired", clock, default));
     }
     private sealed class Clock : TimeProvider
     {

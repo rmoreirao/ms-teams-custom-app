@@ -15,7 +15,7 @@ public interface IGraphCallBudget
 public sealed class RedisGraphCallBudget(IConnectionMultiplexer redis, string tenant, string clientId,
     int intervalMilliseconds, int dataIntervalMilliseconds) : IGraphCallBudget
 {
-    private string Key => $"graph:{{{clientId}}}:{tenant}";
+    private string Key => $"graph:{{{clientId}}}";
     private const string Acquire = """
         local t=redis.call('TIME'); local now=t[1]*1000+math.floor(t[2]/1000)
         for i=1,#ARGV,2 do
@@ -27,8 +27,9 @@ public sealed class RedisGraphCallBudget(IConnectionMultiplexer redis, string te
     public async Task AcquireAsync(string lane, string resource, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        var fields = new List<RedisValue> { "cooldown", 0, "global", intervalMilliseconds, $"lane:{lane}",
-            lane == "data" ? dataIntervalMilliseconds : intervalMilliseconds, $"resource:{resource}", 1250 };
+        var fields = new List<RedisValue> { $"cooldown:{tenant}", 0, "global", intervalMilliseconds,
+            $"tenant:{tenant}", intervalMilliseconds, $"lane:{tenant}:{lane}",
+            lane == "data" ? dataIntervalMilliseconds : intervalMilliseconds, $"resource:{tenant}:{resource}", 1250 };
         var result = await redis.GetDatabase().ScriptEvaluateAsync(Acquire, [Key], fields.ToArray());
         if ((long)result != 1) throw new AppError(429, "graph_capacity_exceeded", "Shared Graph capacity is unavailable; work remains pending.");
     }
@@ -37,9 +38,9 @@ public sealed class RedisGraphCallBudget(IConnectionMultiplexer redis, string te
         ct.ThrowIfCancellationRequested();
         await redis.GetDatabase().ScriptEvaluateAsync("""
             local t=redis.call('TIME'); local untilAt=t[1]*1000+math.floor(t[2]/1000)+tonumber(ARGV[1])
-            local previous=tonumber(redis.call('HGET',KEYS[1],'cooldown') or '0')
-            redis.call('HSET',KEYS[1],'cooldown',math.max(previous,untilAt)); redis.call('EXPIRE',KEYS[1],86400)
-            """, [Key], [(long)duration.TotalMilliseconds]);
+            local previous=tonumber(redis.call('HGET',KEYS[1],ARGV[2]) or '0')
+            redis.call('HSET',KEYS[1],ARGV[2],math.max(previous,untilAt)); redis.call('EXPIRE',KEYS[1],86400)
+            """, [Key], [(long)duration.TotalMilliseconds, $"cooldown:{tenant}"]);
     }
 }
 public static class GraphUrls
@@ -55,6 +56,13 @@ public static class GraphUrls
             throw new AppError(400, "graph_cursor_invalid", "Graph continuation leaves the approved resource.");
         return uri;
     }
+    public static string BudgetResource(Uri uri)
+    {
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments is ["v1.0", "chats", _, ..]) return string.Join('/', segments.Take(3));
+        if (segments is ["v1.0", "teams", _, "channels", _, ..]) return string.Join('/', segments.Take(5));
+        return uri.AbsolutePath;
+    }
 }
 public sealed class GraphBackground(HttpClient http, TokenCredential credential, IGraphCallBudget budget) : IGraphBackground
 {
@@ -63,15 +71,22 @@ public sealed class GraphBackground(HttpClient http, TokenCredential credential,
     public Task<JsonElement> PatchAsync(string path, object body, CancellationToken ct) => RequestAsync(HttpMethod.Patch, path, body, ct);
     private async Task<JsonElement> RequestAsync(HttpMethod method, string path, object? body, CancellationToken ct)
     {
+        using var measurement = LiveTelemetry.Measure("graph-background");
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        ct = deadline.Token;
         var uri = GraphUrls.Validate(path);
-        var control = uri.AbsolutePath.StartsWith("/v1.0/subscriptions", StringComparison.Ordinal);
+        var control = uri.AbsolutePath == "/v1.0/subscriptions" ||
+            uri.AbsolutePath.StartsWith("/v1.0/subscriptions/", StringComparison.Ordinal);
         if (!control && method != HttpMethod.Get) throw new InvalidOperationException("Background Graph clients cannot send user messages.");
-        await budget.AcquireAsync(control ? "control" : "data", uri.AbsolutePath, ct);
-        var token = await credential.GetTokenAsync(new TokenRequestContext(["https://graph.microsoft.com/.default"]), ct);
+        await budget.AcquireAsync(control ? "control" : "data", GraphUrls.BudgetResource(uri), ct).WaitAsync(ct);
+        var token = await credential.GetTokenAsync(new TokenRequestContext(["https://graph.microsoft.com/.default"]), ct)
+            .AsTask().WaitAsync(ct);
         using var request = new HttpRequestMessage(method, uri);
         request.Headers.Authorization = new("Bearer", token.Token);
         request.Headers.Add("client-request-id", Guid.NewGuid().ToString());
         if (body is not null) request.Content = JsonContent.Create(body);
+        LiveTelemetry.GraphAttempts.Add(1, new KeyValuePair<string, object?>("mode", "application"));
         using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         if (response.StatusCode == HttpStatusCode.TooManyRequests)
         {
@@ -82,8 +97,7 @@ public sealed class GraphBackground(HttpClient http, TokenCredential credential,
         if (!response.IsSuccessStatusCode)
             throw new AppError(response.StatusCode == HttpStatusCode.TooManyRequests ? 429 : 503,
                 $"graph_{(int)response.StatusCode}", "Graph rejected background work; its checkpoint has not advanced.");
-        using var content = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct),
-            new JsonDocumentOptions { MaxDepth = 32 }, ct);
-        return content.RootElement.Clone();
+        if (response.StatusCode == HttpStatusCode.NoContent) return JsonSerializer.SerializeToElement(new { });
+        return await BoundedJson.ReadAsync(response.Content, 16 * 1024 * 1024, ct);
     }
 }
