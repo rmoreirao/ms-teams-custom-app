@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       confirmation:
-        description: "Enter DEPLOY-SYNTHETIC-DEV to acknowledge billable dev resources."
+        description: "Enter DEPLOY-DEV to release an image to the two existing Live Development apps."
         type: string
         required: true
 permissions:
@@ -23,24 +23,25 @@ jobs:
     env:
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-      RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
-      WEB_CLIENT_ID: ${{ vars.TEAMS_WEB_CLIENT_ID }}
-      EVENTS_CLIENT_ID: ${{ vars.TEAMS_EVENTS_CLIENT_ID }}
-      ACTOR_IDS: ${{ vars.TEAMS_FIXTURE_ACTOR_IDS }}
-      REGISTRY: ${{ vars.AZURE_REGISTRY_NAME }}
-      AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'swedencentral' }}
-      COSMOS_LOCATION: ${{ vars.AZURE_COSMOS_LOCATION || vars.AZURE_LOCATION || 'swedencentral' }}
-      REDIS_SKU: ${{ vars.AZURE_REDIS_SKU || 'Balanced_B0' }}
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_REGISTRY_NAME: ${{ vars.AZURE_REGISTRY_NAME }}
+      AZURE_API_APP_NAME: ${{ vars.AZURE_API_APP_NAME }}
+      AZURE_WORKER_APP_NAME: ${{ vars.AZURE_WORKER_APP_NAME }}
+      AZURE_CONTAINER_APP_ENVIRONMENT_ID: ${{ vars.AZURE_CONTAINER_APP_ENVIRONMENT_ID }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - name: Require completed privileged bootstrap
+      - name: Require existing protected Live Development targets
         env:
-          BOOTSTRAP_READY: ${{ vars.TEAMS_BOOTSTRAP_COMPLETE }}
           CONFIRMATION: ${{ inputs.confirmation }}
+          DEPLOY_CLIENT_ID: ${{ vars.AZURE_DEPLOY_CLIENT_ID }}
+        shell: bash
         run: |
-          test "$CONFIRMATION" = "DEPLOY-SYNTHETIC-DEV" || { echo "Explicit deployment confirmation is required."; exit 1; }
-          test "$BOOTSTRAP_READY" = "true" || { echo "Complete Entra, RBAC and private-origin bootstrap first."; exit 1; }
-          test -n "$AZURE_SUBSCRIPTION_ID" && test -n "$RESOURCE_GROUP" && test -n "$WEB_CLIENT_ID" && test -n "$EVENTS_CLIENT_ID" && test -n "$ACTOR_IDS" && test -n "$REGISTRY"
+          set -euo pipefail
+          test "$CONFIRMATION" = "DEPLOY-DEV" || { echo "Explicit DEPLOY-DEV acknowledgement is required."; exit 1; }
+          for name in AZURE_SUBSCRIPTION_ID AZURE_TENANT_ID AZURE_RESOURCE_GROUP AZURE_REGISTRY_NAME AZURE_API_APP_NAME AZURE_WORKER_APP_NAME AZURE_CONTAINER_APP_ENVIRONMENT_ID DEPLOY_CLIENT_ID; do
+            test -n "${!name}" || { echo "Missing protected Development variable: $name"; exit 1; }
+          done
+          # Environment reviewers and existing OIDC/RBAC are external prerequisites; this job grants nothing.
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           dotnet-version: 10.0.x
@@ -49,12 +50,18 @@ jobs:
           node-version: 22.x
       - name: Verify release source
         run: |
+          set -euo pipefail
           dotnet restore TeamsReference.slnx --locked-mode
           dotnet test TeamsReference.slnx --configuration Release --no-restore
           cd src/Web
           npm ci --no-audit --no-fund
           npm run build
           npm test
+      - name: Verify release safety contracts offline
+        shell: pwsh
+        run: |
+          ./tests/Scripts/DeploymentContract.Tests.ps1
+          ./tests/Scripts/DevDeployment.Tests.ps1
       - uses: Azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
         with:
           client-id: ${{ vars.AZURE_DEPLOY_CLIENT_ID }}
@@ -65,27 +72,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          server="$(az acr show --name "$REGISTRY" --query loginServer -o tsv)"
-          az acr login --name "$REGISTRY"
+          server="$(az acr show --subscription "$AZURE_SUBSCRIPTION_ID" --name "$AZURE_REGISTRY_NAME" --query loginServer -o tsv)"
+          test "$server" = "$AZURE_REGISTRY_NAME.azurecr.io" || { echo "Unexpected registry."; exit 1; }
+          az acr login --subscription "$AZURE_SUBSCRIPTION_ID" --name "$AZURE_REGISTRY_NAME"
           docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" --tag "$server/teams-reference:$GITHUB_SHA" .
           docker push "$server/teams-reference:$GITHUB_SHA"
-          digest="$(az acr repository show --name "$REGISTRY" --image "teams-reference:$GITHUB_SHA" --query digest -o tsv)"
+          digest="$(az acr repository show --subscription "$AZURE_SUBSCRIPTION_ID" --name "$AZURE_REGISTRY_NAME" --image "teams-reference:$GITHUB_SHA" --query digest -o tsv)"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "An immutable image digest is required."; exit 1; }
           echo "reference=$server/teams-reference@$digest" >> "$GITHUB_OUTPUT"
-      - name: Install pinned Bicep
-        run: az bicep install --version v0.48.1
-      - name: Deploy and verify synthetic fixtures
+      - name: Preflight and release existing Live images
         shell: pwsh
         env:
           IMAGE_REFERENCE: ${{ steps.image.outputs.reference }}
+          CONFIRMATION: ${{ inputs.confirmation }}
         run: |
-          $parameters = @{
-            webClientId = @{ value = $env:WEB_CLIENT_ID }
-            eventsClientId = @{ value = $env:EVENTS_CLIENT_ID }
-            fixtureActorIds = @{ value = @(ConvertFrom-Json $env:ACTOR_IDS) }
-            location = @{ value = $env:AZURE_LOCATION }
-            cosmosLocation = @{ value = $env:COSMOS_LOCATION }
-            redisSku = @{ value = $env:REDIS_SKU }
+          $arguments = @{
+            SubscriptionId = $env:AZURE_SUBSCRIPTION_ID
+            TenantId = $env:AZURE_TENANT_ID
+            ResourceGroup = $env:AZURE_RESOURCE_GROUP
+            RegistryName = $env:AZURE_REGISTRY_NAME
+            ApiAppName = $env:AZURE_API_APP_NAME
+            WorkerAppName = $env:AZURE_WORKER_APP_NAME
+            EnvironmentId = $env:AZURE_CONTAINER_APP_ENVIRONMENT_ID
+            Image = $env:IMAGE_REFERENCE
           }
-          $path = Join-Path $env:RUNNER_TEMP 'dev.parameters.json'
-          @{ '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'; contentVersion = '1.0.0.0'; parameters = $parameters } | ConvertTo-Json -Depth 10 | Set-Content $path
-          ./scripts/Deploy-Dev.ps1 -SubscriptionId $env:AZURE_SUBSCRIPTION_ID -ResourceGroup $env:RESOURCE_GROUP -ParametersPath $path -Image $env:IMAGE_REFERENCE -Apply -EnableRealtimeAdmission -Confirm:$false
+          ./scripts/Deploy-Dev.ps1 @arguments
+          # Only image/revision identities are retained; never publish environment or secret snapshots.
+          ./scripts/Deploy-Dev.ps1 @arguments -Apply -Confirmation $env:CONFIRMATION -Confirm:$false |
+            ForEach-Object {
+              $_
+              if ($_ -is [string] -and $_ -match '^(Recovery:|Verified:|Recovery requires)') {
+                Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $_
+              }
+            }

@@ -19,7 +19,7 @@ public static class LiveServices
         services.AddSingleton(options);
         services.AddSingleton(sp => new LiveControlStore(sp.GetRequiredKeyedService<Teams.Infrastructure.IPartitionDocuments>("control"),
             sp.GetRequiredService<TimeProvider>(), tenant));
-        if (role == "Receiver")
+        if (options.Hosts("Receiver", role))
         {
             services.AddSingleton<INotificationTokenValidator>(new NotificationTokenValidator(tenant, options.SyncClientId,
                 new ConfigurationManager<OpenIdConnectConfiguration>(
@@ -30,7 +30,7 @@ public static class LiveServices
                 sp.GetRequiredService<INotificationTokenValidator>(), sp.GetRequiredService<IEncryptedNotificationInbox>(),
                 sp.GetRequiredService<TimeProvider>()));
         }
-        if (role == "Projector")
+        if (options.Hosts("Projector", role))
         {
             services.AddSingleton<IEncryptedNotificationInbox, ServiceBusNotificationInbox>();
             services.AddSingleton<INotificationKeyDecryptor>(new VaultNotificationKeys(options, credential));
@@ -40,7 +40,7 @@ public static class LiveServices
                 sp.GetRequiredService<IEncryptedNotificationInbox>()));
             services.AddHostedService<NotificationWorker>();
         }
-        if (role == "Delivery")
+        if (options.Hosts("Delivery", role))
         {
             services.AddSingleton<IDeliveryWorkQueue, ServiceBusDeliveryQueue>();
             services.AddSingleton(sp => new OutboxDispatcher(tenant, options, sp.GetRequiredService<IDeliveryWorkQueue>(),
@@ -51,7 +51,7 @@ public static class LiveServices
             services.AddHostedService<OutboxFeedWorker>();
             services.AddHostedService<DeliveryQueueWorker>();
         }
-        if (role == "Control")
+        if (options.Hosts("Control", role))
         {
             services.AddHttpClient("live-graph", c => c.Timeout = TimeSpan.FromSeconds(20))
                 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
@@ -59,16 +59,25 @@ public static class LiveServices
                 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
             services.AddSingleton<IGraphCallBudget>(sp => new RedisGraphCallBudget(sp.GetRequiredService<IConnectionMultiplexer>(),
                 tenant, options.SyncClientId, options.GraphIntervalMilliseconds, options.DataIntervalMilliseconds));
-            services.AddSingleton<IGraphBackground>(sp =>
+            if (options.DelegatedSynthetic)
             {
-                var managed = new ManagedIdentityCredential(ManagedIdentityId.FromUserAssignedClientId(options.ControlIdentityClientId));
-                var sync = new ClientAssertionCredential(tenant, options.SyncClientId, async ct =>
-                    (await managed.GetTokenAsync(new TokenRequestContext(["api://AzureADTokenExchange/.default"]), ct)).Token);
-                return new GraphBackground(sp.GetRequiredService<IHttpClientFactory>().CreateClient("live-graph"), sync,
-                    sp.GetRequiredService<IGraphCallBudget>());
-            });
-            services.AddSingleton<IEntitlementFeed>(sp => new EntitlementFeed(
-                sp.GetRequiredService<IHttpClientFactory>().CreateClient("live-authority"), credential, options, tenant));
+                services.AddSingleton<DelegatedSyntheticGraph>();
+                services.AddSingleton<IGraphBackground>(sp => sp.GetRequiredService<DelegatedSyntheticGraph>());
+                services.AddSingleton<IEntitlementFeed, DelegatedSyntheticAuthority>();
+            }
+            else
+            {
+                services.AddSingleton<IGraphBackground>(sp =>
+                {
+                    var managed = new ManagedIdentityCredential(ManagedIdentityId.FromUserAssignedClientId(options.ControlIdentityClientId));
+                    var sync = new ClientAssertionCredential(tenant, options.SyncClientId, async ct =>
+                        (await managed.GetTokenAsync(new TokenRequestContext(["api://AzureADTokenExchange/.default"]), ct)).Token);
+                    return new GraphBackground(sp.GetRequiredService<IHttpClientFactory>().CreateClient("live-graph"), sync,
+                        sp.GetRequiredService<IGraphCallBudget>());
+                });
+                services.AddSingleton<IEntitlementFeed>(sp => new EntitlementFeed(
+                    sp.GetRequiredService<IHttpClientFactory>().CreateClient("live-authority"), credential, options, tenant));
+            }
             services.AddSingleton<SubscriptionController>();
             services.AddSingleton<ResourceHydrator>();
             services.AddHostedService(sp => new LiveControlWorker(tenant, options, sp.GetRequiredService<ILiveStateStore>(),
@@ -90,15 +99,17 @@ public static class LiveServices
                 try
                 {
                     using var body = await JsonDocument.ParseAsync(context.Request.Body, new() { MaxDepth = 32 }, context.RequestAborted);
-                    await intake.AcceptAsync(body.RootElement, lifecycle, context.RequestAborted);
+                    var count = await intake.AcceptAsync(body.RootElement, lifecycle, context.RequestAborted);
+                    app.Logger.LogInformation("Graph callback durably processed; lifecycle={Lifecycle}, admitted={Count}, trace {Trace}",
+                        lifecycle, count, context.TraceIdentifier);
                     return Results.Accepted();
                 }
                 catch (Exception ex) when (ex is JsonException or KeyNotFoundException or SecurityTokenException ||
                     ex is AppError { Status: < 500 })
                 {
                     // Graph's webhook protocol conceals invalid-payload validation results from publishers.
-                    app.Logger.LogWarning("Graph callback rejected without enqueue: {ErrorType}, trace {Trace}",
-                        ex.GetType().Name, context.TraceIdentifier);
+                    app.Logger.LogWarning("Graph callback rejected without enqueue: {Code}, lifecycle={Lifecycle}, trace {Trace}",
+                        ex is AppError error ? error.Code : ex.GetType().Name, lifecycle, context.TraceIdentifier);
                     return Results.Accepted();
                 }
             });

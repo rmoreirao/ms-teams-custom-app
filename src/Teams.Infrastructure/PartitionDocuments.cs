@@ -19,65 +19,50 @@ public interface IPartitionDocuments
     Task<bool> WriteAsync(IReadOnlyList<DocumentWrite> writes, CancellationToken ct);
 }
 
-public sealed class MemoryPartitionDocuments : IPartitionDocuments
+public static class PartitionDocumentBatch
 {
-    private readonly Dictionary<string, Versioned<PartitionDocument>> values = [];
-    private readonly object gate = new();
-    private long version;
-    public Task<Versioned<PartitionDocument>?> ReadAsync(string pk, string id, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        lock (gate) return Task.FromResult(values.GetValueOrDefault($"{pk}/{id}"));
-    }
-    public Task<bool> WriteAsync(IReadOnlyList<DocumentWrite> writes, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        Validate(writes);
-        lock (gate)
-        {
-            if (writes.Any(w => values.GetValueOrDefault($"{w.Value.Pk}/{w.Value.Id}")?.Version != w.ExpectedVersion))
-                return Task.FromResult(false);
-            foreach (var write in writes)
-                values[$"{write.Value.Pk}/{write.Value.Id}"] = new(write.Value, (++version).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            return Task.FromResult(true);
-        }
-    }
-    internal static void Validate(IReadOnlyList<DocumentWrite> writes)
+    public static void Validate(IReadOnlyList<DocumentWrite> writes)
     {
         if (writes.Count is < 1 or > 100 || writes.Select(w => w.Value.Pk).Distinct().Count() != 1 ||
             writes.Select(w => w.Value.Id).Distinct().Count() != writes.Count)
             throw new InvalidOperationException("A batch must have 1-100 unique items in one logical partition.");
     }
-    public Task<DocumentPage> QueryAsync(DocumentFilter f, int limit, string? cursor, CancellationToken ct)
+}
+
+public sealed record PrimaryReadResult(int Version, bool Found, PartitionDocument? Document, string? Etag)
+{
+    public Versioned<PartitionDocument>? Validate(string pk, string id, string? sessionToken)
     {
-        ct.ThrowIfCancellationRequested();
-        if (limit is < 1 or > 100) throw new ArgumentOutOfRangeException(nameof(limit));
-        lock (gate)
-        {
-            var query = values.Values.Where(v => v.Value.TenantId == f.TenantId && v.Value.Kind == f.Kind &&
-                (f.Pk is null || v.Value.Pk == f.Pk) && (f.ActorId is null || v.Value.ActorId == f.ActorId) &&
-                (f.ConversationId is null || v.Value.ConversationId == f.ConversationId) &&
-                (f.Since is null || v.Value.At >= f.Since) && (f.Pending is null || v.Value.Pending == f.Pending) &&
-                (f.Parent is null || v.Value.Parent == f.Parent) &&
-                (f.AfterRevision is null || v.Value.Revision > f.AfterRevision) &&
-                (f.Before is null || v.Value.At < f.Before || v.Value.At == f.Before &&
-                    string.CompareOrdinal(v.Value.SourceId, f.BeforeId) > 0));
-            var ordered = f.OldestFirst
-                ? query.OrderBy(v => v.Value.At).ThenBy(v => v.Value.Id, StringComparer.Ordinal)
-                : f.Kind == "message"
-                ? query.OrderByDescending(v => v.Value.At).ThenBy(v => v.Value.SourceId, StringComparer.Ordinal)
-                : query.OrderBy(v => v.Value.Id, StringComparer.Ordinal);
-            var offset = cursor is null ? 0 : int.Parse(cursor, System.Globalization.CultureInfo.InvariantCulture);
-            var items = ordered.Skip(offset).Take(limit + 1).ToArray();
-            return Task.FromResult(new DocumentPage(items.Take(limit).ToArray(), items.Length > limit ? (offset + limit).ToString(System.Globalization.CultureInfo.InvariantCulture) : null));
-        }
+        if (Version != 1 || !Found && (Document is not null || Etag is not null))
+            throw new AppError(503, "primary_read_invalid", "The authoritative read returned invalid identity, schema or session evidence.");
+        if (!Found) return null;
+        if (Document is not { } document || document.Id != id || document.Pk != pk ||
+            Etag is not { Length: > 0 } etag || string.IsNullOrWhiteSpace(etag) || string.IsNullOrWhiteSpace(sessionToken))
+            throw new AppError(503, "primary_read_invalid", "The authoritative read returned invalid identity, schema or session evidence.");
+        return new(document, etag);
     }
 }
 
-public sealed class CosmosPartitionDocuments(Container container) : IPartitionDocuments
+public sealed class CosmosPartitionDocuments(Container container, bool primaryReads = false) : IPartitionDocuments
 {
     public async Task<Versioned<PartitionDocument>?> ReadAsync(string pk, string id, CancellationToken ct)
     {
+        if (primaryReads)
+        {
+            try
+            {
+                // The primary-only procedure also advances this SDK client's partition session token.
+                var response = await container.Scripts.ExecuteStoredProcedureAsync<PrimaryReadResult>(
+                    "readCurrentV1", new PartitionKey(pk), new object[] { id, pk }, cancellationToken: ct);
+                var result = response.Resource ?? throw new AppError(503, "primary_read_invalid", "The authoritative read returned no evidence.");
+                return result.Validate(pk, id, response.Headers.Session);
+            }
+            catch (CosmosException ex) when (ex.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Forbidden)
+            {
+                throw new AppError(503, "primary_read_unavailable",
+                    "The primary-read procedure or its execute permission is missing. Provision the SessionPrimary storage contract.");
+            }
+        }
         try
         {
             var response = await container.ReadItemAsync<PartitionDocument>(id, new PartitionKey(pk), cancellationToken: ct);
@@ -87,7 +72,7 @@ public sealed class CosmosPartitionDocuments(Container container) : IPartitionDo
     }
     public async Task<bool> WriteAsync(IReadOnlyList<DocumentWrite> writes, CancellationToken ct)
     {
-        MemoryPartitionDocuments.Validate(writes);
+        PartitionDocumentBatch.Validate(writes);
         var batch = container.CreateTransactionalBatch(new(writes[0].Value.Pk));
         foreach (var write in writes)
         {

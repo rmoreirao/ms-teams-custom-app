@@ -7,8 +7,8 @@ import { App } from "./App";
 import type { Conversation, Session } from "./api";
 
 const session: Session = {
-  id: "alex", name: "Alex", simulated: false, localAuth: false, scenarioAdmin: false,
-  basicValidation: true, csrf: "test-csrf",
+  id: "alex", name: "Alex", environment: "Development", source: "Microsoft Teams",
+  scopedValidation: true, canStartDirectChats: false, canCreateDirectChats: false, csrf: "test-csrf",
 };
 const chats: Conversation[] = [
   { id: "graph-pilot-chat", title: "Dedicated test chat", kind: "chat", team: null, revision: 1 },
@@ -20,9 +20,9 @@ function mockApi(catalog: (path: string) => Response | Promise<Response> = () =>
   const fetch = vi.fn(async (path: string, init?: RequestInit) => {
     if (path === "/api/session") return json(session);
     if (path.startsWith("/api/conversations") && !path.includes("/messages")) return catalog(path);
-    if (path === "/api/realtime/negotiate") return json({ transport: "poll", intervalSeconds: 30 });
+    if (path === "/api/realtime/negotiate") return json({ code: "realtime_preparing", message: "Live updates are preparing." }, 503);
     if (path.endsWith("/messages") && !init?.method) return json({
-      messages: [], cursor: null, revision: 1, window: "authorized-window", simulated: false, parentMessage: null,
+      messages: [], cursor: null, revision: 1, window: "authorized-window", parentMessage: null,
     });
     return json({ code: "unexpected_request", message: "Unexpected request in test." }, 500);
   });
@@ -33,6 +33,28 @@ const discovery = () => within(screen.getByRole("region", { name: "Find a chat" 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("capability-aware new chat", () => {
+  it("keeps the other person's catalog name in chat rows, search, and the header across refreshes", async () => {
+    vi.useFakeTimers();
+    const title = "Reference Test jordan";
+    mockApi(() => json([
+      { id: "direct-chat", title, kind: "chat", team: null, revision: 1 },
+      { id: "group-chat", title: "Project group", kind: "chat", team: null, revision: 1 },
+    ]));
+    await act(async () => { render(<App />); });
+    const navigation = within(screen.getByRole("navigation", { name: "Conversations" }));
+    fireEvent.click(navigation.getByRole("button", { name: `${title}Chat` }));
+    expect(screen.getByRole("heading", { name: title })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: /Alex/ })).not.toBeInTheDocument();
+    expect(navigation.getByText(session.name)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Chats" }));
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search conversations" }), { target: { value: "jordan" } });
+    expect(navigation.getByRole("button", { name: `${title}Chat` })).toBeVisible();
+    expect(navigation.queryByRole("button", { name: "Project groupChat" })).not.toBeInTheDocument();
+    await act(async () => { vi.advanceTimersByTime(30_000); });
+    expect(screen.getByRole("heading", { name: title })).toBeVisible();
+    expect(navigation.getByRole("button", { name: `${title}Chat` })).toBeVisible();
+  });
+
   it("opens the reference search surface but only offers authorized chats, not fictional people or channels", async () => {
     const fetch = mockApi();
     render(<App />);
@@ -40,7 +62,7 @@ describe("capability-aware new chat", () => {
     expect(input).toHaveFocus();
     expect(await discovery().findByRole("button", { name: "Open chat: Dedicated test chat" })).toBeVisible();
     expect(discovery().queryByRole("button", { name: /General/ })).not.toBeInTheDocument();
-    expect(discovery().getByText(/New one-to-one chats and directory lookup are not enabled/)).toBeVisible();
+    expect(discovery().getByText(/Creating a chat and looking up people by email are not available/)).toBeVisible();
     expect(screen.queryByRole("button", { name: "Test scenarios" })).not.toBeInTheDocument();
     fireEvent.change(input, { target: { value: "  DEDICATED  " } });
     expect(discovery().getByRole("button", { name: "Open chat: Dedicated test chat" })).toBeVisible();
@@ -104,13 +126,13 @@ describe("capability-aware new chat", () => {
     expect(await discovery().findByRole("heading", { name: "No chats available" })).toBeVisible();
   });
 
-  it("keeps a 30-second poll in GraphPilot without opening simulator controls", async () => {
+  it("does not replace unavailable Live updates with a 30-second catalog poll", async () => {
     vi.useFakeTimers();
     const fetch = mockApi();
     await act(async () => { render(<App />); });
-    expect(screen.getByText("Updates every 30s")).toBeVisible();
+    expect(screen.getByText("Synchronization unavailable")).toBeVisible();
     await act(async () => { vi.advanceTimersByTime(30_000); });
-    expect(fetch.mock.calls.filter(([path]) => path === "/api/conversations")).toHaveLength(2);
+    expect(fetch.mock.calls.filter(([path]) => path === "/api/conversations")).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Test scenarios" })).not.toBeInTheDocument();
   });
 

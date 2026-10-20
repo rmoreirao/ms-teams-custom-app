@@ -7,6 +7,15 @@ namespace Teams.Host;
 public sealed class LiveOptions
 {
     public string ApprovalReference { get; set; } = "";
+    public string ReadConsistency { get; set; } = "Strong";
+    public string AuthorityMode { get; set; } = "Policy";
+    public string[] HostedRoles { get; set; } = [];
+    public string[] SyntheticActorIds { get; set; } = [];
+    public DateTimeOffset SyntheticNotBefore { get; set; }
+    public Dictionary<string, DateTimeOffset> SyntheticHistoryFrom { get; set; } = [];
+    public Dictionary<string, string> SyntheticResourceOwners { get; set; } = [];
+    [JsonIgnore] public bool DelegatedSynthetic => AuthorityMode == "DelegatedSynthetic";
+    public bool Hosts(string role, string hostRole) => HostedRoles.Length == 0 ? hostRole == role : HostedRoles.Contains(role);
     public string SyncClientId { get; set; } = "";
     public string ControlIdentityClientId { get; set; } = "";
     public string NotificationUrl { get; set; } = "";
@@ -23,9 +32,12 @@ public sealed class LiveOptions
     public int DataIntervalMilliseconds { get; set; } = 250;
     public int QueueConcurrency { get; set; } = 8;
     public ApprovedResource[] Resources { get; set; } = [];
+    public ApprovedDirectChat[] DirectChats { get; set; } = [];
     public SubscriptionScope[] SubscriptionScopes { get; set; } = [];
     public void Validate(string tenant, bool local, bool localAuth, string role)
     {
+        if (ReadConsistency is not ("Strong" or "SessionPrimary"))
+            throw new InvalidOperationException("Live ReadConsistency must explicitly select Strong or SessionPrimary.");
         if (!Guid.TryParse(tenant, out var tenantId) || tenantId == Guid.Empty ||
             !Guid.TryParse(SyncClientId, out var sync) || sync == Guid.Empty ||
             !Guid.TryParse(ControlIdentityClientId, out var identity) || identity == Guid.Empty ||
@@ -33,11 +45,13 @@ public sealed class LiveOptions
             throw new InvalidOperationException("Live mode requires recorded approvals, Entra/Cosmos, explicit client identities and a positive writer epoch.");
         if (role is not ("Api" or "Receiver" or "Projector" or "Delivery" or "Control"))
             throw new InvalidOperationException("Live mode requires an independently deployed supported role.");
-        foreach (var url in new[] { NotificationUrl, LifecycleUrl, EntitlementAuthority })
+        ValidateHosting(role, tenant);
+        foreach (var url in DelegatedSynthetic ? new[] { NotificationUrl, LifecycleUrl } :
+            new[] { NotificationUrl, LifecycleUrl, EntitlementAuthority })
             if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != "https" ||
                 uri.UserInfo.Length != 0 || uri.Fragment.Length != 0 || uri.Query.Length != 0 || uri.IsLoopback)
                 throw new InvalidOperationException("Live callbacks and policy authority require approved public HTTPS URLs.");
-        if (string.IsNullOrWhiteSpace(EntitlementScope) || string.IsNullOrWhiteSpace(NotificationCertificateId) ||
+        if (!DelegatedSynthetic && string.IsNullOrWhiteSpace(EntitlementScope) || string.IsNullOrWhiteSpace(NotificationCertificateId) ||
             NotificationCertificate.Length == 0 || !NotificationKeys.ContainsKey(NotificationCertificateId))
             throw new InvalidOperationException("Live policy scope and notification encryption references are required.");
         if (AdmissionEnabled && !SynchronizationEnabled)
@@ -68,6 +82,59 @@ public sealed class LiveOptions
                 (s.Path is not ("chats/getAllMessages" or "teams/getAllMessages") && !Resources.Any(r => r.Path == s.Path))) ||
             Resources.Any(r => !SubscriptionScopes.Any(s => s.Covers(r))))
             throw new InvalidOperationException("Every approved resource needs an explicit supported subscription scope.");
+        ValidateDirectChats();
+        if (DelegatedSynthetic && (Resources.Length is < 2 or > 5 || Resources.Count(r => r.Kind == "channel") != 1 ||
+            Resources.Any(r => !r.Id.StartsWith("graph-pilot-", StringComparison.Ordinal)) ||
+            SubscriptionScopes.Any(scope => !Resources.Any(resource => resource.Path == scope.Path)) ||
+            Resources.Any(resource => !SyntheticResourceOwners.TryGetValue(resource.Id, out var owner) ||
+                !SyntheticActorIds.Contains(owner) || !SyntheticHistoryFrom.TryGetValue(resource.Id, out var from) ||
+                from < SyntheticNotBefore || from > DateTimeOffset.UtcNow) ||
+            DirectChats.Any(pair => !SyntheticActorIds.Contains(pair.FirstActorId) || !SyntheticActorIds.Contains(pair.SecondActorId))))
+            throw new InvalidOperationException("DelegatedSynthetic is restricted to its explicit test resources, per-resource owners and history cutoffs.");
+        if (DelegatedSynthetic && Resources.Where(resource => !DirectChats.Any(pair => pair.ResourceId == resource.Id))
+            .Any(resource => !resource.Title.StartsWith(DevelopmentTeamsScope.ResourcePrefix, StringComparison.Ordinal)))
+            throw new InvalidOperationException("The synthetic group/channel must use the dedicated test-resource title prefix.");
+    }
+    public void ValidateHosting(string hostRole, string tenant)
+    {
+        if (AuthorityMode is not ("Policy" or "DelegatedSynthetic"))
+            throw new InvalidOperationException("Select the explicit Policy or DelegatedSynthetic authority mode.");
+        var roles = HostedRoles.Length == 0 ? new[] { hostRole } : HostedRoles;
+        if (!roles.Contains(hostRole) || roles.Distinct().Count() != roles.Length ||
+            roles.Any(value => value is not ("Api" or "Receiver" or "Projector" or "Delivery" or "Control")) ||
+            !DelegatedSynthetic && roles.Length != 1)
+            throw new InvalidOperationException("Combined live hosting is allowed only in the explicit bounded synthetic profile.");
+        if (DelegatedSynthetic && (ReadConsistency != "SessionPrimary" ||
+            !Guid.TryParse(tenant, out _) || SyntheticActorIds.Length != 3 ||
+            SyntheticActorIds.Distinct(StringComparer.Ordinal).Count() != 3 ||
+            SyntheticActorIds.Any(actor => !Guid.TryParseExact(actor, "D", out var value) || value == Guid.Empty) ||
+            SyntheticNotBefore == default || SyntheticNotBefore > DateTimeOffset.UtcNow ||
+            roles.Contains("Api") && !roles.Order().SequenceEqual(new[] { "Api", "Control", "Receiver" }) ||
+            !roles.Contains("Api") && !roles.Order().SequenceEqual(new[] { "Delivery", "Projector" })))
+            throw new InvalidOperationException("DelegatedSynthetic requires exactly three real test identities and the fixed API/control/receiver or projector/delivery topology.");
+    }
+    public void ValidateDirectChats()
+    {
+        if (DirectChats.Length > 10000 ||
+            DirectChats.Select(pair => pair.ResourceId).Distinct(StringComparer.Ordinal).Count() != DirectChats.Length ||
+            DirectChats.Select(pair => string.Join(":", new[] { pair.FirstActorId, pair.SecondActorId }.Order(StringComparer.Ordinal)))
+                .Distinct(StringComparer.Ordinal).Count() != DirectChats.Length ||
+            DirectChats.Any(pair => !Guid.TryParseExact(pair.FirstActorId, "D", out var first) || first == Guid.Empty ||
+                !Guid.TryParseExact(pair.SecondActorId, "D", out var second) || second == Guid.Empty || first == second ||
+                !Resources.Any(resource => resource.Id == pair.ResourceId && resource.Kind == "chat")) ||
+            DirectChats.SelectMany(pair => new[] { pair.FirstActorId, pair.SecondActorId }).GroupBy(id => id)
+                .Any(group => group.Count() > 100))
+            throw new InvalidOperationException("Direct-chat discovery requires unique approved chat/pair mappings and at most 100 contacts per actor.");
+    }
+    public void ValidateStorageProfile(string accountConsistency, int readableRegions, int writableRegions)
+    {
+        if (ReadConsistency == "Strong" && accountConsistency != "Strong")
+            throw new InvalidOperationException("The Strong profile requires a Strong-consistency account.");
+        if (ReadConsistency == "SessionPrimary" &&
+            (accountConsistency is not ("Session" or "Strong") || readableRegions != 1 || writableRegions != 1))
+            throw new InvalidOperationException("SessionPrimary requires one readable/writable region and Session or Strong account consistency.");
+        if (ReadConsistency is not ("Strong" or "SessionPrimary"))
+            throw new InvalidOperationException("Unsupported live read-consistency profile.");
     }
 }
 public sealed record SubscriptionScope(string Id, string Path)

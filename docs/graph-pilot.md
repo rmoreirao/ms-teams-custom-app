@@ -1,5 +1,7 @@
 # Basic Microsoft Teams validation
 
+**Archived implementation/evidence:** GraphPilot and Simulator runtimes and their deployment/preparation commands have been removed. All mode settings, commands and code descriptions below are historical and must not be used as current setup instructions. Development uses Live only; see [the current dev guide](dev-guide.md), [validation evidence](dev-validation.md) and the [bounded Live runbook](live-runtime.md#bounded-existing-platform-azure-validation). Existing real resource IDs and approved consent remain unchanged.
+
 | Field | Result |
 | --- | --- |
 | Decision | On 2026-10-19 the user selected basic functionality on existing infrastructure, deferring the stronger architecture |
@@ -21,6 +23,49 @@ The existing operation journal prevents duplicate application submissions. A mes
 `GraphPilotStore` is scoped to an HTTP request. Graph-derived message bodies exist in that request's memory and are stripped from every persistence operation. Delegated Graph calls enforce the user's source permissions/history; this test mode does not claim full Purview/DLP policy parity.
 
 Simulator controls are absent in this mode. There is no fallback between `GraphPilot`, `Simulator` and `Live`.
+
+## Approved three-person one-to-one extension
+
+On 2026-10-19, after Jordan could not find Alex by identity, the user explicitly approved people search and one-to-one chats between Alex, Sam and Jordan, plus delegated `Chat.Create` for those three users only. The original chat-title search was not equivalent to that requirement.
+
+`enableDirectChats=true` opts into this extension; `directChatsNotBefore` is an explicit activation/history cutoff at or after the original `notBefore`. The default remains off. `GET /api/people` obtains names/emails only from the original approved chat's members using existing `Chat.Read`, excludes self/offboarded users and rejects unexpected members or incomplete membership pages. No `User.ReadBasic.All`, tenant-wide directory query, app-only runtime grant or additional user is needed.
+
+`POST /api/chats/direct` accepts only the recipient's approved ID under the existing session/CSRF middleware. It opens/creates a `oneOnOne` chat with exactly the caller and recipient; Microsoft Graph returns the existing pair's chat when one exists. There is no automatic POST retry. Uncertain creation is explicit and sends no message; the user may deliberately select the same person again to retrieve that existing pair. Each mapping is checked against the actual Graph chat type and exact two-member set before admission. The third account cannot discover/read/send into the other pair's chat.
+
+Only body-free pair mapping/operation metadata is durable. Names/emails and message bodies remain request/browser memory, and direct-message reads apply the activation/seven-day cutoff. The existing message-send journal, command windows and no-resend behavior are unchanged. Selecting a person opens the real chat but does not post a message.
+
+Prepare a separate private profile and parameter set without altering the original group/channel scope:
+
+```powershell
+.\scripts\entra\Prepare-GraphPilot.ps1 -SubscriptionId $subscription `
+  -InventoryPath $inventory -ScopePath $scope -OutputDirectory $directPilotDirectory `
+  -EnableDirectChats -DirectChatsNotBefore '<recorded-UTC-activation-time>'
+.\scripts\entra\Sync-Identity.ps1 -ProfilePath "$directPilotDirectory\identity.profile.json" `
+  -InventoryPath "$directPilotDirectory\identity.resolved.json" -Mode Plan
+# Only after the exact three-user Chat.Create approval:
+# Repeat with -Mode Apply -ApprovePermissionChanges -Confirm:$false, then -Mode Verify.
+```
+
+`directChatValidation=true` permits `Chat.Create` only alongside the three-user basic profile and three `Principal` grants. Existing permissions, assignment restrictions, managed-identity federation, original resources and Azure sizing stay unchanged. The API-only release helper can deploy this explicit configuration; do not use full platform provisioning or seed jobs.
+
+Authentication verification must explicitly select `ENTRA_AUTH_PROFILE=graph-pilot-direct`; its strict scope check adds only `Chat.Create`. Plain `graph-pilot` still rejects that extra scope. New real-message validation always needs its own approval; mocked/local evidence is not a real Teams send result.
+
+The extension was deployed to API revision `teamsrefdev-unc3jasrpkgbo-api--0000006`, using immutable ACR build `dt6`. The three per-user `Chat.Create` grants reconciled with zero pending changes after the user refreshed an authorized administrator session. The initial application declaration succeeded but the first consent attempt was denied; no role was assigned by the implementation and no consent denial was bypassed.
+
+With separate explicit user approval, a fresh Jordan password/TOTP session then completed the **real** name/email search for Alex, exact one-to-one chat open, one message (`UI validation: Jordan to Alex`), Graph creation confirmation, exact message-ID/author/body read-back, and reopening without a duplicate. The guarded runner admitted one chat-open POST and exactly one message POST; it did not run the three-message group/channel suite. No live-authentication screenshots, tokens or cookie state were saved. Body-free confirmation evidence is private under the direct pilot's `validation-results`.
+
+To repeat only after obtaining a new exact one-message authorization:
+
+```powershell
+$env:PILOT_VALIDATION_SETTINGS = "$directPilotDirectory\validation.settings.json"
+$env:ENTRA_AUTH_PROFILE = 'graph-pilot-direct'
+$env:ENTRA_TEST_BROWSER = 'chromium'
+# Set true only with approval for the exact offered optional Not now screen:
+$env:ENTRA_DEFER_OPTIONAL_REGISTRATION = 'true'
+Push-Location src\Web
+node scripts\check-entra-signin.mjs jordan --direct-chat
+Pop-Location
+```
 
 ## Approved identity and resource setup
 

@@ -20,6 +20,8 @@
           "purpose": { "enum": ["web", "sync", "events", "deploy"] },
           "assignmentRequired": { "type": "boolean" },
           "basicGraphValidation": { "type": "boolean" },
+          "directChatValidation": { "type": "boolean" },
+          "graphNotificationPublisher": { "type": "boolean" },
           "redirectUris": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^https://[^?#]+/auth/callback$" } },
           "logoutUrl": { "type": "string", "pattern": "^https://[^?#]+/$" },
           "assignedUsers": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/guid" } },

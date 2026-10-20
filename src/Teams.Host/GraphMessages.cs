@@ -35,18 +35,30 @@ public static partial class GraphMessages
             author = user.TryGetProperty("displayName", out var name) ? name.GetString() ?? author : author;
         }
         var content = "";
+        string? html = null;
         if (!deleted && data.TryGetProperty("body", out var body))
         {
             content = body.GetProperty("content").GetString() ?? "";
             if (content.Length > 65536) throw new JsonException("Message exceeds the approved text projection limit.");
             if (body.TryGetProperty("contentType", out var type) && type.GetString() == "html")
+            {
+                html = content;
                 content = WebUtility.HtmlDecode(HtmlTags().Replace(LineBreaks().Replace(content, "\n"), ""));
+            }
         }
         var version = data.TryGetProperty("etag", out var etag) && etag.GetString() is { Length: > 0 } tag ? tag :
             Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(data.GetRawText())));
         var reply = data.TryGetProperty("replyToId", out var replyId) && replyId.ValueKind == JsonValueKind.String ? replyId.GetString() : null;
         if (parent is not null && reply is not null && parent != reply) throw new JsonException("Reply context does not match.");
-        return new(id, actor, author, content, created, modified, parent ?? reply, deleted, version);
+        var attachments = data.TryGetProperty("attachments", out var attached) && attached.ValueKind == JsonValueKind.Array &&
+            attached.GetArrayLength() > 0;
+        var notice = deleted ? null : attachments ? "Attachments are available in Teams." :
+            html is not null && EmbeddedContent().IsMatch(html) ? "Embedded content is available in Teams." : null;
+        var url = !deleted && data.TryGetProperty("webUrl", out var webUrl) && webUrl.ValueKind == JsonValueKind.String &&
+            Uri.TryCreate(webUrl.GetString(), UriKind.Absolute, out var source) && source.Scheme == "https" &&
+            source.Port == 443 && source.UserInfo.Length == 0 && source.Host is ("teams.microsoft.com" or "teams.cloud.microsoft")
+            ? source.AbsoluteUri : null;
+        return new(id, actor, author, content, created, modified, parent ?? reply, deleted, version, notice, url, html);
     }
     [GeneratedRegex(@"([A-Za-z]+)\('((?:[^']|'')*)'\)", RegexOptions.CultureInvariant)]
     private static partial Regex ODataSegment();
@@ -54,4 +66,6 @@ public static partial class GraphMessages
     private static partial Regex LineBreaks();
     [GeneratedRegex(@"<[^>]*>", RegexOptions.CultureInvariant, 100)]
     private static partial Regex HtmlTags();
+    [GeneratedRegex(@"<(?:img|attachment|video|audio|iframe)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, 100)]
+    private static partial Regex EmbeddedContent();
 }

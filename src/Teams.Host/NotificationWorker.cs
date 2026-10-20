@@ -79,7 +79,23 @@ public sealed class NotificationProjector(LiveOptions options, string tenant, IL
             throw new AppError(400, "resource_mismatch", "Invalid message path.");
         var parent = parts.Length == 3 ? Uri.UnescapeDataString(parts[0]) : null;
         var data = await decryptor.DecryptAsync(notification.EncryptedContent.Value, ct);
+        if (data.TryGetProperty("messageType", out var type) && type.ValueKind == JsonValueKind.String &&
+            type.GetString() is not (null or "message"))
+        {
+            await store.SetCoverageAsync(new(notification.TenantId, resource.Id, false, null, null, "source_control_changed"), ct);
+            await control.EnqueueRepairAsync(resource, null, null, ct);
+            return;
+        }
         var message = GraphMessages.Parse(data, parent);
+        if (options.DelegatedSynthetic)
+        {
+            if (message.CreatedAt < options.SyntheticHistoryFrom[resource.Id]) return;
+            if (message.ActorId.Length > 0 && !options.SyntheticActorIds.Contains(message.ActorId))
+            {
+                await store.SetCoverageAsync(new(notification.TenantId, resource.Id, false, null, null, "synthetic_author_changed"), ct);
+                throw new AppError(403, "synthetic_scope_mismatch", "The message author is outside the approved test identities.");
+            }
+        }
         if (message.Id != Uri.UnescapeDataString(parts[^1]) ||
             notification.ChangeType == "deleted" && !message.Deleted)
             throw new AppError(400, "resource_mismatch", "Decrypted message identity or deletion does not match its envelope.");
@@ -90,7 +106,12 @@ public sealed class NotificationProjector(LiveOptions options, string tenant, IL
                 channel.GetProperty("channelId").GetString() != resource.GraphChannelId))
             throw new AppError(400, "resource_mismatch", "Decrypted channel context does not match.");
         await store.ApplyAsync(notification.TenantId, resource.Id, message, ct);
-        if (!(await store.GetAsync(notification.TenantId, resource.Id, ct))!.Value.CoverageReady)
+        var projected = await store.MessageAsync(notification.TenantId, resource.Id, message.Id, message.ParentId, ct);
+        var metadata = (await store.GetAsync(notification.TenantId, resource.Id, ct))!.Value;
+        if (projected?.SourceVersion == message.SourceVersion)
+            await control.SaveReceiptAsync(new(resource.Id, message.Id, message.ParentId, metadata.Revision,
+                message.SourceVersion, notification.ReceivedAt, DateTimeOffset.UtcNow), ct);
+        if (!metadata.CoverageReady)
             await control.EnqueueRepairAsync(resource, null, null, ct);
     }
 }

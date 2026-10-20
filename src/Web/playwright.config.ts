@@ -1,11 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
-import { pbkdf2Sync, randomBytes } from "node:crypto";
-import { resolve } from "node:path";
-
-const password = process.env.REFERENCE_TEST_PASSWORD ?? randomBytes(32).toString("hex");
-const salt = randomBytes(16);
-process.env.REFERENCE_TEST_PASSWORD = password;
-const external = process.env.REFERENCE_BASE_URL;
+const port = Number(process.env.REFERENCE_TEST_PORT ?? 5367);
+if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("REFERENCE_TEST_PORT must be an integer from 1024 to 65535.");
+const localOrigin = `http://localhost:${port}`;
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: false,
@@ -13,20 +9,15 @@ export default defineConfig({
   retries: 0,
   reporter: [["list"], ["html", { open: "never" }]],
   use: {
-    baseURL: external ?? "http://localhost:5367",
+    baseURL: localOrigin,
     trace: "off",
     screenshot: "only-on-failure",
     ...(process.platform === "win32" ? { channel: "msedge" } : {}),
   },
   projects: [{ name: "desktop", use: { ...devices["Desktop Chrome"] } }],
-  webServer: external ? undefined : {
-    command: `dotnet run --project "${resolve(import.meta.dirname, "..", "Teams.Host", "Teams.Host.csproj")}" --no-launch-profile --no-build --configuration ${process.env.DOTNET_CONFIGURATION ?? "Debug"} --urls http://localhost:5367`,
-    url: "http://localhost:5367/health/ready",
+  webServer: {
+    command: `npm run build -- --outDir dist && vite preview --outDir dist --host localhost --port ${port} --strictPort`,
+    url: localOrigin,
     reuseExistingServer: false,
-    env: {
-      ASPNETCORE_ENVIRONMENT: "Development",
-      LocalAuth__PasswordHash: pbkdf2Sync(password, salt, 210000, 32, "sha256").toString("hex"),
-      LocalAuth__PasswordSalt: salt.toString("hex"),
-    },
   },
 });

@@ -5,6 +5,8 @@ public sealed record Entitlement(string TenantId, string ConversationId, string 
     bool Active, bool CanSend, long Epoch);
 public sealed record CatalogPage(IReadOnlyList<ConversationView> Items, string? Cursor);
 public sealed record EntitlementPage(IReadOnlyList<Entitlement> Items, string? Cursor);
+public sealed record DirectChatAuthority(string TenantId, string ResourceId, string GraphChatId, string ChatType,
+    IReadOnlyList<string> MemberIds, DateTimeOffset VerifiedAt, DateTimeOffset FreshUntil, string AuthorityVersion);
 public sealed record ProjectionScan(IReadOnlyList<Message> Items, string? Cursor);
 public sealed record Coverage(string TenantId, string ConversationId, bool Ready, DateTimeOffset? VerifiedAt,
     string? NextLink, string? Reason, DateTimeOffset? FreshUntil = null, long? RepairGeneration = null);
@@ -41,6 +43,8 @@ public interface ILiveStateStore : IStateStore
     Task<bool> ApplyVerifiedAsync(string tenant, string conversation, Message message, string expectedSourceVersion, CancellationToken ct);
     Task SetCoverageAsync(Coverage coverage, CancellationToken ct);
     Task SetEntitlementAsync(Entitlement entitlement, CancellationToken ct);
+    Task SetDirectChatAuthorityAsync(DirectChatAuthority evidence, CancellationToken ct);
+    Task<DirectChatAuthority?> DirectChatAuthorityAsync(string tenant, string resource, CancellationToken ct);
     Task<EntitlementPage> RecipientsAsync(string tenant, string conversation, string? cursor, CancellationToken ct);
     Task<IReadOnlyList<OutboxChange>> PendingOutboxAsync(string tenant, CancellationToken ct);
     Task CompleteOutboxAsync(OutboxChange change, CancellationToken ct);
@@ -52,6 +56,7 @@ public interface ILiveStateStore : IStateStore
 }
 public interface IGraphBackground
 {
+    IGraphBackground ForResource(string resourcePath) => this;
     Task<System.Text.Json.JsonElement> GetAsync(string path, CancellationToken ct);
     Task<System.Text.Json.JsonElement> PostAsync(string path, object body, CancellationToken ct);
     Task<System.Text.Json.JsonElement> PatchAsync(string path, object body, CancellationToken ct);

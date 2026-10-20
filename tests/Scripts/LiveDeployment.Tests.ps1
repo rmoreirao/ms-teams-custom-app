@@ -6,7 +6,7 @@ $parameterPath = Join-Path $temporary 'parameters.json'
 $outputPath = Join-Path $temporary 'outputs.json'
 $subscription = '11111111-1111-1111-1111-111111111111'
 $group = 'rg-teams-live-test'
-$state = @{ calls = [Collections.Generic.List[object]]::new(); writes = 0; consistency = 'Strong'; public = 'Disabled' }
+$state = @{ calls = [Collections.Generic.List[object]]::new(); writes = 0; consistency = 'Strong'; public = 'Disabled'; regions = 1; multiWrite = $false }
 $parameters = @{
     parameters = @{
         prefix = @{ value = 'teamslive' }; location = @{ value = 'swedencentral' }
@@ -29,7 +29,12 @@ function az {
     if ($index -lt 0 -or $args[$index + 1] -ne $subscription) { throw 'Missing selected subscription.' }
     if ($args[0] -eq 'account') { return @{ tenantId = 'tenant' } | ConvertTo-Json }
     if ($args[0] -eq 'cosmosdb') {
-        return @{ consistencyPolicy = @{ defaultConsistencyLevel = $state.consistency }; publicNetworkAccess = $state.public; disableLocalAuth = $true } | ConvertTo-Json -Depth 4
+        return @{
+            consistencyPolicy = @{ defaultConsistencyLevel = $state.consistency }
+            publicNetworkAccess = $state.public; disableLocalAuth = $true
+            locations = @(@{ locationName = 'swedencentral' }) * $state.regions
+            enableMultipleWriteLocations = $state.multiWrite
+        } | ConvertTo-Json -Depth 4
     }
     if ($args[0] -eq 'containerapp') { return @{ properties = @{ publicNetworkAccess = 'Disabled' } } | ConvertTo-Json }
     if ($args[0] -eq 'deployment' -and $args[2] -eq 'what-if') {
@@ -65,8 +70,28 @@ try {
     $state.consistency = 'Session'
     Expect-Failure { & $command @arguments } 'Strong-consistency'
     $state.consistency = 'Strong'; $state.public = 'Enabled'
-    Expect-Failure { & $command @arguments } 'Strong-consistency'
+    Expect-Failure { & $command @arguments } 'disabled public access'
     $state.public = 'Disabled'
+    $parameters.parameters.liveConfig.value.readConsistency = 'SessionPrimary'
+    $parameters | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $parameterPath
+    $state.consistency = 'Session'
+    & $command @arguments
+    if ($state.writes) { throw 'SessionPrimary preview mutated the account or deployment.' }
+    $state.regions = 2
+    Expect-Failure { & $command @arguments } 'one Cosmos region'
+    $state.regions = 1; $state.multiWrite = $true
+    Expect-Failure { & $command @arguments } 'single-region writes'
+    $state.multiWrite = $false; $state.consistency = 'Eventual'
+    Expect-Failure { & $command @arguments } 'Session or Strong'
+    $state.consistency = 'Session'
+    $parameters.parameters.liveConfig.value.readConsistency = 'Unsupported'
+    $parameters | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $parameterPath
+    $before = $state.calls.Count
+    Expect-Failure { & $command @arguments } 'Strong or SessionPrimary'
+    if ($state.calls.Count -ne $before) { throw 'Unsupported storage profile contacted Azure.' }
+    $parameters.parameters.liveConfig.value.readConsistency = 'Strong'
+    $parameters | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $parameterPath
+    $state.consistency = 'Strong'
     & $command @arguments -Apply -WhatIf
     if ($state.writes) { throw 'PowerShell WhatIf deployed infrastructure.' }
     & $command @arguments -Apply -Confirm:$false
@@ -74,7 +99,7 @@ try {
     if ((Get-Content -Raw -LiteralPath $outputPath | ConvertFrom-Json).identityBindings.value[0].role -ne 'Api') {
         throw 'Identity outputs were not preserved.'
     }
-    Write-Output 'Passed live deployment checks: closed default gates, no-write what-if, early input refusals, consistency/network preflight, confirmed apply and private output export; no fixture/Graph operations.'
+    Write-Output 'Passed live deployment checks: closed default gates, no-write what-if, Strong/SessionPrimary profile checks, single-region/single-writer refusal, early input/network guards, confirmed apply and private output export; no fixture/Graph operations.'
 } finally {
     foreach ($path in @($parameterPath, $outputPath)) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path } }
     Remove-Item -LiteralPath $temporary

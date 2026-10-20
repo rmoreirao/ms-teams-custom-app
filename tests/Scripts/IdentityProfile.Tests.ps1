@@ -36,9 +36,13 @@ function Invoke-RestMethod {
     param($Method, $Uri, $Headers, $ContentType, $Body)
     $path = $Uri.Substring('https://graph.microsoft.com/v1.0/'.Length)
     if ($Method -eq 'GET') {
+        if ($path -eq "servicePrincipals?`$filter=appId eq '0bf30f3b-4a52-48df-9a82-234910c4a086'") {
+            return @{value=@(@{id='publisher-sp';appId='0bf30f3b-4a52-48df-9a82-234910c4a086'})}
+        }
         if ($path -like "servicePrincipals?`$filter=appId eq '00000003*") {
             return @{ value = @(@{ id = 'graph-sp'; appId = '00000003-0000-0000-c000-000000000000'
-                oauth2PermissionScopes = @(@{ id = 'openid-id'; value = 'openid'; isEnabled = $true }, @{ id = 'send-id'; value = 'ChatMessage.Send'; isEnabled = $true })
+                oauth2PermissionScopes = @(@{ id = 'openid-id'; value = 'openid'; isEnabled = $true }, @{ id = 'send-id'; value = 'ChatMessage.Send'; isEnabled = $true },
+                    @{ id = 'chat-create-id'; value = 'Chat.Create'; isEnabled = $true })
                 appRoles = @() }) }
         }
         if ($path.StartsWith('applications?')) { return @{ value = @($state.apps.ToArray()) } }
@@ -51,7 +55,7 @@ function Invoke-RestMethod {
         if ($path -like 'servicePrincipals/*/appRoleAssignedTo') { return @{ value = @($state.assignments.ToArray()) } }
         if ($path -like 'servicePrincipals/*/appRoleAssignments') { return @{ value = @() } }
         if ($path.StartsWith('oauth2PermissionGrants?')) { return @{ value = @($state.grants.ToArray()) } }
-        if ($path.StartsWith("users/$user")) { return @{ id = $user } }
+        if ($path -match '^users/(33333333-3333-3333-3333-333333333333|88888888-8888-8888-8888-888888888888|99999999-9999-9999-9999-999999999999)') { return @{ id = $path.Split('/')[1].Split('?')[0] } }
         if ($path.StartsWith("groups/$group")) { return @{ id = $group } }
         throw "Unexpected test read $path"
     }
@@ -82,7 +86,8 @@ function Invoke-RestMethod {
         return
     }
     if ($Method -eq 'POST' -and $path -like '*/appRoleAssignedTo') {
-        if ($value.resourceId -ne 'client-sp' -or $value.principalId -notin @($user, $group)) { throw 'Wrong user/group assignment IDs.' }
+        if ($value.resourceId -ne 'client-sp' -or $value.principalId -notin @($user, $group, 'publisher-sp')) { throw 'Wrong scoped assignment IDs.' }
+        if ($value.principalId -eq 'publisher-sp' -and $value.appRoleId -ne [guid]::Empty.ToString()) { throw 'Publisher received a broader role.' }
         $state.assignments.Add($value); return $value
     }
     if ($Method -eq 'POST' -and $path -eq 'oauth2PermissionGrants') {
@@ -126,6 +131,18 @@ try {
     if (Test-Path -LiteralPath $inventory) { throw 'WhatIf wrote rediscovered state.' }
     & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Export -Confirm:$false
     if ($state.writes -ne $count) { throw 'Rediscovery duplicated directory identities.' }
+    $profile.applications[0].graphNotificationPublisher = $true
+    Save-Profile
+    & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Plan
+    & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Apply -WhatIf -ApprovePermissionChanges
+    if ($state.writes -ne $count) { throw 'Publisher Plan/WhatIf mutated directory state.' }
+    Expect-Failure { & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Apply -Confirm:$false } 'ApprovePermissionChanges'
+    & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Apply -ApprovePermissionChanges -Confirm:$false
+    if ($state.writes -ne $count + 1 -or @($state.assignments | Where-Object principalId -eq 'publisher-sp').Count -ne 1 -or
+        -not $state.principals[0].appRoleAssignmentRequired) { throw 'Publisher admission broadened or duplicated access.' }
+    $count = $state.writes
+    & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Apply -ApprovePermissionChanges -Confirm:$false
+    if ($state.writes -ne $count) { throw 'Publisher reconciliation was not idempotent.' }
     $state.fics[0].subject = '55555555-5555-5555-5555-555555555555'
     & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Plan
     Expect-Failure { & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Apply -ApprovePermissionChanges -Confirm:$false } 'ApproveTrustRotation'
@@ -141,6 +158,31 @@ try {
     $state.grants[0].scope += ' Chat.Read'
     Expect-Failure { & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Apply -ApprovePermissionChanges -Confirm:$false } 'Unexpected delegated access'
     if ($state.writes -ne $count) { throw 'Drift rejection mutated state.' }
+    $saved = $profile
+    $profile = $profile | ConvertTo-Json -Depth 15 | ConvertFrom-Json -AsHashtable
+    $profile.applications[0].directChatValidation = $true
+    Save-Profile
+    $before = $state.cliCalls
+    Expect-Failure { & $command -ProfilePath $profilePath -InventoryPath $inventory } 'explicit three-user'
+    if ($state.cliCalls -ne $before) { throw 'Unbounded chat-creation profile contacted Azure.' }
+    $profile.applications[0].basicGraphValidation = $true
+    $profile.applications[0].assignedGroups = @()
+    $profile.applications[0].assignedUsers = @($user, '88888888-8888-8888-8888-888888888888', '99999999-9999-9999-9999-999999999999')
+    $profile.applications[0].delegatedGrants = @($profile.applications[0].assignedUsers | ForEach-Object {
+        @{consentType='Principal';principalId=$_;scopes=@('openid','ChatMessage.Send','Chat.Create')}
+    })
+    $state.grants[0].scope = $state.grants[0].scope.Replace(' Chat.Read','')
+    $savedAssignments = $state.assignments
+    $state.assignments = [Collections.Generic.List[object]]::new()
+    foreach ($assignment in $savedAssignments | Where-Object principalId -eq $user) { $state.assignments.Add($assignment) }
+    Save-Profile
+    & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Plan
+    if ($state.writes -ne $count) { throw 'Direct-chat grant planning mutated directory state.' }
+    $state.assignments = $savedAssignments
+    $profile.applications[0].directChatValidation = $false
+    Save-Profile
+    Expect-Failure { & $command -ProfilePath $profilePath -InventoryPath $inventory } 'supported sign-in/send'
+    $profile = $saved
     $before = $state.cliCalls
     $profile.tenantId = [guid]::Empty.ToString(); Save-Profile
     Expect-Failure { & $command -ProfilePath $profilePath -InventoryPath $inventory } 'Replace the example'

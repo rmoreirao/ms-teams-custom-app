@@ -1,230 +1,123 @@
-# Dev setup and deployment
+# Development setup and deployment
 
 ## Current status and boundaries
 
-The hosted application now runs explicit **GraphPilot** basic real-Teams validation in Sweden Central at https://teamsrefdev-unc3jasrpkgbo-web-htdnfyf3dbbjbca2.b02.azurefd.net. Alex, Sam and Jordan passed fresh password/TOTP and real chat/channel/post/reply read-back journeys. See the [basic Teams guide/evidence](graph-pilot.md) for the deployed scope, per-user permissions, API-only release command and approved optional passkey-campaign deferral. The simulator instructions below remain available for local/isolated scenarios; the stronger production `Live` architecture is still gated. No remote GitHub workflow has run.
+There is one environment: **Development**, connected to real Microsoft Teams. Its existing Sweden Central API and worker host five logical Live roles. Simulator and legacy GraphPilot are no longer supported runtimes; local persona/password sign-in, simulator controls, fixture seeding/reset, and pilot polling have been removed.
 
-The active deployment target is subscription `67bfd3c6-6d7e-4a79-9a85-19f4a6928d7c`, tenant `f1640304-f816-412c-9e6f-4b6b818cf492`, and **Sweden Central** (`swedencentral`), explicitly selected by the user on 2026-10-16. The test identities are Alex, Sam and Jordan; their Teams Enterprise/E5 licences and Netherlands usage locations were assigned with user approval, and fresh unattended Chromium password/TOTP sessions are verified. The web/callback managed-identity bindings are configured. These sign-in checks grant no Graph message consent and do not prove live Teams readiness.
+The existing `DelegatedSynthetic` authority profile is **real Graph integration restricted to approved test users and resources**, not a simulator. Keep Alex, Sam and Jordan, the dedicated group chat/channel, the three existing pair mappings, history cutoffs, current consent, and all identity bindings unchanged. This does not authorize organization-wide discovery, new chat creation from the app, business-content processing, or production acceptance.
 
-Earlier Germany West Central what-if attempts failed for Redis Balanced B0/B3/B5 capacity. Sweden Central passed actual preflight and deployment. The working environment is `teamsrefdev-unc3jasrpkgbo-env-ready`, on `container-apps-ready`. An incomplete first environment was replaced after the required network feature was registered; data services and identities were preserved. Consult the validation report for the exact image, successful seed job and remaining authenticated-test boundary.
-
-The earlier subscription was re-enabled and partially provisioned on 2026-10-15, including a successful ACR container build, but deployment failed on regional capacity. Those resources and their private identity inventory remain separate and were not deleted or reused for the new tenant; existing billable services may continue charging.
-
-The current topology is one Sweden Central environment with Front Door Premium/WAF, private application origins/data services, and authenticated public ACR. Front Door/WAF are global resources; their private-origin connection uses Sweden Central. The deployment targets `rg-teams-reference-dev-swc`, leaving the earlier empty West Europe group and previous-subscription resources untouched. No regional recovery, load testing, or automatic regional fallback is included. See [ADR 0008](adr/0008-simulator-first-single-region-development.md).
-
-## Hosted simulator behavior
-
-The fake backend is the `Simulator` implementation of `IGraphTransport` inside the API process, not a separate anonymous demo site. It replaces Microsoft Graph message operations only. In Azure, Entra authentication, BFF sessions, Cosmos, Redis, Service Bus, Key Vault, Web PubSub and private-network enforcement remain real dependencies.
-
-1. The user signs in through Entra; the API validates their fixture identity, session, conversation membership and visible history.
-2. A send receives an operation ID and an expiring command window. The API journals and claims it, acquires the shared Redis send budget, then calls the simulator rather than Graph.
-3. The simulator creates an exact synthetic receipt in Cosmos. Confirmation and the local projection/revision update follow the same business logic as the real transport boundary. The UI labels this as simulator confirmation, never Teams delivery.
-4. A worker publishes body-free change hints through Web PubSub; clients fetch messages again through the authorized API. Synthetic external messages/edits/deletes instead enter Service Bus first, then the worker applies the projection and publishes hints.
-5. Fixture-admin controls can reject, delay or throttle the next simulated send, or lose its confirmation after committing. A status check resolves the same receipt; it never resends automatically.
-
-Seed jobs populate six allowlisted synthetic conversations in Cosmos. Browser drafts remain in memory, and no Teams resource or actual Teams message is read or written. Simulator mode does not remove the need for functioning Azure services or Entra users; local-memory tests cannot prove this hosted path. Live Teams mode stays disabled.
-
-The earlier subscription's deployment retry encountered a subscription restriction on Cosmos allocation in West Europe and unavailable Redis B0/B1 capacity. Its attempted fallback kept compute/network in West Europe, placed only synthetic Cosmos data in North Europe over Private Link, and selected Redis B3 in West Europe (published instance rate EUR 0.0678/hour). This was not regional recovery or a completed deployment. Keep settings explicit per environment rather than carrying the old fallback into a new subscription. Key Vault public access remains disabled, with the trusted Azure-services exception enabled for ARM key provisioning; ordinary runtime access still uses private networking and RBAC.
+The selected deployment remains `rg-teams-reference-dev-swc` in `swedencentral`. Historical validation is in [dev-validation.md](dev-validation.md); it is not proof that the current source image has been deployed. No remote deployment or GitHub execution is implied by local verification. Earlier subscription/capacity attempts and their resources remain separate; no cleanup is automatic.
 
 ## Repository layout
 
 | Path | Responsibility |
 | --- | --- |
-| `src\Teams.Core` | Contracts, authorization, bounded reads, command safety, projection merge rules |
-| `src\Teams.Infrastructure` | Memory/Cosmos stores, stateful simulator, budgets, inbox, real-time adapters, fixtures |
-| `src\Teams.Host` | BFF/API, worker/maintenance entry points, Entra/session setup, gated live-send transport |
-| `src\Web` | React Split View frontend, component and Playwright tests |
-| `infra\` | Subscription/resource-group Bicep and private network/workload modules |
-| `scripts\entra\` | Explicit, repeatable directory bootstrap and final identity bindings |
-| `scripts\test-data\` | Fixture manifest and in-network seed/reset invocation |
-| `.github\workflows\` | CI and approval-protected dev release definitions |
+| `src\Teams.Core` | Live contracts, source-authorized reads, command safety and projection merge rules |
+| `src\Teams.Infrastructure` | Cosmos persistence, Redis command budgets and Azure realtime adapters |
+| `src\Teams.Host` | Live API/receiver/projector/delivery/control, Entra and encrypted Graph callbacks |
+| `src\Web` | Teams-only Split View UI and test-runner-only browser fixtures |
+| `tests\Teams.Tests\Support` | Offline test dependencies; not part of the published host |
+| `infra\` | Private platform, shared edge, bounded and independent-role Live infrastructure |
+| `.github\workflows\` | Offline CI and manual image-only Development release |
+| `prototypes\` | Fictional standalone design references, not an application mode |
 
 ## Local setup
 
-Use .NET 10 SDK, PowerShell 7, and Node 22.12+ in the Node 22 line. Dependencies are pinned by lockfiles. NuGet uses Microsoft's public `dotnet-public` mirror; direct nuget.org TLS failed on the implementation host. This configuration is repository-local and does not modify user-wide sources.
-
-The npm lockfile resolves Microsoft's `1es-public` npm mirror. Anonymous tarball access was verified without credentials; no feed tokens are checked in. Direct public npm metadata access was not responsive on this host, so the working public mirror lockfile was retained rather than disabling TLS checks.
+Use .NET 10, PowerShell 7, Node.js 22.12+ in the Node 22 line, and npm. Restore the existing locked dependencies when setting up a checkout:
 
 ```powershell
+dotnet restore TeamsReference.slnx --locked-mode
 Push-Location src\Web
 npm ci
 npm run build
 Pop-Location
-.\scripts\Start-Local.ps1
+.\scripts\Start-Local.ps1 -ConfigurationPath '<private-directory>\appsettings.local.json'
 ```
 
-The script prompts for a temporary password and exports only its salted PBKDF2 hash to the child app. Open `http://localhost:5255`; select **Local development sign-in**, a test persona, and that password. There is no default password or anonymous fixture-login endpoint.
+The private JSON uses normal .NET configuration sections (`App`, `AzureAd`, `Azure`, `Callbacks`, and `Live`/`Live:Configuration`). Set `App.GraphMode=Live`, `App.Store=Cosmos`, `App.Auth=Entra`, an approved role, the real tenant, and `App.PublicOrigin=https://localhost:7266`. The launcher accepts a different explicit HTTPS port. `TEAMS_CONFIGURATION_PATH` also lets the host load an absolute private configuration file; environment/command-line overrides are still validated.
 
-Local credentials, combined hosting, and memory persistence are rejected outside Development/Testing. Local messages live in server memory until process exit; drafts live only in the open browser page. The local SSE transport is not Azure Web PubSub evidence.
+A normal local run uses real services. It requires a valid HTTPS developer certificate, an already-approved exact Web redirect `https://localhost:7266/auth/callback`, authorized developer/client credentials, and connectivity/RBAC for the private Azure endpoints. The launcher does not trust certificates, register redirects, grant access, create tunnels, or acquire a managed identity unavailable to the developer. An Azure managed-identity client assertion cannot simply be reused on a laptop. Resolve those prerequisites explicitly, or use the hosted Development app.
 
-See [testing guidance](testing.md) for correctness commands. Build the frontend before publishing/running browser tests. Vite owns fingerprints; ASP.NET serves/publishes physical `wwwroot` assets instead of also generating a competing static-assets manifest.
+Graph notification/lifecycle URLs remain the approved publicly reachable HTTPS endpoints. Do not replace them with localhost, relax token validation, or disable assignment requirements to make a local run start. Do not run competing synchronization/control instances against the shared deployment without reviewing ownership and writer settings. Keep private configuration, credentials, and resolved inventories outside source and browser assets.
 
-## Approval and cost gate
+For offline work use `.\scripts\Validate.ps1 -Browser`: tests replace dependencies in the test assembly/runner. There is no offline application launcher or local identity bypass. See [testing.md](testing.md).
 
-Before execution, approve directory creation and billable Azure provisioning separately. Do not buy a licence, start a billing trial, grant tenant-wide message permissions, or publish Git changes automatically.
+## Personal-chat test messages
 
-The selected private topology has substantial fixed cost even at low dev traffic. The Azure Retail Prices API snapshot returned **Front Door Premium base fees of EUR 290.39/month in Zone 1** and **Service Bus Premium at approximately EUR 0.82 per messaging-unit hour in West Europe**. At 730 unit-hours, those two items alone are about EUR 889/month, before Redis, PubSub, ACR, private endpoints, compute, Cosmos, logs, traffic, taxes, and contract adjustments. These are public retail planning figures, not a quote or a spending cap.
+In a verified one-to-one chat, **Send test messages** appears in the conversation header beside **Change person** (or **Change chat**). It opens a popup with **Number of messages** defaulting to **30** and an editable **Test Message** defaulting to **Test message**. Enter a positive whole number, optionally change the text, and choose **Send messages** to send `{Test Message} - 1` through `{Test Message} - N` to the other person through the existing Teams send endpoint. For example, the default starts with `Test message - 1`. Each batch restarts numbering at 1 and leaves your composer draft untouched. The text must be nonblank and fit the 4096-character send limit including the numbered suffix. Group chats and channels do not show this control.
 
-Verify current Sweden Central rates, quotas, and subscription policies; the figures above are a historical planning snapshot, not a Sweden invoice estimate. Run actual what-if using approved identity IDs before applying. A compiled template is not an Azure what-if or proof that a SKU is deployable.
+The batch starts messages every 1.5 seconds without waiting for earlier confirmations. All sends share an in-memory per-session pacer to respect the server's budget, including rapid manual sends and sends from different conversations. The composer clears immediately and remains usable while previous sends await confirmation; a pending or uncertain message does not block a different new message. There is no automatic retry.
 
-- [Azure Retail Prices API](https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices)
-- [Front Door pricing](https://azure.microsoft.com/pricing/details/frontdoor/)
-- [Service Bus pricing](https://azure.microsoft.com/pricing/details/service-bus/)
+Each outgoing bubble has a compact status: a clock while queued/sending, a circled check only after Teams confirms creation (including messages loaded from Teams), and a warning for uncertain/rejected outcomes. A check is a send confirmation, not a read receipt. Errors and **Check original send** remain attached to their own message; never infer success from optimistic display or resend an uncertain operation.
 
-## Entra bootstrap
+The popup reports confirmed, not-sent, and pending/uncertain counts separately. **Close** hides it without cancelling the active batch; reopen **Send test messages** to inspect its progress. **Stop sending**, Escape while the popup is open, leaving the chat, losing connectivity/access, or signing out stops remaining batch requests; requests already in flight still complete and retain their individual outcomes. Queued manual requests are cancelled explicitly on connection/session loss and are never persisted or automatically resumed.
 
-For the current identity/trust contract, safe command modes, and same-tenant/new-tenant rebuild procedures, use [Entra configuration and environment rebuild](entra-configuration.md). Live desired-state reconciliation now uses the separate `Sync-Identity.ps1`; the existing dev scripts still consume their legacy inventory and do not enable live mode.
-
-Use the explicitly approved tenant/subscription, not whatever happens to be the CLI default. Keep the generated inventory outside the public repository.
-
-```powershell
-$tenant = '<approved-tenant-guid>'
-$subscription = '<approved-subscription-guid>'
-$inventory = Join-Path $env:USERPROFILE ".teams-reference-dev\$tenant\identity.json"
-az login --tenant $tenant
-.\scripts\entra\Bootstrap-Dev.ps1 -TenantId $tenant -SubscriptionId $subscription -InventoryPath $inventory
-# After directory-change approval:
-.\scripts\entra\Bootstrap-Dev.ps1 -TenantId $tenant -SubscriptionId $subscription -InventoryPath $inventory -CreateTestUsers -Apply
-```
-
-The bootstrap creates/reuses tagged `web`, `sync`, `events`, and `deploy` registrations/service principals, and optionally three dedicated unlicensed users: Alex, Sam and Jordan. It grants no Graph message permissions or licences. User creation/role assignments may require an authorized directory administrator; stop on permission errors rather than substituting another tenant or identity.
-
-Use `-SubscriptionId` on both directory scripts when multiple tenants are signed in; this selects the matching account/token without changing the shared Azure CLI default. Bootstrap verifies an existing inventory's tenant before changes and checkpoints successful creation with `bootstrapComplete=false`. Infrastructure-only deployment can proceed from valid web/callback application IDs, but application/fixture workloads require three distinct approved actor IDs in Alex, Sam, Jordan order. Incomplete identities never enable an unauthenticated application or seed traffic.
-
-The web service principal requires assignment, with only the fixture users assigned by bootstrap. The runtime independently checks the fixture identity allowlist before issuing a BFF session; an arbitrary user from the same tenant is not admitted to this synthetic-only app.
-
-Initial user passwords are stored as Windows-DPAPI-protected credential XML beside the private inventory, require change at first sign-in, and never enter source or ordinary logs. An authorized administrator can recover a credential locally with `Import-Clixml`; do not print it into shared transcripts. MFA/Conditional Access and initial password-change interactions remain human steps.
-
-### Sign-in consent is a separate prerequisite
-
-Creating users and assigning them to the web application does not grant consent to its sign-in scopes. **Simulator mode** requests only `openid profile offline_access`. The currently deployed GraphPilot mode additionally has the five explicitly approved delegated read/send scopes described in the [basic Teams guide](graph-pilot.md), granted to the three users only.
-
-The user-reported **"Need admin approval"** screen is a consent gate, not another MFA enrollment screen. Inspection found no existing permission grant for the web service principal. An administrator must approve the required sign-in scopes; do not disable MFA, add Teams permissions, or make the app unassigned/public to work around it.
-
-`Grant-DevSignInConsent.ps1` prepares a least-privilege plan for the three already-assigned fixture users. It uses user-specific `Principal` grants rather than tenant-wide `AllPrincipals`, validates the tagged application and standard scopes, preserves assignment restrictions, and refuses unexpected broader existing grants.
-
-```powershell
-# Read-only validation; no consent is granted:
-.\scripts\entra\Grant-DevSignInConsent.ps1 -SubscriptionId $subscription -InventoryPath $inventory
-
-# Only after explicit approval, using an authorized administrator/client:
-.\scripts\entra\Grant-DevSignInConsent.ps1 -SubscriptionId $subscription -InventoryPath $inventory -Apply
-```
-
-The user explicitly approved and executed the consent command on 2026-10-16. A subsequent read verified exactly four `Principal` grants with `openid profile offline_access`, no tenant-wide grant, and assignment restrictions still enabled. Restart Alex's sign-in to verify the actual authorization flow; no completed application session is implied by the grant records alone. No Azure redeployment is necessary.
-
-Future application of the command requires a supported administrator role and an appropriately authorized Graph token. It does not elevate permissions or request broader client consent automatically.
-
-See [Microsoft's delegated-grant contract](https://learn.microsoft.com/en-us/graph/api/oauth2permissiongrant-post?view=graph-rest-1.0). This sign-in consent does not approve the future live Teams permission matrix.
-
-| Identity | Initial purpose |
-| --- | --- |
-| web | Single-tenant confidential OIDC BFF; managed-identity federation after platform creation |
-| sync | Reserved separate background Graph identity; no message permissions granted in simulator delivery |
-| events | Explicit callback audience and `PubSub.Callback` application role for the designated PubSub identity |
-| deploy | GitHub OIDC subject `repo:<owner>/<repo>:environment:dev`; no directory administration |
-
-## Platform and first workload deployment
-
-Install Bicep 0.48.1 or newer. The implementation host's older 0.28 compiler lacked current resource schemas; validation used a session-local 0.48.1 binary without replacing global tools.
-
-Register the required resource providers in a new subscription. Container Apps also required the following network feature in this subscription; verify its state is `Registered` before provisioning an environment. The platform script now checks this prerequisite without changing it during what-if.
-
-```powershell
-az feature register --subscription $subscription --namespace Microsoft.Network --name AllowBringYourOwnPublicIpAddress
-az provider register --subscription $subscription --namespace Microsoft.Network
-az feature show --subscription $subscription --namespace Microsoft.Network --name AllowBringYourOwnPublicIpAddress --query properties.state
-az provider register --subscription $subscription --namespace Microsoft.AlertsManagement
-```
-
-```powershell
-.\scripts\New-DevPlatform.ps1 -SubscriptionId $subscription -InventoryPath $inventory -Location swedencentral
-# Review the actual what-if, cost and RBAC changes; then, after approval:
-.\scripts\New-DevPlatform.ps1 -SubscriptionId $subscription -InventoryPath $inventory -Location swedencentral -Apply
-```
-
-The defaults now use Sweden Central for compute, data, endpoints and deployment metadata. `CosmosLocation` defaults to `Location`. Redis Balanced B0 successfully provisioned in Sweden; use that setting for this environment rather than carrying over a failed Germany SKU.
-
-Initial platform deployment needs resource-group creation and scoped role-assignment rights. It creates identities and data services before application traffic. It does not deploy workload images. Routine releases pass `provisionRbac=false` and do not need Azure role-assignment or Entra administration rights.
-
-Create a private ARM workload parameter file from the completed inventory: `webClientId`, `eventsClientId`, `fixtureActorIds` in manifest persona order, and `location`/`cosmosLocation` set to `swedencentral`. The `infra\parameters\dev.bicepparam` environment-variable template is another option.
-
-Build the image with Docker, push to the authenticated ACR, and obtain its repository manifest digest. ACR Tasks can perform the build when a local Docker engine is unavailable; review its cost/permissions first. Do not pass credentials in build arguments or copy private inventories into build context.
-
-```powershell
-.\scripts\Deploy-Dev.ps1 -SubscriptionId $subscription -ResourceGroup rg-teams-reference-dev-swc `
-  -ParametersPath '<private-parameters.json>' -Image '<registry>.azurecr.io/teams-reference@sha256:<digest>'
-# Initial rollout, after approval; admission remains disabled:
-.\scripts\Deploy-Dev.ps1 -SubscriptionId $subscription -ResourceGroup rg-teams-reference-dev-swc `
-  -ParametersPath '<private-parameters.json>' -Image '<registry>.azurecr.io/teams-reference@sha256:<digest>' -Apply
-```
-
-Obtain the Front Door origin, API identity principal, and PubSub principal from the deployment outputs. After the corresponding directory approval:
-
-```powershell
-.\scripts\entra\Complete-Dev.ps1 -SubscriptionId $subscription -InventoryPath $inventory -PublicOrigin '<https-origin>' `
-  -ApiIdentityPrincipalId '<api-principal-guid>' -PubSubPrincipalId '<pubsub-principal-guid>'
-```
-
-Inspect and approve the Front Door-created private origin connection in the Container Apps environment. Do not disable public-network restrictions as a workaround. Complete DNS/private endpoint checks and verify the private service paths from the in-network jobs.
-
-Rerun `Deploy-Dev.ps1` with `-Apply -EnableRealtimeAdmission`. This installs the authenticated connect handler before enabling connection negotiation, seeds/verifies the allowlisted fixture dataset, and checks Front Door readiness. Existing templates enforce only simulator mode.
-
-The initial admission-disabled revision uses process liveness as its platform readiness probe so the deployment can finish and run the seed job. The final admission-enabled revision switches to `/health/ready`, which verifies fixtures and Redis; authorization and public-network restrictions are never relaxed during bootstrap.
-
-After rollout, run `scripts\Test-DeployedApp.ps1` with the public origin, tenant ID, and web client ID. It checks the compiled frontend, real fixture/Redis readiness, anonymous API denial, disabled local login, and the correct Entra authorization redirect. It explicitly reports authenticated browser journeys as not tested; complete first-use password/MFA interactions and run those scenarios separately.
-
-Initial credentials for the three fixtures may be stored as DPAPI-protected `alex.credential.xml`, `sam.credential.xml`, and `jordan.credential.xml` beside the private tenant inventory. They are not the final passwords after first-use changes. Use `Import-Clixml` locally to obtain a still-valid initial `PSCredential`; never copy credential output into source, CI logs or support artifacts. Security enrollment/MFA and any initial password change must be completed by the user; they are not automated or disabled to unblock testing. Final local test credentials use the uniformly named `TEST_ALEX_*`, `TEST_SAM_*` and `TEST_JORDAN_*` keys described in the testing guide.
-
-### Callback failures behind Front Door
-
-The initial authorization redirect and token-code redemption must use the same external HTTPS URI. Rewriting only the browser redirect is insufficient: Microsoft.Identity.Web can otherwise reconstruct the internal HTTP origin during code redemption, producing `AADSTS500112`.
-
-The app validates `App:PublicOrigin` and configures both the OIDC redirect and named MSAL confidential-client `RedirectUri` to `<public-origin>/auth/callback`. Keep the Entra Web redirect registration identical. Do not add the internal HTTP origin to Entra or accept arbitrary forwarded-host headers as a workaround.
-
-After changing the app configuration/code, start a fresh sign-in from the application root. Do not refresh a previously failed callback or replay an authorization code. Public readiness and redirect-only smoke checks do not prove token redemption; the proxy regression test covers the actual token request, while the final user session still needs a fresh real login.
+These are real Teams messages in normal runs. Only send them to the approved test recipient within the authorized development scope; use offline test fixtures for automated checks.
 
 ## GitHub Actions
 
-CI builds/tests the app, runs Playwright scenarios, compiles Bicep, parses PowerShell, and uploads sanitized local-test evidence. It receives no deployment credentials.
+`CI` builds/tests without Azure credentials or Graph writes. **Deploy dev** is a manually dispatched `main` release to the existing GitHub `dev` environment. Configure required reviewers and the main-only policy outside the workflow.
 
-Before enabling `Deploy dev`, create the GitHub `dev` environment with a required reviewer and main-only deployment policy. Grant the deployment principal resource-group Contributor and registry-scoped AcrPush only after approving bootstrap. Do not grant subscription Owner or directory administration to the workflow.
+Set these environment variables:
 
-Set environment variables: `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_RESOURCE_GROUP`, `AZURE_DEPLOY_CLIENT_ID`, `AZURE_REGISTRY_NAME`, `TEAMS_WEB_CLIENT_ID`, `TEAMS_EVENTS_CLIENT_ID`, `TEAMS_FIXTURE_ACTOR_IDS` (three-element JSON array in Alex, Sam, Jordan order), and `TEAMS_BOOTSTRAP_COMPLETE=true` only after final bindings/private-origin readiness.
-
-Set `AZURE_LOCATION=swedencentral`, `AZURE_COSMOS_LOCATION=swedencentral`, and `AZURE_REDIS_SKU=Balanced_B0`. Defaults now match the user-selected Sweden deployment. Do not reuse the old subscription's settings or Entra client/user IDs.
-
-The manual workflow requires `DEPLOY-SYNTHETIC-DEV`, environment approval, successful correctness checks, and Azure OIDC. It builds/pushes an immutable image and invokes the same release scripts. Workflow definition/linting does not prove a remote run. Commit/push and remote execution need explicit user authorization.
-
-## Operations, retention, and cleanup
-
-Application logs omit bodies, tokens, credentials, and OAuth query values. Azure Monitor instrumentation is enabled only with its connection setting; SDK PII logging is not enabled. Readiness checks fixture existence and Redis reachability, not production SLOs.
-
-| Copy | Dev lifecycle |
+| Variable | Meaning |
 | --- | --- |
-| Message projection | Seven days from original creation, at most 200 records and 1 MB serialized message budget per conversation; reads also enforce age |
-| Simulator receipts | Cosmos TTL seven days; exact synthetic confirmation evidence, not actual Graph receipts |
-| Operation evidence | Body-free records, Cosmos TTL fourteen days from last modification; command windows expire after five minutes |
-| Tombstones | Fourteen days, bounded dev safety limit; expired records pruned by worker |
-| Broker/DLQ | One-hour message TTL; worker explicitly purges aged DLQ content, at most 100 examined per maintenance pass |
-| BFF session/token cache | Protected server-side; absolute session/token-cache lifetime eight hours; Redis persistence disabled |
-| Key ring | Protected with Key Vault; loss of Redis may require sign-in, never fallback authorization |
-| Principal revocation | Explicit durable deny until an approved restore/reset or environment teardown |
-| Telemetry | Body-free, thirty-day workspace retention and an ingestion cap; neither is a total-cost cap |
-| Cosmos backup | Local periodic backups; configured retention eight hours, potentially extending physical retention of expired/deleted content |
+| `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID` | Explicit existing target boundary |
+| `AZURE_RESOURCE_GROUP` | Existing Development resource group |
+| `AZURE_REGISTRY_NAME` | Existing ACR; anonymous pull/admin credentials remain disabled |
+| `AZURE_DEPLOY_CLIENT_ID` | Approved GitHub OIDC deployment principal |
+| `AZURE_API_APP_NAME`, `AZURE_WORKER_APP_NAME` | The existing two Container Apps, not new names |
+| `AZURE_CONTAINER_APP_ENVIRONMENT_ID` | Exact existing managed environment resource ID |
 
-Worker outages/backlogs can delay physical purge. Monitor them and verify real service retention after deployment; TTL/read filtering alone does not prove complete physical deletion. No backup, encrypted, derived, queue, or operational copy authorizes production content.
+The workflow builds and pushes an immutable container digest, checks both apps before any application mutation, and updates their images only. It preserves Live settings, admission/synchronization state, secrets, identities, networking, sizing, replica limits and all data services. It refuses Simulator/GraphPilot targets and incomplete or inconsistent configuration. It does not call platform Bicep, seed/reset jobs, Entra reconciliation or Graph writes.
 
-For a repeatable test reset, quiesce dev interactions and use `scripts\test-data\Reset-Fixtures.ps1`. It affects only six allowlisted conversations, increments their command epoch, restores fixture access, and retains operation evidence. It does not delete arbitrary containers/resources.
+Preflight validates timestamps independently of the PowerShell locale and derives canonical Graph paths from the persisted resource IDs when computed `path` fields are absent. A supplied path must still match that mapping. Healthy `RunningAtMaxScale` revisions are accepted without increasing replica limits; stopped, unhealthy and mismatched revisions remain blocked.
 
-For teardown, first confirm the exact resource group and ownership/tags, stop traffic/jobs, and obtain deletion approval. Remove only that dedicated group, then separately remove the tagged Entra apps/users and GitHub federation/environment bindings after inspecting the private inventory. Do not delete unrelated resources or force-purge Key Vault; purge protection can retain keys after resource removal.
+Image update payloads omit Azure's read-only container `imageType` and resource `ephemeralStorage` fields. The final observed-state comparison still requires those derived values and all existing writable configuration to remain unchanged.
 
-## Remaining live-readiness work
+Enter **`DEPLOY-DEV`** when dispatching. The old `DEPLOY-SYNTHETIC-DEV`, fixture actor variables and overloaded bootstrap boolean are not release inputs. OIDC/RBAC must already be approved and configured; the workflow cannot grant itself permissions. Keep deployment scope restricted to the approved resource group/registry; do not add subscription Owner or directory-administration privileges.
 
-The original tenant had no Microsoft 365 subscriptions. The newly selected tenant reports enabled Microsoft 365 E5 (no Teams) and Microsoft Teams Enterprise subscriptions. This confirms product availability, not available seats, per-user assignments, service provisioning, consent, or live-readiness approval. Dedicated test users still require an authorized administrator; no licences have been assigned by this deployment.
+The same release can be previewed locally without mutation:
 
-Live mode additionally needs approved Graph permissions/resource scope, real entitlement/history/DLP authority, acceptance of the implemented callback/subscription/repair paths, credential/notification-key rotation, and real browser/integration evidence. See ADR 0008; this is not a configuration toggle that can safely be enabled immediately after licensing.
+```powershell
+$release = @{
+    SubscriptionId = '<approved-subscription-guid>'
+    TenantId = '<approved-tenant-guid>'
+    ResourceGroup = '<existing-development-group>'
+    RegistryName = '<existing-registry>'
+    ApiAppName = '<existing-api>'
+    WorkerAppName = '<existing-worker>'
+    EnvironmentId = '<existing-managed-environment-resource-id>'
+    Image = '<registry>.azurecr.io/teams-reference@sha256:<digest>'
+}
+.\scripts\Deploy-Dev.ps1 @release
+# Only after release approval:
+.\scripts\Deploy-Dev.ps1 @release -Apply -Confirmation DEPLOY-DEV -Confirm:$false
+```
 
-The repository now contains a locally verified [live runtime foundation and staged deployment guide](live-runtime.md), including separate receiver/projector/delivery/control roles. Its rollout, real policy authority, Azure/Graph integration, capacity and recovery remain unaccepted; the hosted simulator boundary above has not changed. Use `Deploy-Live.ps1` only with the separately approved live platform/profile, never by changing `Deploy-Dev.ps1` or reusing its seed job.
+The wrapper verifies exact image/revision readiness and public Live/Entra/anonymous-access contracts. These are read-only smoke checks, not authenticated Teams journey evidence. A partial rollout fails with recovery identities; inspect it and restore known-good Live images through an explicitly approved release. Never recover by resetting data or replaying an uncertain Graph POST.
 
-The selected implementation direction is the final event-driven projection, not a direct-Graph-read MVP. Follow the [live integration plan](live-integration-plan.md) for dependency-ordered delivery. This direction does not change the synthetic-only boundary or approve business-content storage, broader consent, licences, or a rebuild.
+## Platform and first workload deployment
+
+Routine releases must not provision infrastructure. The following is an operator runbook, not authorization to execute it. Directory creation, licences, Teams-resource creation, billable provisioning, identity changes and user admission require their own approvals.
+
+1. Select the tenant/subscription and private inventory. Use `Bootstrap-Dev.ps1` only for the approved owned directory objects; it grants no Teams licences/message consent. Use `Sync-Identity.ps1` for desired-state planning, approved grants/trust and drift verification. See [Entra configuration](entra-configuration.md).
+2. Preview `New-DevPlatform.ps1` with the existing inventory. The private platform includes its shared Front Door endpoint/WAF independently of workloads, so the canonical origin and actual identity outputs are available before configuring Live. Approve costs/quotas and `Microsoft.Network/AllowBringYourOwnPublicIpAddress` registration separately. Use pinned Bicep 0.48.1 in CI.
+3. Apply the approved scoped `infra\synthetic-live.bicep` storage/queue/key/access definitions against that platform. This name denotes the bounded real-Teams profile. It does not create a simulator or resize services. Preserve the single-region SessionPrimary contract and read-only primary-read procedure.
+4. Prepare the notification public certificate using the existing versioned Key Vault key and the `PrepareNotification` diagnostic under explicitly authorized real-service credentials. This operation can run before normal host startup, with `App:GraphMode=Live`, `App:Operation=PrepareNotification`, `LivePreparation:KeyUri`, `VaultName`, and `ApprovalReference`. No private key is exported. Keep encryption material and references private; never replace verification with test keys.
+5. Prepare explicit approved Live resource inventory/configuration, real callback URLs, history cutoffs, actors, owners, consent and notification-publisher assignment. Reuse existing owned Teams resources. `New-DevTeamsResources.ps1` can prepare a separately approved dedicated group/team/channel with checkpointed creation; it is not part of release or normal startup. Existing one-to-one mappings must be supplied explicitly; application discovery and `EnsurePairs` verify/reuse them, not create them.
+6. Preview `infra\main.bicep` with `deployWorkloads=true`, immutable `image` and reviewed `liveConfig` for the compact Development topology. Leave synchronization/admission explicitly off until their prerequisites are approved. Its API hosts Api/Receiver/Control; its worker hosts Projector/Delivery. `deployOperations=true` optionally provisions a **manual Live diagnostic job**, retaining the historical `-seed` name where needed; it never seeds/reset conversations. No retired runtime must be deployed first.
+7. Complete/verify actual origin, FIC principal/client IDs, callback principal and private-origin approval; establish the approved user sessions, synchronization, subscription/coverage/authority readiness and then admission through separate configuration approvals. For configuration changes to the existing two apps, use `Deploy-SyntheticLive.ps1` with reviewed private settings. Do not use the five-app Policy template to replace the existing topology unintentionally.
+8. Once the current five-resource Live scope and three approved existing pair mappings are stable, `New-SyntheticLiveSettings.ps1` exports current metadata/snapshots privately. Supply `PrivateDirectory`, `SubscriptionId`, `ResourceGroup`, `ApiAppName`, `WorkerAppName`, and the explicit existing `OperationJobName`. Optional `ScopePath` supplies approved complete Live configuration, not an archived pilot snapshot. The full-journey helper metadata deliberately requires all five existing resources; it is not used to invent missing mappings. Normal releases subsequently use `Deploy-Dev.ps1`.
+
+Use incremental, reviewed provisioning; removal of old template definitions is not permission to delete old resources. The retired `state` container/plaintext queue and old job revisions may remain in Azure until an owner reviews retention, dependencies and deletion scope. A manual job reused for Live diagnostics is not an unused simulator asset merely because its historical name contains `seed`.
+
+The private topology has significant fixed costs (Front Door Premium, Service Bus Premium, Redis, PubSub, private endpoints and other services). Check current Sweden Central prices, quotas and actual what-if results; historical capacity attempts or compiled templates do not establish deployability or cost approval.
+
+## Validation, retention and cleanup
+
+Use `Test-DeployedApp.ps1 -PublicOrigin ... -TenantId ... -WebClientId ... -ExpectedMode Live -ExpectAdmission` for an admitted API, omitting `-ExpectAdmission` only for a deliberately fenced rollout. It checks the shell/assets, Live API readiness, anonymous denial, absence of local sign-in and canonical Entra redirect. No message is sent.
+
+Authenticated checks and real Teams posts are separate opt-ins documented in [testing.md](testing.md) and [live-runtime.md](live-runtime.md). Logs/artifacts must exclude bodies, tokens, credentials, capability URLs and raw authentication traces.
+
+Keep retention, operation evidence, authority, coverage, subscription state, keys, delivery checkpoints and session compatibility intact during releases. Production G0-G7, capacity, soak, regional recovery and business-data acceptance remain independent. For teardown, inspect exact ownership and obtain separate approval for each deletion; do not delete a resource group or force-purge Key Vault as part of this code cleanup.

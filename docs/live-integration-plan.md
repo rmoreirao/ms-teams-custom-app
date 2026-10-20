@@ -2,11 +2,11 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Repository implementation verified; live activation and production acceptance remain gated |
+| Status | Bounded three-user Azure Live rollout deployed and verified end to end; production acceptance remains gated |
 | Last implementation update | 2026-10-19; see execution status and remaining release work below |
-| Current hosted validation | User selected basic functionality on existing infrastructure before the stronger rollout. Explicit GraphPilot passed all three users' real chat/post/reply journeys; see [basic validation evidence](graph-pilot.md). |
+| Current hosted validation | Existing two apps host all five logical Live roles for three synthetic users/five approved resources. Actual storage/crypto, signed notifications, durable projection/delivery, browser deltas and normal chat/reply confirmations passed; see [current evidence](dev-validation.md). Earlier [GraphPilot evidence](graph-pilot.md) is historical. |
 | Direction selected | 2026-10-16: complete the scalable, event-driven projection architecture, not a direct-Graph-read MVP |
-| Existing baseline | .NET 10 API/BFF, React frontend, simulator, and single-region Azure dev deployment |
+| Current source baseline | Live-only .NET 10 API/BFF, React frontend and single-region Development; Simulator/GraphPilot runtimes removed, mocks confined to tests |
 | Architecture | [Technical design](technical-design.md), [detailed architecture](detailed-architecture.md), ADRs 0001-0009 |
 | Rebuild contract | [Entra configuration and rebuild runbook](entra-configuration.md) |
 | Implemented runtime | [Configuration, rollout, policy contract and remaining limits](live-runtime.md) |
@@ -17,7 +17,7 @@ Implement the final production-shaped paths incrementally in the existing codeba
 
 Use one codebase with independently deployed API/BFF, notification receiver, projector, delivery, and control/repair roles. Do not introduce a new broker or a full event-sourcing archive. Retain Cosmos, Redis, Service Bus, Web PubSub, Key Vault, and Container Apps, with production settings determined by the existing capacity and recovery gates.
 
-Selecting this engineering direction does not approve copying existing business content, tenant-wide consent, licence assignment, billable deployment, or a production SLO. ADR 0007/G0 remains unresolved for business data. ADR 0008 continues to describe the implemented synthetic-only dev environment; it is not superseded by this plan.
+Selecting this engineering direction does not approve copying existing business content, tenant-wide consent, licence assignment, billable deployment, or a production SLO. ADR 0007/G0 remains unresolved for business data. ADR 0008 is historical for runtime selection: Live-only Development now retains the approved test-data boundary and private Sweden topology without shipping a simulator.
 
 ## 2. Target runtime paths
 
@@ -34,7 +34,7 @@ A confirmed send uses the same projection engine immediately, without waiting fo
 
 ## 3. Simulator baseline and implementation scope
 
-This table records the baseline used to scope the work, not a claim that these gaps still exist unchanged. The execution-status table below is the current source of implementation status.
+This table records the historical baseline used to scope the work, not supported source files or commands. Simulator, GraphPilot, old aggregate stores/worker, fixture jobs and local credentials have since been removed. The execution-status table below and current dev guide describe supported behavior.
 
 | Surface | Simulator baseline | Required change |
 | --- | --- | --- |
@@ -55,24 +55,26 @@ Dependencies identify implementation prerequisites, not permission to execute ch
 
 ### Execution status
 
+**Azure vertical slice delivered:** the existing-platform `DelegatedSynthetic` profile now passes real signed Graph notifications through Service Bus, Key Vault decryption, Cosmos projection/outbox, delivery and Web PubSub into two open browser feeds. It uses the existing serverless Session account with SessionPrimary and the existing two app sizes. All three users, five scoped resources, exact-pair denials and restart persistence were checked. The bounded adapter retains original delegated sessions for at most eight hours; it does not supply unattended production authorization, organizational policy/DLP equivalence, dynamic production onboarding, 200,000-user capacity or regional recovery. The broader production work-package gates below remain separate from this completed milestone.
+
 **Basic validation delivered:** after the user deferred additional infrastructure, the existing API was updated to delegated GraphPilot mode. Alex, Sam and Jordan each completed fresh password/TOTP and actual Teams chat/channel/post/reply creation plus read-back. This validates the agreed basic functionality, not production `Live` acceptance. ADR 0010 records the scope change; the stronger work-package gates below remain intentionally separate.
 
 | Package | Status | Evidence / remaining gate |
 | --- | --- | --- |
 | W0 | Deployment gate; engineering decisions recorded | Retain the global-cloud, single-tenant BFF and event-driven projection. Deployment-specific G0 approval, authoritative policy endpoint, resource/licence evidence, sustainable write mix, cost envelope and recovery acceptance must be supplied before activation. Code work did not grant access or provision resources. |
 | W1 | Implemented locally; tenant evidence pending | Schema/example and Plan/Apply/Verify/Export, user/group admission, exact consent/federation checks, explicit opt-in trust rotation with preflight-race refusal, partial resume, rediscovery and no-write WhatIf tests. Licence purchases/assignment and optional RSC installation remain approval/endpoint-specific steps; no real grants applied. |
-| W2 | Implemented and verified locally; Cosmos acceptance pending | Separate projection/authority/control and lease documents, bounded catalog/message paging, immutable logical-to-Graph mapping, Strong-consistency profile, source leases, tombstones, change journal, atomic outbox and dispatch-epoch claims. Real Cosmos query/transaction/index/hot-key behavior remains an environment gate. |
+| W2 | Implemented and verified locally; Cosmos acceptance pending | Separate projection/authority/control and lease documents, bounded catalog/message paging, immutable logical-to-Graph mapping, Strong and single-region SessionPrimary profiles, source leases, tombstones, change journal, atomic outbox and dispatch-epoch claims. Real Cosmos query/transaction/index/hot-key behavior remains an environment gate. |
 | W3 | Implemented and verified locally; real Graph acceptance pending | Delegated writes and background-only clients, opaque paging guards, whole-operation deadlines and payload bounds, shared permits/cooldowns, explicit interaction/unknown outcomes. Pre-token cancellation is definite non-dispatch; post-dispatch uncertainty never triggers automatic replay. Real consent/Conditional Access and budgets remain gates. |
 | W4 | Implemented and verified locally; service acceptance pending | Signed publisher/tenant/audience validation, scope-filtered encrypted durable intake, authenticated decryption, lock-managed consumer, stale-lifecycle refusal, schema checks and repair-before-DLQ cleanup. Real notification versions, lock loss, key rotation and webhook deadlines remain environment checks. |
 | W5 | Implemented locally; service/capacity evidence pending | Cosmos change-feed outbox dispatch with lease container, duplicate-safe Service Bus delivery queue, conditional page claims/checkpoints and atomic completion/revision watermark. Includes replay/continuation-loss/claim-expiry/coalescing tests; no tenant outbox polling on the normal path. Real broker/change-feed and high-fan-out capacity still require evidence. |
 | W6 | Implemented policy-feed integration and lifecycle; deployment binding pending | Leased renewal/reauthorization, exact-correlated uncertain subscription recovery, bounded repair including replies, generation-fenced coverage, bounded-concurrent policy refresh, key-version references and fail-closed authenticated policy adapter. ADR 0009 records the unattended choice not to invent Graph-only history/DLP guarantees. Deployment must supply the approved service and prove rotation/restore behavior. |
 | W7 | Implemented and verified locally; operational acceptance pending | Five scoped identities/workloads, change-feed leases, queue scalers, private edge/WAF, gated deployment, CI, body-free OpenTelemetry counters/timings, opt-in queue/worker alerts and operations workbook. Actual sizing, metric ingestion/routing and SLO/capacity evidence remain deployment gates. |
-| W8 | Release/readiness/recovery procedures implemented; live execution gated | Read-only simulator/live deployment contract checks and staged/fenced recovery procedures are documented. Actual G0-G7, tenant/Azure integration, capacity/soak and regional recovery acceptance have not been executed or certified. |
+| W8 | Live-only release/readiness procedures implemented; new rollout separately gated | Existing-two-app image-only release, both-target preflight, configuration preservation, exact ready revisions and read-only Live smoke. Offline test harnesses replace simulator-dependent checks. Production G0-G7/capacity/recovery acceptance remains separate. |
 
 | ID | Work package | Depends on | Deliverable and exit condition |
 | --- | --- | --- | --- |
 | W0 | Resolve deployment inputs | None | Record processing/storage approval boundary, licensed users, allowed resources, subscription strategy, entitlement authority, chat/channel write mix, regions, recovery and cost constraints. Unsupported requirements remain explicit blockers. |
-| W1 | Make identity configuration reproducible | W0 | Implement the desired-state and private-inventory contracts in the Entra runbook, read-only live diff, separately approved apply, drift/ownership refusal, resume checkpoints, export, and verification. Existing simulator provisioning remains supported. |
+| W1 | Make identity configuration reproducible | W0 | Implement desired-state/private-inventory contracts, live read-only diff, separately approved apply, drift/ownership refusal, resume/export/verification. Rebuild directly to Live; no intermediate simulator/pilot deployment. |
 | W2 | Introduce production persistence and contracts | W0 | Split the aggregate behind projection, operation, entitlement, index, inbox/outbox, and coverage ports. Demonstrate partition-local atomic updates, bounded reads, deduplication, tombstones, revision barriers, and schema migration. |
 | W3 | Implement live Graph/authentication boundaries | W1, W2 | Delegated sends, app-only background clients, resource onboarding/mappings, explicit reauthentication, safe paging, shared attempt accounting, and known/unknown send evidence. Keep tokens backend-only and prohibit app-only user impersonation. |
 | W4 | Implement rich-notification intake and projection | W1, W2, W3 | Distinct Graph callback/lifecycle routes, scope and authenticity checks, encrypted durable acceptance, certificate-version decryption, idempotent projection, lock renewal, retries/DLQ handling, and explicit unsupported-event handling. |
@@ -93,6 +95,30 @@ Current code is staged for an independently approved live rollout; this task did
 
 The repository implementation selects the explicit policy-feed boundary in ADR 0009. It does not silently substitute an invented Graph-membership-only authority when no organizational policy service has been supplied. This resolves the code-side integration choice while preserving the deployment's obligation to provide and approve that authority before live activation.
 
+### End-state app integration follow-up (2026-10-19)
+
+The frontend now uses targeted/coalesced hints, authorized message deltas, minimum-revision snapshots, history filtering, command-window renewal and reconnect/foreground catch-up. Normal delta updates preserve loaded earlier pages; reset rebuilds the loaded page count. Push transports reconcile on a jittered 4-6-minute interval rather than polling every 30 seconds. The pilot's negotiated poll remains truthful and unchanged.
+
+Production approved-contact discovery is opt-in through `LiveOptions.directChats`. Both participants need current policy authority and the source must separately prove the actual one-to-one type/exact pair; configuration and two individual grants are not sufficient. Opening reuses the approved projected chat without Graph calls or sends. This removes the previous unconditional production discovery disablement without inventing directory permissions. It does not implement arbitrary recipient search, new production chat creation or dynamic resource onboarding. Supported rich formatting uses a maintained allowlist sanitizer; attachments/embedded media have explicit Teams-only notices/source links. Histories above 60 messages use measured variable-height virtualization with stable keys and end anchoring.
+
+The end-state plan remains only partially deliverable without external inputs:
+
+| Milestone | Repository increment / remaining prerequisite |
+| --- | --- |
+| Production contract | G0 storage/copy/retention approval, admitted population, discovery boundary, policy authority and cost/recovery inputs remain unresolved; none was inferred from an implementation request |
+| Event-driven vertical slice | Existing live adapters plus a new complete controlled-dependency journey for chat/post/reply; actual Graph, broker, Key Vault, Cosmos and PubSub evidence remains required |
+| Browser live behavior | Implemented targeted synchronization, preserved pages, stale-history clearing, explicit failure/reconnect and background reconciliation; real-service freshness acceptance remains required |
+| Production New chat | Current-authority discovery/open of approved existing pairs implemented; automatic creation/registration/subscription/policy onboarding and broader paged directory discovery remain engineering work after their scope/authority contract is approved |
+| Content/UX | Allowlisted rich formatting, safe links, explicit attachment boundaries, variable-height virtualization and responsive/keyboard journeys implemented; attachment transfer, arbitrary cards and full-history search are not implemented or claimed |
+| Bounded rollout | Use the selected storage profile and its read contracts; SessionPrimary supports the current account type without replacing it. Role/configuration wiring, a supported authority integration and operational acceptance remain work, not an intrinsic serverless/pub-sub incompatibility. No cloud admission/deployment was performed |
+| Final scale/recovery | Sustainable Graph write mix, 200,000-user capacity, full regional recovery implementation/drill and G0-G7 evidence remain unproven |
+
+Do not describe this increment, a passing local suite or a transport's `Live` label as completion of all seven product milestones. See the [runtime contracts](live-runtime.md#browser-synchronization-and-approved-contact-discovery) and [test boundaries](testing.md#end-state-synchronization-increment).
+
+### Session-consistency correction
+
+The earlier Strong-only implementation gate was a chosen correctness shortcut, not a Cosmos serverless or pub/sub limitation. The new `SessionPrimary` path executes bounded read-only primary-replica point reads and retains SDK session barriers, current authorization, conditional operation/epoch checks and explicit failures. The existing Strong profile remains available; the private live example now selects SessionPrimary. Deployment and runtime validate single-region compatibility, and the template supplies procedure/RBAC wiring without changing the account's consistency/capacity mode. Actual private-service verification is separately opt-in and is not inferred from local contracts.
+
 ## 5. Design requirements within the work packages
 
 ### Persistence and delivery
@@ -111,7 +137,7 @@ Use the existing cookie/BFF authorization-code flow with server-side token acqui
 
 Select a trustworthy entitlement/policy authority and measurable freshness bound. Message subscriptions or a membership cache alone do not prove current user access, visible history, offboarding, or DLP equivalence. Deny or require verification when authority is missing/expired. Recheck recipients before hints and content before reads.
 
-Live operation must not seed fixture conversations or expose simulator controls. Keep simulator contracts and isolated capacity environments, but separate their data, users, health semantics, and release gates from live mode.
+Live operation must not seed fixture conversations or expose simulator controls. Simulator and pilot contracts/runtimes are removed. Keep offline controlled dependencies inside tests only, with separate real-Teams evidence and approval gates.
 
 ### Graph limits and write safety
 

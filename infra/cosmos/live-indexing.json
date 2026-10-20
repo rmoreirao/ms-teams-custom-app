@@ -1,0 +1,20 @@
+{
+  "indexingMode": "consistent",
+  "automatic": true,
+  "includedPaths": [
+    { "path": "/kind/?" },
+    { "path": "/tenantId/?" },
+    { "path": "/conversationId/?" },
+    { "path": "/actorId/?" },
+    { "path": "/parent/?" },
+    { "path": "/pending/?" },
+    { "path": "/sortTime/?" },
+    { "path": "/sourceId/?" },
+    { "path": "/revision/?" }
+  ],
+  "excludedPaths": [{ "path": "/*" }],
+  "compositeIndexes": [
+    [{ "path": "/sortTime", "order": "descending" }, { "path": "/sourceId", "order": "ascending" }],
+    [{ "path": "/sortTime", "order": "ascending" }, { "path": "/id", "order": "ascending" }]
+  ]
+}

@@ -11,5 +11,5 @@
     "esModuleInterop": true,
     "types": ["vite/client", "vitest/globals"]
   },
-  "include": ["src", "*.ts"]
+  "include": ["src", "e2e", "*.ts"]
 }

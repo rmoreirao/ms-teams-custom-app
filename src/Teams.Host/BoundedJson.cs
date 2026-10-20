@@ -7,7 +7,7 @@ namespace Teams.Host;
 
 public static class BoundedJson
 {
-    public static async Task<JsonElement> ReadAsync(HttpContent content, int maximumBytes, CancellationToken ct)
+    public static async Task<JsonElement> ReadAsync(HttpContent content, int maximumBytes, CancellationToken ct, bool allowEmpty = false)
     {
         if (maximumBytes <= 0 || maximumBytes == int.MaxValue) throw new ArgumentOutOfRangeException(nameof(maximumBytes));
         if (content.Headers.ContentLength > maximumBytes)
@@ -25,6 +25,7 @@ public static class BoundedJson
                 if (output.Length > maximumBytes)
                     throw new AppError(503, "dependency_payload_too_large", "Dependency payload exceeds the approved processing limit.");
             }
+            if (output.Length == 0 && allowEmpty) return JsonSerializer.SerializeToElement(new { });
             using var document = JsonDocument.Parse(output.GetBuffer().AsMemory(0, (int)output.Length), new() { MaxDepth = 32 });
             return document.RootElement.Clone();
         }

@@ -14,7 +14,7 @@ if (-not $inventory.applications.web.clientId -or -not $inventory.applications.e
     throw 'Create the web and callback application registrations before provisioning the platform.'
 }
 if ($inventory.bootstrapComplete -eq $false -or $inventory.users.Count -ne 3) {
-    Write-Warning 'Entra bootstrap is incomplete. This deploys infrastructure only; authenticated application and fixture workloads remain gated.'
+    Write-Warning 'Entra bootstrap is incomplete. This deploys infrastructure only; Live application admission remains gated.'
 }
 $account = az account show --subscription $SubscriptionId --output json | ConvertFrom-Json
 if ($LASTEXITCODE -or $account.tenantId -ne $inventory.tenantId) { throw 'Subscription and approved identity tenant do not match.' }

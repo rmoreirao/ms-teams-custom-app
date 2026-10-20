@@ -31,6 +31,8 @@ jobs:
         run: npm ci --no-audit --no-fund && npm run build && npm test
       - run: dotnet restore TeamsReference.slnx --locked-mode
       - run: dotnet test TeamsReference.slnx --configuration Release --no-restore --logger trx
+      - name: Azure protocol and primary-read contracts
+        run: node --test tests/Scripts/primary-read.test.mjs tests/Scripts/pubsub-waf.test.mjs
       - name: Browser prerequisites
         working-directory: src/Web
         run: npx playwright install --with-deps chromium
@@ -43,6 +45,7 @@ jobs:
           az bicep build --file infra/main.bicep --outfile "$RUNNER_TEMP/main.json"
           az bicep build --file infra/subscription.bicep --outfile "$RUNNER_TEMP/subscription.json"
           az bicep build --file infra/live.bicep --outfile "$RUNNER_TEMP/live.json"
+          az bicep build --file infra/synthetic-live.bicep --outfile "$RUNNER_TEMP/synthetic-live.json"
       - name: Verify management scripts
         shell: pwsh
         run: |
@@ -52,7 +55,9 @@ jobs:
           ./tests/Scripts/IdentityProfile.Tests.ps1
           ./tests/Scripts/LiveDeployment.Tests.ps1
           ./tests/Scripts/DeploymentContract.Tests.ps1
-          ./tests/Scripts/GraphPilotDeployment.Tests.ps1
+          ./tests/Scripts/DevDeployment.Tests.ps1
+          ./tests/Scripts/LiveOnly.Tests.ps1
+          ./tests/Scripts/LiveSetup.Tests.ps1
       - name: Correctness artifacts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

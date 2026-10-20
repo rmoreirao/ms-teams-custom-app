@@ -10,11 +10,13 @@ try {
     & (Join-Path $root 'tests\Scripts\IdentityProfile.Tests.ps1')
     & (Join-Path $root 'tests\Scripts\LiveDeployment.Tests.ps1')
     & (Join-Path $root 'tests\Scripts\DeploymentContract.Tests.ps1')
-    & (Join-Path $root 'tests\Scripts\GraphPilotDeployment.Tests.ps1')
+    & (Join-Path $root 'tests\Scripts\DevDeployment.Tests.ps1')
+    & (Join-Path $root 'tests\Scripts\LiveOnly.Tests.ps1')
+    & (Join-Path $root 'tests\Scripts\LiveSetup.Tests.ps1')
+    node --test (Join-Path $root 'tests\Scripts\primary-read.test.mjs') (Join-Path $root 'tests\Scripts\pubsub-waf.test.mjs')
+    if ($LASTEXITCODE) { throw 'Azure protocol contract checks failed.' }
     Push-Location (Join-Path $root 'src\Web')
     try {
-        npm ci --no-audit --no-fund
-        if ($LASTEXITCODE) { throw 'Frontend restore failed.' }
         npm run build
         if ($LASTEXITCODE) { throw 'Frontend build failed.' }
         npm test

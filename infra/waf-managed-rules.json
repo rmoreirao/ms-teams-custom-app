@@ -1,0 +1,37 @@
+{
+  "managedRuleSets": [
+    {
+      "ruleSetType": "Microsoft_DefaultRuleSet",
+      "ruleSetVersion": "2.1",
+      "ruleSetAction": "Block",
+      "ruleGroupOverrides": [
+        {
+          "ruleGroupName": "RFI",
+          "rules": [
+            {
+              "ruleId": "931130",
+              "enabledState": "Enabled",
+              "exclusions": [
+                {
+                  "matchVariable": "RequestBodyJsonArgNames",
+                  "selectorMatchOperator": "Equals",
+                  "selector": "claims.iss"
+                },
+                {
+                  "matchVariable": "RequestBodyJsonArgNames",
+                  "selectorMatchOperator": "Equals",
+                  "selector": "claims.aud"
+                },
+                {
+                  "matchVariable": "RequestBodyJsonArgNames",
+                  "selectorMatchOperator": "Equals",
+                  "selector": "headers.Origin"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

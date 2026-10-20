@@ -11,15 +11,9 @@ public interface IGraphAccessTokenSource
 {
     Task<string> AcquireAsync(bool channel);
 }
-public interface IGraphReadTokenSource
-{
-    Task<string> AcquireReadAsync(bool channel);
-}
-public sealed class DelegatedGraphTokens(ITokenAcquisition tokens) : IGraphAccessTokenSource, IGraphReadTokenSource
+public sealed class DelegatedGraphTokens(ITokenAcquisition tokens) : IGraphAccessTokenSource
 {
     public Task<string> AcquireAsync(bool channel) => AcquireScopesAsync([channel ? "ChannelMessage.Send" : "ChatMessage.Send"]);
-    public Task<string> AcquireReadAsync(bool channel) => AcquireScopesAsync(channel ?
-        ["ChannelMessage.Read.All", "Channel.ReadBasic.All"] : ["Chat.Read"]);
     private async Task<string> AcquireScopesAsync(string[] scopes)
     {
         try { return await tokens.GetAccessTokenForUserAsync(scopes); }
@@ -35,7 +29,6 @@ public sealed class DelegatedGraphTokens(ITokenAcquisition tokens) : IGraphAcces
 }
 public sealed class GraphTransport(HttpClient http, IGraphAccessTokenSource tokens) : IGraphTransport
 {
-    public bool Simulated => false;
     public async Task<WriteResult> SendAsync(Actor actor, Conversation conversation, SendOperation operation, CancellationToken ct)
     {
         using var measurement = LiveTelemetry.Measure("graph-send");

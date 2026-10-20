@@ -122,6 +122,33 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
             actor: grant.ActorId), catalog?.Version)], ct))
             throw new AppError(409, "catalog_conflict", "Catalog update must be retried from authority.");
     }
+    public async Task SetDirectChatAuthorityAsync(DirectChatAuthority evidence, CancellationToken ct)
+    {
+        if (evidence.ChatType != "oneOnOne" || evidence.MemberIds.Count != 2 || evidence.MemberIds.Distinct(StringComparer.Ordinal).Count() != 2 ||
+            evidence.MemberIds.Any(string.IsNullOrWhiteSpace) || string.IsNullOrWhiteSpace(evidence.GraphChatId) ||
+            string.IsNullOrWhiteSpace(evidence.AuthorityVersion) || evidence.VerifiedAt > Now ||
+            evidence.FreshUntil <= evidence.VerifiedAt || evidence.FreshUntil - evidence.VerifiedAt > TimeSpan.FromMinutes(5))
+            throw new InvalidOperationException("One-to-one discovery requires bounded authoritative exact-pair evidence.");
+        evidence = evidence with { MemberIds = evidence.MemberIds.Order(StringComparer.Ordinal).ToArray() };
+        var pk = Partition(evidence.TenantId, evidence.ResourceId);
+        var previous = await Authority.ReadAsync(pk, "direct-chat-authority", ct);
+        if (previous is not null)
+        {
+            var old = Decode<DirectChatAuthority>(previous.Value);
+            if (evidence.VerifiedAt < old.VerifiedAt || evidence.GraphChatId != old.GraphChatId ||
+                evidence.VerifiedAt == old.VerifiedAt && (evidence.AuthorityVersion != old.AuthorityVersion ||
+                    evidence.FreshUntil != old.FreshUntil || !evidence.MemberIds.SequenceEqual(old.MemberIds)))
+                throw new InvalidOperationException("Direct-chat authority cannot be retargeted, renewed or changed using stale evidence.");
+        }
+        if (!await Authority.WriteAsync([new(Wrap("direct-chat-authority", pk, "direct-chat-authority",
+            evidence.TenantId, evidence.ResourceId, evidence), previous?.Version)], ct))
+            throw new AppError(409, "authority_conflict", "The one-to-one policy evidence changed concurrently.");
+    }
+    public async Task<DirectChatAuthority?> DirectChatAuthorityAsync(string tenant, string resource, CancellationToken ct)
+    {
+        var value = await Authority.ReadAsync(Partition(tenant, resource), "direct-chat-authority", ct);
+        return value is null ? null : Decode<DirectChatAuthority>(value.Value);
+    }
     public async Task<IReadOnlyList<Message>> MessagesAsync(Actor actor, string conversation, string? parent,
         DateTimeOffset historyFrom, DateTimeOffset? before, string? beforeId, CancellationToken ct)
     {
@@ -167,15 +194,38 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
         var member = await GetMemberAsync(actor, conversation, false, ct);
         var metadata = (await GetAsync(actor.TenantId, conversation, ct))!.Value;
         if (!metadata.CoverageReady) throw new AppError(503, "projection_preparing", "Recent coverage is not verified.");
-        if (after > metadata.Revision) return new([], metadata.Revision, true);
+        var cutoff = member.HistoryFrom > Now.AddDays(-7) ? member.HistoryFrom : Now.AddDays(-7);
+        if (after > metadata.Revision) return new([], metadata.Revision, true, [], cutoff);
         var page = await documents.QueryAsync(new(actor.TenantId, "change", Partition(actor.TenantId, conversation),
             AfterRevision: after), 100, null, ct);
-        var records = page.Items.OrderBy(v => v.Value.Revision).ToArray();
+        var records = page.Items.Where(v => v.Value.Revision <= metadata.Revision).OrderBy(v => v.Value.Revision).ToArray();
         var reset = after < metadata.Revision && (records.Length == 0 || records[0].Value.Revision != after + 1 ||
-            page.Cursor is not null || records[^1].Value.Revision < metadata.Revision);
-        var changes = records.Where(r => r.Value.At >= member.HistoryFrom && r.Value.At >= Now.AddDays(-7))
+            page.Cursor is not null || records[^1].Value.Revision < metadata.Revision ||
+            records.Where((record, index) => record.Value.Revision != after + index + 1).Any());
+        var changes = records.Where(r => r.Value.At >= cutoff)
             .Select(r => Decode<Change>(r.Value)).ToArray();
-        return new(reset ? [] : changes, metadata.Revision, reset);
+        List<Message> messages = [];
+        var bytes = 0;
+        if (!reset)
+            foreach (var change in changes.DistinctBy(c => (c.MessageId, c.ParentId)))
+            {
+                var message = await MessageAsync(actor.TenantId, conversation, change.MessageId, change.ParentId, ct);
+                if (message is null) { reset = true; break; }
+                if (message.CreatedAt >= cutoff)
+                {
+                    if (message.ParentId is not null)
+                    {
+                        var parent = await MessageAsync(actor.TenantId, conversation, message.ParentId, null, ct);
+                        if (parent is null || parent.Deleted || parent.CreatedAt < cutoff) continue;
+                    }
+                    bytes += Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(message, Json));
+                    if (bytes > 262144) { reset = true; break; }
+                    messages.Add(message);
+                }
+            }
+        return new(reset ? [] : changes.Where(change => messages.Any(message =>
+            message.Id == change.MessageId && message.ParentId == change.ParentId)).ToArray(),
+            metadata.Revision, reset, reset ? [] : messages, cutoff);
     }
     public async Task<Versioned<SendOperation>?> GetOperationAsync(string tenant, string conversation, string id, CancellationToken ct)
     {
@@ -241,7 +291,7 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
                 else
                 {
                     revision++;
-                    var clean = incoming.Deleted ? incoming with { Body = "" } : incoming;
+                    var clean = incoming.Deleted ? incoming with { Body = "", ContentNotice = null, TeamsUrl = null, HtmlBody = null } : incoming;
                     var ttl = Math.Max(1, (int)(incoming.CreatedAt.AddDays(7) - Now).TotalSeconds);
                     writes.Add(new(Wrap(id, pk, "message", value.TenantId, value.Id, clean, ttl,
                         at: incoming.CreatedAt, revision: revision, parent: incoming.ParentId ?? "", sourceId: incoming.Id), previous?.Version));
@@ -252,7 +302,7 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
                     writes.Add(new(Wrap($"outbox:{change.Id}", pk, "outbox", value.TenantId, value.Id, change,
                         14 * 86400, revision: revision, pending: true), null));
                     writes.Add(new(Wrap($"change:{revision:D20}", pk, "change", value.TenantId, value.Id,
-                        new Change(revision, incoming.Id, Now), 14 * 86400, at: incoming.CreatedAt, revision: revision), null));
+                        new Change(revision, incoming.Id, Now, incoming.ParentId), 14 * 86400, at: incoming.CreatedAt, revision: revision), null));
                 }
             }
         }
@@ -361,8 +411,4 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
         if (!await Authority.WriteAsync([new(Wrap("revocation", pk, "revocation", tenant, "", blocked), current?.Version)], ct))
             throw new AppError(409, "revocation_conflict", "Revocation changed concurrently.");
     }
-    public Task<WriteResult?> GetSimulatorReceiptAsync(string tenant, string conversation, string operation, CancellationToken ct) =>
-        throw new InvalidOperationException("Simulator receipts are forbidden in live persistence.");
-    public Task SaveSimulatorReceiptAsync(string tenant, string conversation, string operation, WriteResult result, CancellationToken ct) =>
-        throw new InvalidOperationException("Simulator receipts are forbidden in live persistence.");
 }

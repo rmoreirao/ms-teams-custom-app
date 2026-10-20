@@ -9,16 +9,11 @@ param cosmosLocation string = location
 param redisSku string = 'Balanced_B0'
 param webClientId string
 param eventsClientId string
-@maxLength(3)
-param fixtureActorIds array = []
-@description('Explicit one-time simulator membership migration. Preserve messages; clear after the seed job succeeds.')
-param retiredFixtureActorId string = ''
 param deployWorkloads bool = false
+param deployOperations bool = false
 param provisionRbac bool = true
-param enableRealtimeAdmission bool = false
-@allowed(['Simulator', 'GraphPilot'])
-param graphMode string = 'Simulator'
-param graphPilotConfig object = {}
+@description('Reviewed bounded Development Live configuration. Provision scoped Live storage/access before workloads.')
+param liveConfig object = {}
 @description('Immutable registry image reference, including @sha256: digest. Required for workload deployment.')
 param image string = ''
 param tags object = {
@@ -34,6 +29,35 @@ var appSubnetName = 'container-apps-ready'
 var appSubnetPrefix = '10.30.4.0/23'
 var endpointSubnetName = 'private-endpoints'
 
+resource edge 'Microsoft.Cdn/profiles@2024-02-01' = {
+  name: '${base}-edge'
+  location: 'global'
+  sku: { name: 'Premium_AzureFrontDoor' }
+}
+resource endpoint 'Microsoft.Cdn/profiles/afdEndpoints@2024-02-01' = {
+  parent: edge
+  name: '${base}-web'
+  location: 'global'
+  properties: { enabledState: 'Enabled' }
+}
+resource waf 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@2024-02-01' = {
+  name: '${replace(base, '-', '')}waf'
+  location: 'global'
+  sku: { name: 'Premium_AzureFrontDoor' }
+  properties: {
+    policySettings: { enabledState: 'Enabled', mode: 'Prevention', requestBodyCheck: 'Enabled' }
+    managedRules: loadJsonContent('waf-managed-rules.json')
+  }
+}
+resource security 'Microsoft.Cdn/profiles/securityPolicies@2024-02-01' = {
+  parent: edge
+  name: 'waf'
+  properties: { parameters: {
+    type: 'WebApplicationFirewall'
+    wafPolicy: { id: waf.id }
+    associations: [{ domains: [{ id: endpoint.id }], patternsToMatch: ['/*'] }]
+  } }
+}
 resource apiIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: '${base}-api'
   location: location
@@ -121,40 +145,12 @@ resource database 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2024-05-15
   name: 'teams'
   properties: { resource: { id: 'teams' } }
 }
-resource state 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-05-15' = {
-  parent: database
-  name: 'state'
-  properties: {
-    resource: {
-      id: 'state'
-      partitionKey: { paths: ['/pk'], kind: 'Hash' }
-      defaultTtl: -1
-      indexingPolicy: {
-        indexingMode: 'consistent'
-        automatic: true
-        includedPaths: [{ path: '/kind/?' }, { path: '/tenantId/?' }]
-        excludedPaths: [{ path: '/*' }]
-      }
-    }
-  }
-}
 resource bus 'Microsoft.ServiceBus/namespaces@2024-01-01' = {
   name: '${base}-bus'
   location: location
   tags: tags
   sku: { name: 'Premium', tier: 'Premium', capacity: 1 }
   properties: { disableLocalAuth: true, publicNetworkAccess: 'Disabled', minimumTlsVersion: '1.2', premiumMessagingPartitions: 1 }
-}
-resource notifications 'Microsoft.ServiceBus/namespaces/queues@2024-01-01' = {
-  parent: bus
-  name: 'notifications'
-  properties: {
-    defaultMessageTimeToLive: 'PT1H'
-    lockDuration: 'PT1M'
-    maxDeliveryCount: 5
-    deadLetteringOnMessageExpiration: true
-    maxSizeInMegabytes: 1024
-  }
 }
 resource cache 'Microsoft.Cache/redisEnterprise@2025-07-01' = {
   name: redisSku == 'Balanced_B0' ? '${base}-redis' : '${base}-redis-${toLower(replace(redisSku, 'Balanced_', ''))}'
@@ -247,16 +243,6 @@ module privateLinks './modules/private-link.bicep' = [for item in [
     zoneName: item.zone
   }
 }]
-resource cosmosRoles 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = [for index in range(0, 2): if (provisionRbac) {
-  parent: cosmos
-  name: guid(cosmos.id, string(index), 'state-contributor')
-  properties: {
-    principalId: [apiIdentity.properties.principalId, workerIdentity.properties.principalId][index]
-    roleDefinitionId: '${cosmos.id}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002'
-    scope: '${cosmos.id}/dbs/teams/colls/state'
-  }
-  dependsOn: [state]
-}]
 resource pullRoles 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for index in range(0, 2): if (provisionRbac) {
   name: guid(registry.id, string(index), 'AcrPull')
   scope: registry
@@ -266,16 +252,6 @@ resource pullRoles 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for i
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
   }
 }]
-resource busSend 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (provisionRbac) {
-  name: guid(notifications.id, apiIdentity.id, 'sender')
-  scope: notifications
-  properties: { principalId: apiIdentity.properties.principalId, principalType: 'ServicePrincipal', roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39') }
-}
-resource busReceive 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (provisionRbac) {
-  name: guid(notifications.id, workerIdentity.id, 'receiver')
-  scope: notifications
-  properties: { principalId: workerIdentity.properties.principalId, principalType: 'ServicePrincipal', roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0') }
-}
 resource keyAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (provisionRbac) {
   name: guid(vault.id, apiIdentity.id, 'crypto')
   scope: vault
@@ -303,19 +279,16 @@ module workloads './modules/workloads.bicep' = if (deployWorkloads) {
     eventsClientId: eventsClientId
     pubsubName: pubsub.name
     pubsubPrincipalId: pubsub.identity.principalId
-    enableRealtimeAdmission: enableRealtimeAdmission
-    graphMode: graphMode
-    graphPilotConfig: graphPilotConfig
+    liveConfig: liveConfig
+    deployOperations: deployOperations
     insightsConnectionString: insights.properties.ConnectionString
-    fixtureActorIds: fixtureActorIds
-    retiredFixtureActorId: retiredFixtureActorId
     cosmosEndpoint: cosmos.properties.documentEndpoint
     redisEndpoint: '${cache.properties.hostName}:10000'
     busEndpoint: '${bus.name}.servicebus.windows.net'
     pubsubEndpoint: 'https://${pubsub.properties.hostName}'
     protectionKey: '${vault.properties.vaultUri}keys/${protectionKey.name}'
   }
-  dependsOn: [privateLinks, cosmosRoles, pullRoles, busSend, busReceive, keyAccess, redisAccess, realtimeRoles]
+  dependsOn: [privateLinks, pullRoles, keyAccess, redisAccess, realtimeRoles, endpoint, security]
 }
 
 output registryName string = registry.name
@@ -324,9 +297,14 @@ output apiIdentityId string = apiIdentity.id
 output apiIdentityClientId string = apiIdentity.properties.clientId
 output apiIdentityPrincipalId string = apiIdentity.properties.principalId
 output workerIdentityClientId string = workerIdentity.properties.clientId
+output workerIdentityPrincipalId string = workerIdentity.properties.principalId
 output environmentId string = environment.id
-output publicOrigin string = deployWorkloads ? workloads!.outputs.publicOrigin : ''
+output publicOrigin string = 'https://${endpoint.properties.hostName}'
 output apiName string = '${base}-api'
-output seedJobName string = '${base}-seed'
 output pubsubPrincipalId string = pubsub.identity.principalId
 output pubsubId string = pubsub.id
+output cosmosAccountName string = cosmos.name
+output serviceBusName string = bus.name
+output redisName string = cache.name
+output vaultName string = vault.name
+output pubsubName string = pubsub.name

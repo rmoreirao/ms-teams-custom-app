@@ -22,12 +22,14 @@
     "liveConfig": {
       "value": {
         "approvalReference": "<recorded-G0-and-resource-approval>",
+        "readConsistency": "SessionPrimary",
         "writerEpoch": 1,
         "notificationCertificateId": "<active-certificate-id>",
         "notificationCertificate": "<base64-DER-public-certificate>",
         "notificationKeys": { "<active-certificate-id>": "https://<vault>.vault.azure.net/keys/graph-notification/<key-version>" },
         "entitlementAuthority": "https://<approved-policy-service>",
         "entitlementScope": "<approved-policy-audience>/.default",
+        "directChats": [],
         "resources": [
           { "id": "approved-chat", "kind": "chat", "title": "Approved chat", "team": null, "graphChatId": "<actual-chat-id>", "graphTeamId": null, "graphChannelId": null }
         ],

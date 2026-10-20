@@ -31,6 +31,11 @@ public sealed class CommandTokens(IDataProtectionProvider protection, TimeProvid
     }
 }
 
+public static class RuntimeCacheScope
+{
+    public static string Prefix(string tenant, string clientId) => $"live-cache-v1:{tenant}:{clientId}:";
+}
+
 public sealed class SessionTickets(IDistributedCache cache, IDataProtectionProvider protection, ILogger<SessionTickets> logger) : ITicketStore
 {
     private readonly IDataProtector protector = protection.CreateProtector("teams-reference-session-v1");

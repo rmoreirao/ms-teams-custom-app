@@ -38,6 +38,10 @@ foreach ($name in @('webClientId', 'syncClientId', 'eventsClientId')) {
     }
 }
 $configuration = $settings.liveConfig.value
+$readConsistency = if ($configuration.readConsistency) { $configuration.readConsistency } else { 'Strong' }
+if ($readConsistency -notin @('Strong', 'SessionPrimary')) {
+    throw 'Live readConsistency must select Strong or SessionPrimary.'
+}
 if ($EnableMonitoring -and (-not $settings.logsWorkspaceId.value -or -not $settings.insightsConnectionString.value)) {
     throw 'Monitoring requires the approved Log Analytics workspace and backend instrumentation connection.'
 }
@@ -66,9 +70,15 @@ if (-not $settings.environmentId.value.StartsWith($expectedEnvironment, [StringC
 }
 $cosmos = az cosmosdb show --subscription $SubscriptionId --resource-group $ResourceGroup `
     --name $settings.cosmosAccountName.value --output json | ConvertFrom-Json
-if ($LASTEXITCODE -or $cosmos.consistencyPolicy.defaultConsistencyLevel -ne 'Strong' -or
-    $cosmos.publicNetworkAccess -ne 'Disabled' -or $cosmos.disableLocalAuth -ne $true) {
-    throw 'The live platform requires Strong-consistency Cosmos, disabled public access and Entra data-plane authentication.'
+if ($LASTEXITCODE -or $cosmos.publicNetworkAccess -ne 'Disabled' -or $cosmos.disableLocalAuth -ne $true) {
+    throw 'The live platform requires disabled public access and Entra data-plane authentication.'
+}
+if ($readConsistency -eq 'Strong' -and $cosmos.consistencyPolicy.defaultConsistencyLevel -ne 'Strong') {
+    throw 'The Strong profile requires Strong-consistency Cosmos; select SessionPrimary for the supported single-region Session alternative.'
+}
+if ($readConsistency -eq 'SessionPrimary' -and ($cosmos.consistencyPolicy.defaultConsistencyLevel -notin @('Session', 'Strong') -or
+    @($cosmos.locations).Count -ne 1 -or $cosmos.enableMultipleWriteLocations -eq $true)) {
+    throw 'SessionPrimary requires one Cosmos region, single-region writes and Session or Strong account consistency.'
 }
 $environment = az containerapp env show --subscription $SubscriptionId --resource-group $ResourceGroup `
     --name ($settings.environmentId.value.Split('/')[-1]) --output json | ConvertFrom-Json

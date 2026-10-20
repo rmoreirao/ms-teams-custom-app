@@ -44,6 +44,8 @@ resource database 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2024-05-15
   name: 'teams'
 }
 var containerNames = ['live-state', 'live-authority', 'live-control']
+var readConsistency = contains(liveConfig, 'readConsistency') ? liveConfig.readConsistency : 'Strong'
+var primaryReads = readConsistency == 'SessionPrimary'
 resource containers 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-05-15' = [for name in containerNames: {
   parent: database
   name: name
@@ -52,27 +54,7 @@ resource containers 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containe
       id: name
       partitionKey: { paths: ['/pk'], kind: 'Hash' }
       defaultTtl: -1
-      indexingPolicy: {
-        indexingMode: 'consistent'
-        automatic: true
-        includedPaths: [
-          { path: '/id/?' }
-          { path: '/kind/?' }
-          { path: '/tenantId/?' }
-          { path: '/conversationId/?' }
-          { path: '/actorId/?' }
-          { path: '/parent/?' }
-          { path: '/pending/?' }
-          { path: '/sortTime/?' }
-          { path: '/sourceId/?' }
-          { path: '/revision/?' }
-        ]
-        excludedPaths: [{ path: '/*' }]
-        compositeIndexes: [
-          [{ path: '/sortTime', order: 'descending' }, { path: '/sourceId', order: 'ascending' }]
-          [{ path: '/sortTime', order: 'ascending' }, { path: '/id', order: 'ascending' }]
-        ]
-      }
+      indexingPolicy: loadJsonContent('cosmos/live-indexing.json')
     }
   }
 }]
@@ -83,6 +65,29 @@ resource leases 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2
     id: 'live-leases'
     partitionKey: { paths: ['/id'], kind: 'Hash' }
   } }
+}
+resource primaryReadProcedures 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/storedProcedures@2024-05-15' = [for (name, index) in containerNames: if (primaryReads) {
+  parent: containers[index]
+  name: 'readCurrentV1'
+  properties: { resource: { id: 'readCurrentV1', body: loadTextContent('cosmos/read-current-v1.js') } }
+}]
+resource primaryReadRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions@2024-05-15' = if (primaryReads && provisionRbac) {
+  parent: cosmos
+  name: guid(cosmos.id, base, 'primary-reader-v1')
+  properties: {
+    roleName: '${base}-primary-reader-v1'
+    type: 'CustomRole'
+    assignableScopes: [cosmos.id]
+    permissions: [{
+      dataActions: [
+        'Microsoft.DocumentDB/databaseAccounts/readMetadata'
+        'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/items/read'
+        'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/executeQuery'
+        'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/readChangeFeed'
+        'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/executeStoredProcedure'
+      ]
+    }]
+  }
 }
 resource bus 'Microsoft.ServiceBus/namespaces@2024-01-01' existing = { name: serviceBusName }
 resource notifications 'Microsoft.ServiceBus/namespaces/queues@2024-01-01' = {
@@ -137,7 +142,9 @@ resource dataRoles 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@202
   name: guid(cosmos.id, identities[access.role].id, containerNames[access.container], access.permission)
   properties: {
     principalId: identities[access.role].properties.principalId
-    roleDefinitionId: '${cosmos.id}/sqlRoleDefinitions/${access.permission}'
+    roleDefinitionId: primaryReads && access.permission == '00000000-0000-0000-0000-000000000001'
+      ? primaryReadRole.id
+      : '${cosmos.id}/sqlRoleDefinitions/${access.permission}'
     scope: '${cosmos.id}/dbs/teams/colls/${containerNames[access.container]}'
   }
   dependsOn: [containers]
@@ -315,7 +322,7 @@ resource apps 'Microsoft.App/containerApps@2025-07-01' = [for (role, index) in r
       }
     }
   }
-  dependsOn: [containers, leases, dataRoles, leaseAccess, pulls, senders, receiver, deliveryAccess, redisAccess, realtime, sessionProtection, decryption]
+  dependsOn: [containers, primaryReadProcedures, leases, dataRoles, leaseAccess, pulls, senders, receiver, deliveryAccess, redisAccess, realtime, sessionProtection, decryption]
 }]
 resource groups 'Microsoft.Cdn/profiles/originGroups@2024-02-01' = [for index in [0, 1]: if (deployWorkloads) {
   parent: edge
@@ -373,7 +380,7 @@ resource waf 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@2024-02-
   sku: { name: 'Premium_AzureFrontDoor' }
   properties: {
     policySettings: { enabledState: 'Enabled', mode: 'Prevention', requestBodyCheck: 'Enabled' }
-    managedRules: { managedRuleSets: [{ ruleSetType: 'Microsoft_DefaultRuleSet', ruleSetVersion: '2.1', ruleSetAction: 'Block' }] }
+    managedRules: loadJsonContent('waf-managed-rules.json')
   }
 }
 resource security 'Microsoft.Cdn/profiles/securityPolicies@2024-02-01' = {

@@ -45,6 +45,12 @@ public sealed class RedisGraphCallBudget(IConnectionMultiplexer redis, string te
 }
 public static class GraphUrls
 {
+    public static string SubscriptionResource(string canonicalPath) =>
+        canonicalPath.Replace("%3A", ":", StringComparison.OrdinalIgnoreCase)
+            .Replace("%40", "@", StringComparison.OrdinalIgnoreCase);
+    public static bool IsReauthorization(HttpMethod method, Uri uri) =>
+        method == HttpMethod.Post && uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries)
+            is ["v1.0", "subscriptions", _, "reauthorize"];
     public static Uri Validate(string value, string? expectedPath = null)
     {
         var uri = Uri.TryCreate(value, UriKind.Absolute, out var absolute)
@@ -98,6 +104,7 @@ public sealed class GraphBackground(HttpClient http, TokenCredential credential,
             throw new AppError(response.StatusCode == HttpStatusCode.TooManyRequests ? 429 : 503,
                 $"graph_{(int)response.StatusCode}", "Graph rejected background work; its checkpoint has not advanced.");
         if (response.StatusCode == HttpStatusCode.NoContent) return JsonSerializer.SerializeToElement(new { });
-        return await BoundedJson.ReadAsync(response.Content, 16 * 1024 * 1024, ct);
+        return await BoundedJson.ReadAsync(response.Content, 16 * 1024 * 1024, ct,
+            allowEmpty: GraphUrls.IsReauthorization(method, uri));
     }
 }

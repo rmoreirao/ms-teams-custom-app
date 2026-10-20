@@ -92,33 +92,6 @@ try {
     if ($testState.accountCalls.Count -ne $calls + 2) { throw 'Missing network prerequisites reached a deployment operation.' }
     $testState.networkFeature = 'Registered'
     $calls = $testState.accountCalls.Count
-    $workloadParameters = Join-Path $temporary 'workload.parameters.json'
-    @{ parameters = @{ fixtureActorIds = @{ value = @() } } } |
-        ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $workloadParameters
-    try {
-        $image = 'unit.azurecr.io/teams-reference@sha256:' + ('a' * 64)
-        & (Join-Path $root 'scripts\Deploy-Dev.ps1') -SubscriptionId $subscription -ResourceGroup 'rg-unit-test' `
-            -ParametersPath $workloadParameters -Image $image
-        throw 'Missing fixture identities were incorrectly accepted by application deployment.'
-    } catch {
-        if ($_.Exception.Message -ne 'Three distinct approved Entra fixture actor IDs are required before deploying application workloads.') { throw }
-    }
-    if ($testState.accountCalls.Count -ne $calls) { throw 'Invalid application identities triggered an Azure call.' }
-    foreach ($invalidActors in @(
-        ,@('alex', 'sam', 'sam')
-        ,@('alex', 'sam', 'jordan', 'unexpected')
-    )) {
-        @{ parameters = @{ fixtureActorIds = @{ value = $invalidActors } } } |
-            ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $workloadParameters
-        try {
-            & (Join-Path $root 'scripts\Deploy-Dev.ps1') -SubscriptionId $subscription -ResourceGroup 'rg-unit-test' `
-                -ParametersPath $workloadParameters -Image $image
-            throw 'An invalid three-user fixture set was accepted.'
-        } catch {
-            if ($_.Exception.Message -ne 'Three distinct approved Entra fixture actor IDs are required before deploying application workloads.') { throw }
-        }
-    }
-    if ($testState.accountCalls.Count -ne $calls) { throw 'Invalid fixture cardinality reached Azure.' }
 
     $before = $testState.graphCalls.Count
     try {
@@ -131,9 +104,8 @@ try {
     if ($testState.graphCalls.Count -ne $before -or $testState.accountCalls.Count -ne $calls) {
         throw 'Cross-tenant inventory validation occurred after an external call.'
     }
-    Write-Output 'Passed isolated deployment checks: explicit subscription, partial checkpoint, Sweden region, network prerequisite, three-user identity gates (missing/duplicate/extra), and early tenant mismatch denial.'
+    Write-Output 'Passed isolated platform checks: explicit subscription, partial checkpoint, Sweden region, network prerequisite and early tenant mismatch denial. Application release guards are covered by DevDeployment.Tests.ps1.'
 } finally {
     Remove-Item -LiteralPath (Join-Path $temporary 'identity.json') -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath (Join-Path $temporary 'workload.parameters.json') -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $temporary -ErrorAction SilentlyContinue
 }

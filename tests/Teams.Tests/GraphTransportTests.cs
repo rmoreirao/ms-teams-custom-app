@@ -28,7 +28,6 @@ public sealed class GraphTransportTests
         var result = await graph.SendAsync(new("tenant", "alex", "Alex"), Conversation(), Operation(), default);
         Assert.Equal(OperationState.Confirmed, result.State);
         Assert.Equal("graph-message", result.Message?.Id);
-        Assert.False(graph.Simulated);
     }
     [Fact]
     public async Task IncompleteCreationEvidenceRemainsUnknown()

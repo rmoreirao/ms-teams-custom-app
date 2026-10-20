@@ -124,6 +124,24 @@ public sealed class LiveGraphTests
         await Assert.ThrowsAsync<CryptographicException>(() => decryptor.DecryptAsync(JsonSerializer.SerializeToElement(modified), default));
     }
     [Fact]
+    public void FormattedAndAttachmentContentIsExplicitAndSourceLinksCannotLeaveTeams()
+    {
+        var formatted = GraphMessages.Parse(Json("""
+            {"id":"one","createdDateTime":"2026-10-19T10:00:00Z",
+             "body":{"content":"<p>Hello <b>world</b></p>","contentType":"html"},
+             "webUrl":"https://teams.microsoft.com/l/message/approved","attachments":[{"id":"file"}]}
+            """));
+        Assert.Equal("Hello world\n", formatted.Body);
+        Assert.Contains("Attachments", formatted.ContentNotice);
+        Assert.Equal("https://teams.microsoft.com/l/message/approved", formatted.TeamsUrl);
+        var unsafeLink = GraphMessages.Parse(Json("""
+            {"id":"two","createdDateTime":"2026-10-19T10:00:00Z",
+             "body":{"content":"Text","contentType":"text"},"webUrl":"https://teams.microsoft.com.evil.invalid/"}
+            """));
+        Assert.Null(unsafeLink.TeamsUrl);
+        Assert.Null(unsafeLink.ContentNotice);
+    }
+    [Fact]
     public async Task IntakeFiltersUnapprovedResourcesAndNeverPartiallyEnqueuesInvalidCollections()
     {
         var clock = new Clock();
@@ -136,6 +154,9 @@ public sealed class LiveGraphTests
         var inbox = new Inbox();
         var options = Options();
         var intake = new NotificationIntake(options, Tenant, control, new Tokens(), inbox, clock);
+        var missingTokens = await Assert.ThrowsAsync<AppError>(() => intake.AcceptAsync(Json("""{"value":[{}]}"""), false, default));
+        Assert.Equal("notification_missing_validationTokens", missingTokens.Code);
+        Assert.Empty(inbox.Items);
         object Item(string resource, string state = "test-state") => new
         {
             subscriptionId = "subscription", tenantId = Tenant, clientState = state, resource,
@@ -158,6 +179,42 @@ public sealed class LiveGraphTests
         Assert.Equal("chats/graph-chat/messages/one", Assert.Single(inbox.Items).ResourcePath);
     }
     [Fact]
+    public async Task OnlySubscriptionReauthorizationAllowsAnEmptySuccessfulEntity()
+    {
+        using var empty = new StringContent("");
+        await Assert.ThrowsAnyAsync<JsonException>(() => BoundedJson.ReadAsync(empty, 1024, default));
+        using var control = new StringContent("");
+        Assert.Equal(JsonValueKind.Object, (await BoundedJson.ReadAsync(control, 1024, default, allowEmpty: true)).ValueKind);
+        var path = GraphUrls.Validate("subscriptions/approved/reauthorize");
+        Assert.True(GraphUrls.IsReauthorization(HttpMethod.Post, path));
+        Assert.False(GraphUrls.IsReauthorization(HttpMethod.Get, path));
+        Assert.False(GraphUrls.IsReauthorization(HttpMethod.Post, GraphUrls.Validate("subscriptions")));
+        Assert.False(GraphUrls.IsReauthorization(HttpMethod.Post, GraphUrls.Validate("chats/approved/messages")));
+    }
+    [Fact]
+    public async Task LifecycleWithoutTenantIsBoundToTheRegisteredTenantAndSecretState()
+    {
+        var clock = new Clock();
+        var control = new LiveControlStore(new MemoryPartitionDocuments(), clock, Tenant);
+        var subscription = new SubscriptionState("all", "chats/getAllMessages", "test-state", "subscription",
+            clock.GetUtcNow().AddMinutes(50), "cert", true, "owner", clock.GetUtcNow());
+        await control.SaveSubscriptionAsync(subscription, null, default);
+        await control.RegisterLookupAsync(subscription, default);
+        var inbox = new Inbox();
+        var intake = new NotificationIntake(Options(), Tenant, control, new Tokens(), inbox, clock);
+        await intake.AcceptAsync(Json("""
+            {"value":[{"subscriptionId":"subscription","clientState":"test-state","lifecycleEvent":"reauthorizationRequired"}]}
+            """), true, default);
+        Assert.Equal(Tenant, Assert.Single(inbox.Items).TenantId);
+        Assert.Equal("reauthorizationRequired", inbox.Items[0].LifecycleEvent);
+        foreach (var json in new[] {
+            """{"value":[{"subscriptionId":"subscription","clientState":"wrong","lifecycleEvent":"reauthorizationRequired"}]}""",
+            """{"value":[{"subscriptionId":"subscription","clientState":"test-state","tenantId":"other","lifecycleEvent":"reauthorizationRequired"}]}""",
+            """{"value":[{"subscriptionId":"unknown","clientState":"test-state","lifecycleEvent":"reauthorizationRequired"}]}"""
+        }) await Assert.ThrowsAsync<AppError>(() => intake.AcceptAsync(Json(json), true, default));
+        Assert.Single(inbox.Items);
+    }
+    [Fact]
     public async Task ProjectorAppliesEncryptedChangeAndRejectsCrossTenantContext()
     {
         var clock = new Clock();
@@ -173,6 +230,29 @@ public sealed class LiveGraphTests
         await Assert.ThrowsAsync<AppError>(() => projector.ApplyAsync(envelope with { TenantId = "other" }, default));
         Assert.Equal("schema_unsupported", (await Assert.ThrowsAsync<AppError>(() =>
             projector.ApplyAsync(envelope with { SchemaVersion = 2 }, default))).Code);
+    }
+    [Fact]
+    public async Task SubscriptionDefinitionsPreserveTeamsIdentifierPunctuationAndCanonicalStoredScope()
+    {
+        var resource = Resource with { GraphChatId = "19:approved@thread.v2" };
+        var options = Options();
+        options.Resources = [resource];
+        options.SubscriptionScopes = [new("chat-messages", resource.Path)];
+        var clock = new Clock();
+        var control = new LiveControlStore(new MemoryPartitionDocuments(), clock, Tenant);
+        var graph = new FakeGraph
+        {
+            Post = (_, body) =>
+            {
+                var definition = JsonSerializer.SerializeToElement(body);
+                Assert.Equal("chats/19:approved@thread.v2/messages", definition.GetProperty("resource").GetString());
+                return JsonSerializer.SerializeToElement(new { id = "confirmed", expirationDateTime = clock.GetUtcNow().AddMinutes(50) });
+            }
+        };
+        await new SubscriptionController(graph, control, options, clock).StepAsync(options.SubscriptionScopes[0], default);
+        Assert.Equal(resource.Path, (await control.SubscriptionAsync("chat-messages", default))!.Value.Resource);
+        Assert.Equal(resource.Path, GraphMessages.NormalizeResource(GraphUrls.SubscriptionResource(resource.Path)));
+        Assert.Contains("%2F", GraphUrls.SubscriptionResource("chats/escaped%2Fsegment/messages"));
     }
     [Fact]
     public async Task LostSubscriptionResponseIsRecoveredByExactStateWithoutSecondPost()
@@ -196,6 +276,92 @@ public sealed class LiveGraphTests
         await controller.StepAsync(scope, default);
         Assert.Equal(1, graph.Posts);
         Assert.Equal("confirmed", (await control.SubscriptionAsync(scope.Id, default))!.Value.GraphId);
+    }
+    [Fact]
+    public async Task MissingSubscriptionDuringReauthorizationIsReplacedOnceWithFreshCorrelation()
+    {
+        var clock = new Clock();
+        var options = Options();
+        var scope = options.SubscriptionScopes[0];
+        var control = new LiveControlStore(new MemoryPartitionDocuments(), clock, Tenant);
+        await control.SaveSubscriptionAsync(new(scope.Id, scope.Path, "old-state", "expired",
+            clock.GetUtcNow().AddMinutes(-1), "cert", true, "", DateTimeOffset.MinValue), null, default);
+        await control.SaveLifecycleAsync(scope.Id, new("reauthorizationRequired", clock.GetUtcNow()), null, default);
+        var creates = 0;
+        var graph = new FakeGraph { Post = (path, _) =>
+        {
+            if (path.EndsWith("/reauthorize", StringComparison.Ordinal))
+                throw new AppError(404, "graph_404", "The original subscription is gone.");
+            Assert.Equal("subscriptions", path);
+            creates++;
+            return JsonSerializer.SerializeToElement(new { id = "replacement", expirationDateTime = clock.GetUtcNow().AddMinutes(50) });
+        } };
+        var controller = new SubscriptionController(graph, control, options, clock);
+        await controller.StepAsync(scope, default);
+        var current = (await control.SubscriptionAsync(scope.Id, default))!.Value;
+        Assert.Equal("replacement", current.GraphId);
+        Assert.NotEqual("old-state", current.ClientState);
+        Assert.True((await control.LifecycleAsync(scope.Id, default))!.Value.Handled);
+        Assert.Equal(scope.Path, (await control.FindSubscriptionAsync("replacement", default))!.Resource);
+        await controller.StepAsync(scope, default);
+        Assert.Equal(1, creates);
+        Assert.Equal(2, graph.Posts);
+    }
+    [Theory]
+    [InlineData(403)]
+    [InlineData(429)]
+    [InlineData(503)]
+    public async Task OtherReauthorizationFailuresDoNotReplaceOrAcknowledgeTheOriginalSubscription(int status)
+    {
+        var clock = new Clock();
+        var options = Options();
+        var scope = options.SubscriptionScopes[0];
+        var control = new LiveControlStore(new MemoryPartitionDocuments(), clock, Tenant);
+        await control.SaveSubscriptionAsync(new(scope.Id, scope.Path, "old-state", "original",
+            clock.GetUtcNow().AddMinutes(-1), "cert", true, "", DateTimeOffset.MinValue), null, default);
+        await control.SaveLifecycleAsync(scope.Id, new("reauthorizationRequired", clock.GetUtcNow()), null, default);
+        var graph = new FakeGraph { Post = (path, _) =>
+        {
+            Assert.EndsWith("/reauthorize", path);
+            throw new AppError(status, $"graph_{status}", "Reauthorization was not confirmed.");
+        } };
+        var error = await Assert.ThrowsAsync<AppError>(() =>
+            new SubscriptionController(graph, control, options, clock).StepAsync(scope, default));
+        Assert.Equal(status, error.Status);
+        Assert.Equal("original", (await control.SubscriptionAsync(scope.Id, default))!.Value.GraphId);
+        Assert.False((await control.LifecycleAsync(scope.Id, default))!.Value.Handled);
+        Assert.Equal(1, graph.Posts);
+    }
+    [Fact]
+    public async Task LostReplacementResponseRecoversTheSameIntentWithoutAnotherCreate()
+    {
+        var clock = new Clock();
+        var options = Options();
+        var scope = options.SubscriptionScopes[0];
+        var control = new LiveControlStore(new MemoryPartitionDocuments(), clock, Tenant);
+        await control.SaveSubscriptionAsync(new(scope.Id, scope.Path, "old-state", "expired",
+            clock.GetUtcNow().AddMinutes(-1), "cert", true, "", DateTimeOffset.MinValue), null, default);
+        await control.SaveLifecycleAsync(scope.Id, new("reauthorizationRequired", clock.GetUtcNow()), null, default);
+        var graph = new FakeGraph { Post = (path, _) =>
+        {
+            if (path.EndsWith("/reauthorize", StringComparison.Ordinal))
+                throw new AppError(404, "graph_404", "The original subscription is gone.");
+            throw new HttpRequestException("The replacement response was lost.");
+        } };
+        var controller = new SubscriptionController(graph, control, options, clock);
+        await Assert.ThrowsAsync<HttpRequestException>(() => controller.StepAsync(scope, default));
+        var intent = (await control.SubscriptionAsync(scope.Id, default))!.Value;
+        Assert.Null(intent.GraphId);
+        Assert.True(intent.CreateAttempted);
+        Assert.True((await control.LifecycleAsync(scope.Id, default))!.Value.Handled);
+        graph.Get = _ => JsonSerializer.SerializeToElement(new { value = new[] { new
+        {
+            id = "replacement", resource = scope.Path, clientState = intent.ClientState,
+            expirationDateTime = clock.GetUtcNow().AddMinutes(50)
+        } } });
+        await controller.StepAsync(scope, default);
+        Assert.Equal("replacement", (await control.SubscriptionAsync(scope.Id, default))!.Value.GraphId);
+        Assert.Equal(2, graph.Posts);
     }
     [Fact]
     public async Task RepairUsesPointVerificationToDiscoverMissedDeletion()

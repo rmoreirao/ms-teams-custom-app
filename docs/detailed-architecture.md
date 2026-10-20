@@ -5,7 +5,7 @@
 | Status | Draft implementation-level architecture |
 | Version | 0.1 |
 | Documentation reviewed | 2026-10-15 |
-| Implementation status | Target reference architecture with a [deployed simulator-first Sweden dev implementation](dev-guide.md); bounded public/cloud checks are recorded separately, and authenticated/live Teams acceptance remains incomplete |
+| Implementation status | Target reference architecture with bounded [Live-only Sweden Development](dev-guide.md); real Teams functional evidence is recorded separately from production capacity, policy and recovery acceptance |
 | Requirements and targets | [Technical design](technical-design.md) |
 | Decisions and consequences | [Architecture decision records](adr/README.md) |
 
@@ -35,7 +35,7 @@ This document explains how the reference design can be assembled and how its com
 | Components, interfaces, runtime responsibilities, and sequence details | This document |
 | Deployment approval | Evidence for [TDD gates G1-G7](technical-design.md#113-acceptance-gates) |
 
-The cookie-BFF authentication pattern, contract shapes, partition layout, and delivery details below describe the target reference architecture. The current dev implementation and its deliberate limits are recorded in [ADR 0008](adr/0008-simulator-first-single-region-development.md). Neither the code nor these diagrams imply measured capacity, deployed identities, or completed cloud/live-integration acceptance.
+The cookie-BFF authentication pattern, contract shapes, partition layout, and delivery details below describe the target reference architecture. The current Live-only Development implementation and its deliberate limits are recorded in the [runtime contract](live-runtime.md); ADR 0008 preserves the retired simulator decision as history. Neither the code nor these diagrams imply production capacity/policy/recovery certification.
 
 The component layouts, content-bearing records, and synchronization flows describe the proposed bounded Cosmos DB projection, option P07 in the [privacy and storage comparison](#56-privacy-and-storage-options). It requires explicit privacy approval. Other options are alternatives to assess, not already implemented modes or automatic fallbacks.
 
@@ -1049,7 +1049,7 @@ Deploy networking/identity/data dependencies before enabling traffic. Private en
 
 The [Entra configuration and rebuild runbook](entra-configuration.md) maps current scripts, identity ID types, federation, consent, and deployment inputs, including the implemented desired-state reconciler. The [live integration plan](live-integration-plan.md) records current implementation and remaining acceptance work; neither document implies live traffic is enabled.
 
-The locally implemented profile is detailed in [live runtime and rollout](live-runtime.md) and [ADR 0009](adr/0009-live-projection-runtime-boundaries.md): separate projection/authority/control and change-feed lease containers, explicit Strong-consistency Cosmos reads, change-feed-to-queue outbox dispatch, durable fan-out pages, independent host roles and disabled-by-default synchronization/admission. Local correctness coverage is not proof of reference-scale capacity or regional recovery.
+The locally implemented profiles are detailed in [live runtime and rollout](live-runtime.md) and [ADR 0009](adr/0009-live-projection-runtime-boundaries.md): separate projection/authority/control and change-feed lease containers, explicit Strong or single-region SessionPrimary read barriers, change-feed-to-queue outbox dispatch, durable fan-out pages, independent host roles and disabled-by-default synchronization/admission. SessionPrimary does not require replacing the existing serverless account. Local correctness coverage is not proof of reference-scale capacity or regional recovery.
 
 | Configuration family | Required content |
 | --- | --- |
@@ -1097,7 +1097,7 @@ Test module contracts for authorization freshness, permitted query options, cont
 
 Capacity tests must include change-hint read amplification, Web PubSub negotiation/upstream admission, Cosmos hot partitions, crypto/key access, and the load generator itself. A real-browser run verifies visible content and reconnection; a transport acknowledgment cannot substitute for it.
 
-Simulator endpoints are available only in isolated test environments and cannot weaken production auth/permission logic. Real Graph tests remain subject to explicitly approved resources, budgets, and stop criteria.
+No application exposes simulator endpoints. Controlled dependency responses belong only to test harnesses and cannot weaken shipped authentication/permission logic. Real Graph tests remain subject to explicitly approved resources, budgets, and stop criteria.
 
 ### 8.6 Open implementation/deployment decisions
 

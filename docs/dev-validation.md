@@ -1,8 +1,47 @@
 # Dev functional validation report
 
-**Current outcome (2026-10-19): GraphPilot real-Teams basic validation is deployed in Sweden Central. Alex, Sam and Jordan each passed fresh password/TOTP, dedicated chat/channel reads, chat send, channel post and thread reply with actual Graph creation IDs and matching author/content read-back. Optional passkey registration was deferred only through Entra's offered Not now control with explicit user approval; MFA/security policies were unchanged. See [current basic-mode evidence](graph-pilot.md).**
+**Live-only source migration:** Simulator and legacy GraphPilot executables, local persona login, fixture seed/reset and pilot polling have been removed. Offline tests now inject dependencies only from test assemblies/runners. This migration is hosted by the image-only Development release recorded below; existing Live configuration, identity, consent, services and sizing were preserved. GitHub Actions was not dispatched by this release.
 
-The remaining report preserves the earlier simulator rollout and local-validation history; its old image/revision and pending-journey entries are not the current GraphPilot status. The current API revision is `teamsrefdev-unc3jasrpkgbo-api--0000004`; no additional Azure resource or size was provisioned. Temporary setup application/service-principal counts were both verified zero after resource creation.
+**Current outcome (2026-10-20 UTC): chat-name and synchronization-recovery changes are deployed to the existing two Azure apps. Read-only inspection confirmed coverage, current exact membership and matching rich subscriptions for all five approved resources. No Teams messages were sent during this release.**
+
+## Chat names and synchronization recovery (2026-10-20)
+
+ACR run `dtp` produced immutable digest `sha256:07178032def7abecf0aed0d357674d005bbf448f7d5853e54df9904f3c55b4c4`. The accepted API revision is `--dev-035069909cbc46d9`; the worker revision is `--dev-87e6468efa994bd8`. `Deploy-Dev.ps1` verified both exact healthy revisions, complete preserved configuration fingerprints and public frontend/readiness/Entra/anonymous-denial contracts. Resolved settings and operational evidence remain private outside the repository.
+
+One-to-one catalog titles now use the other participant's current name, selected by identity rather than editing a combined title. Repair and authorization/subscription maintenance run independently, repair work is bounded per resource, completed coverage writes can recover without fabricated proof renewal, and a root repair cannot restart while its thread repairs remain pending. A reauthorization `404` for a confirmed-missing subscription now enters checkpointed replacement recovery; other failures and uncertain creation outcomes do not cause replacement POST replay.
+
+| Check | Observed result |
+| --- | --- |
+| Backend regressions | **165 passed, one explicit real-Cosmos opt-in skip**; includes missing-subscription recovery, uncertain replacement outcomes, lease/generation safety and pending-thread sequencing |
+| Release guards | **Passed**: 35 preflight refusal cases, 22 failed/partial rollout cases, exact configuration preservation, date/computed-path compatibility, healthy max-scale acceptance and read-only request-field handling |
+| Actual Azure synchronization | **5/5** resources had verified coverage and fresh membership; all five remote rich subscriptions matched resource, callback URLs and client state at **2026-10-20 09:34 UTC** |
+| Authenticated browser recheck | **Not completed**: Chromium's public Entra navigation timed out before credential entry; installed Edge completed password/TOTP and the app callback but disconnected before session/read verification. No certificate/security bypass or credential retry after rejection was performed. |
+
+The explicit three-user delegated profile still requires fresh source sign-ins when its original bounded sessions expire; this release does not extend their eight-hour limit or introduce unattended credentials. No new event-delivery/send acceptance, production scale or recovery certification is claimed.
+
+**Historical event-path outcome (2026-10-19 UTC): the bounded Azure Live profile was verified end to end in Sweden Central. Real Graph chat/channel changes reached two open browsers through signed encrypted notifications, queues, projection/outbox and Web PubSub. Normal application chat/reply sends were Graph-confirmed, persisted exactly once and remained readable after an API revision restart.**
+
+## Bounded Azure event-path rollout (2026-10-19)
+
+The existing API now hosts `Api`/`Receiver`/`Control`, and the existing worker hosts `Projector`/`Delivery`, in explicit `DelegatedSynthetic` mode. The scope is Alex, Sam and Jordan, their dedicated group chat/channel and three approved pairs. Existing delegated consent/federation, service tiers, serverless Session Cosmos and both apps' 0.5 CPU/1 GiB/one-replica sizing were preserved. This is not an organizational policy/DLP authority or production scale/recovery result.
+
+The immutable deployed image is ACR `dth`, digest `sha256:863e826aee2fa0a22201a011006faeede9b10cf392abc35e2e51b7fa85a5b9c1`; final API revision `--0000020`, worker `--0000014`. Revision `--0000020` removes temporary verbose authentication diagnostics from the same tested image. Resolved inputs, original resource/job snapshots, public-key proofs, post-authentication screenshots and body-free operation evidence remain private outside the repository. The manual operation job is restored after each execution.
+
+| Check | Observed result |
+| --- | --- |
+| Real SessionPrimary | Independent in-network SDK clients passed current projection, revocation and epoch-fence checks; eight tracked synthetic documents were cleaned up. The local opt-in test remains explicitly skipped rather than claiming it ran locally. |
+| Notification key | Version-pinned remote RSA certificate signing/public-certificate OAEP round-trip passed; no private key was exported. |
+| Source/user scope | All three users passed fresh password/TOTP and real Live WebSockets. Each saw exactly four authorized conversations/two contacts; unassigned pair reads returned 404. All five resources had coverage, current exact three shared/two pair members and real rich subscriptions with matching resources, callbacks and client state. Pair preparation sent zero messages. |
+| Local regressions | 149 backend passes/one explicit opt-in skip; 45 React tests; 25 installed-Edge browser journeys; 13 authentication-helper contracts; eight primary-read/WAF contracts. Identity/deployment safety suites and infrastructure compilation also passed. |
+| Azure edge integration | Real WebSockets exposed WAF RFI false positives on standard CloudEvent `claims.iss`, `claims.aud` and forwarded `headers.Origin` URL values. Only those three JSON metadata fields are excluded from enabled rule `931130`; prevention, other rules/fields and callback JWT authentication remain enabled. No public REST/Trace, access keys or anonymous admission were enabled. |
+| Graph publisher admission | The assignment-required web app initially received callbacks without `validationTokens`. One Default Access assignment admits only Microsoft's existing Change Tracking principal to this app. User-assignment requirements, all three user grants and federation remained unchanged; identity reconciliation subsequently reported zero drift. No new Microsoft Graph message-reading permission was added. |
+| Subscription lifecycle | Actual lifecycle envelopes omitted `tenantId`; current tenant-scoped subscription lookup plus matching secret state now binds them, and supplied tenants must match. Successful HTTP 200 empty reauthorization responses are handled only for that control endpoint. Existing subscriptions were reauthorized and gap repair scheduled without replaying sends. |
+| Event delivery | **Passed**, run `19e0b3fd-35e5-4592-b82e-91aa54d23988`: two original external Graph messages had exact authenticated receipts/source versions/published revisions and appeared through browser change-feed IDs. Observed Graph-creation-to-browser-delta times were **2.114 s for chat** and **2.250 s for channel**, a bounded functional observation rather than an SLO certification. |
+| Application writes | **Passed**: one normal chat and one channel-thread reply were confirmed by Graph. The runner admitted exactly those two browser send POSTs, with no resend. A later fresh session after API restart read both IDs exactly once. |
+| Browser/privacy | **Passed**: no catalog reload during the measured **31,026 ms** window, no business local/session storage, desktop chat/mobile thread screenshots inspected, no fabricated poll transport or fallback-repair evidence. Preparing projections recover through bounded safe GETs. |
+| Operation evidence recovery | **Passed with actual failure injection**: when the live job log stream was unavailable, the runner recovered the exact succeeded execution's body-free proof from persistent Azure logs. No Graph POST was replayed; the original job definition was restored. |
+
+Follow the [bounded Azure runbook](live-runtime.md#bounded-existing-platform-azure-validation). The remainder of this report preserves earlier simulator, GraphPilot and source-only milestones; old revisions and "not deployed" statements below describe those historical increments, not the current runtime.
 
 ## New chat source integration (2026-10-19)
 
@@ -20,6 +59,72 @@ The executable frontend now adopts `prototypes\05-new-chat.html` with an explici
 | Mechanical UI detector | **No deterministic findings** | Human visual comparison also performed against the served local reference |
 
 The live-validation helper now scopes conversation selection to navigation so the new search results cannot create ambiguous locators. This source UI is **not deployed** by this work. No real Graph write, cloud/identity mutation, consent, tenant setting, production-gate activation, commit or push was performed. Local simulator and mocked metadata checks do not replace the separate real-Teams evidence above.
+
+## People and one-to-one follow-up (2026-10-19)
+
+Jordan's inability to find Alex exposed a real missing capability: existing-chat title search was not people search. The corrected flow has `/api/people` backed by the approved chat's actual membership and `/api/chats/direct` for exact approved pairs. It uses existing `Chat.Read` plus separately approved `Chat.Create` for the three users only. No organization-wide directory permission or arbitrary recipient was introduced.
+
+Local checks passed: **106 backend tests**, **17 React component tests**, **22 browser scenarios**, **13 authentication-helper tests**, frontend build/type-check, authentication-helper type-check, script parsing and the identity/API-only deployment guard suites. The new mocked Graph browser cases prove Jordan can find Alex by name/email without an existing chat title and open the real composer contract on desktop/mobile; these are distinct from the live proof below.
+
+The direct-chat source was built as ACR `dt6` and deployed by the API-only path to revision `--0000006`, image digest `sha256:3288a008ecbeda7a63e72d5327cd58fc47a924f0e2ee264236cabf792356a85a`. It includes uncommitted follow-up source changes based on `d0b6f45`; this work did not commit or push them. The three approved `Principal` grants reconciled with zero drift after the user refreshed an authorized administrator session. No role assignment was made by the implementation. The original test resources, runtime identities, network, sizing and scaling were preserved.
+
+With separate explicit permission for one test message, a fresh real Jordan password/TOTP session passed all of: finding Alex by name and email, opening the expected one-to-one pair, selection sending nothing, one `UI validation: Jordan to Alex` message, definitive Graph creation, exact Graph-ID/author/body read-back, and reopening the chat with exactly one message. The runner blocked other business writes and admitted exactly one creation/open POST and one message POST. It did not run the separate three-user group/channel suite or send to Sam. No credential-entry/live-authentication screenshot, token or cookie export was created.
+
+Body-free confirmation metadata is private under the `graph-pilot-direct` validation directory. This demonstrates the reported real Jordan-to-Alex flow, not production G0-G7 acceptance or live write testing of all three pair combinations.
+
+## End-state source increment (2026-10-19, not deployed)
+
+This increment implements targeted/coalesced push hints, authorized message deltas, minimum-revision snapshots, renewed command windows, preserved loaded history, reset/reconnect/foreground catch-up and explicit synchronization failure. Push modes no longer perform the pilot's unconditional 30-second refresh. GraphPilot keeps its negotiated polling contract; the hosted app and its mode were not changed.
+
+Production discovery can open approved existing chat pairs only after both individual grants and fresh, source-verified exact-pair/type authority pass. Configuration cannot assert that a group chat is private. The new authority evidence stays in the separate authority container; the API cannot write it. Missing authority, automatic new-resource onboarding and broader discovery remain explicit blockers rather than fabricated success.
+
+Supported rich formatting uses DOMPurify with a narrow tag/attribute/HTTPS-link allowlist. Plain-text sends remain literal; attachments and embedded media stay in Teams with explicit notices/source links. Large loaded histories use measured variable-height virtualization, stable message keys and scroll anchoring.
+
+| Local check | Result | Evidence boundary |
+| --- | --- | --- |
+| Release backend suite | **128 passed** | Includes complete controlled intake/decryption/projection/outbox/push/catch-up journeys for chats, channel posts and replies, plus exact-pair policy HTTP/lease contracts; not actual Azure/Graph integration |
+| React/hook/component suite | **42 passed** | Delta/reset/history/denial states, transport negotiation/coalescing/cleanup, mocked Web PubSub SDK, approved-contact UI and rich-content safety |
+| Installed Edge browser suite | **25 passed** | Actual local SSE/changes path, safe sends/uncertainty/offboarding, keyboard/themes/mobile, and controlled-API 80-message virtualization/sanitizer cases |
+| Frontend production build and TypeScript | **Passed** | Runtime dependency lock updated for DOMPurify and TanStack Virtual |
+| Authentication helper type/unit checks | **13 passed** | Controlled local identity flows only; no `.env` credential loading or real sign-in |
+| Management/deployment checks | **Passed** | Script parsing plus offline identity, live-deployment, public-contract and GraphPilot API-only guards; example discovery defaults remain closed |
+| Rendered large-history check | **Passed** | Desktop/mobile screenshots inspected; last message remains in viewport after variable-height measurement, with bounded mounted rows and no CSP/script errors |
+| Patch formatting | **Passed** | CRLF-aware whitespace check matches the repository's committed Windows line endings |
+
+The task-owned browser server used localhost:5429 and stopped after validation. Existing uncommitted changes were preserved; no commit, push, image release, new grant, billable provisioning or business-data admission was performed. The [end-state status](live-integration-plan.md#end-state-app-integration-follow-up-2026-10-19) records outstanding policy/privacy/platform inputs, automatic production onboarding and real Graph/Azure/scale/regional recovery acceptance. These local results do not complete G0-G7.
+
+### Read-only production prerequisite check
+
+A subsequent read-only Azure inspection on 2026-10-19 confirmed the remaining rollout blockers against the existing Sweden project rather than relying only on the design documents:
+
+| Prerequisite | Observed result |
+| --- | --- |
+| Selected Azure subscription | Existing project subscription is Enabled; CLI context was not changed |
+| Cosmos consistency | Existing private Cosmos account is serverless with **Session** consistency. This conflicted with the original Strong-only implementation, not with pub/sub itself; the SessionPrimary correction below supports this account type without upgrading it |
+| Deployed workloads | Existing API revision `--0000006` and simulator/pilot worker revision `--0000002`; no five-role live topology |
+| API mode and live bindings | `App__GraphMode=GraphPilot`; no `Live__` binding names are configured |
+| Repository production inputs | Only `live.parameters.example.json` is present under `infra\parameters`; no resolved production parameter file was supplied |
+
+Only account/resource metadata and runtime mode/binding names were reported; credential values and complete environment payloads were not printed. No cloud resource, runtime mode, permission, processing/storage boundary or admission flag was changed. The requested rollout-scope decision was unavailable, so no approval was inferred. These observations identify integration/configuration work; they do not prove that a replacement Cosmos account or five separate processes are necessary for real-time updates. A missing parameter file is an engineering deliverable, not an external blocker by itself. The remaining copied-data authority must be supported for the selected scope rather than fabricated from simulator decisions.
+
+### Session-consistency correction (2026-10-19, source only)
+
+The original Strong-only guard has been replaced by two explicit supported profiles. `Strong` preserves backward compatibility. `SessionPrimary` uses a Session SDK client and the canonical bounded read-only `readCurrentV1` procedure for authoritative point reads in projection, authority and control containers. Microsoft documents primary-replica/strong read semantics for stored procedures; the SDK captures their partition session tokens for following queries. There is no shared-token parsing/cache and no fallback to ordinary stale reads.
+
+Both runtime metadata validation and deployment preflight accept a single-region Session account under SessionPrimary, refuse unsupported regions/consistency modes, and leave account configuration unchanged. Bicep provisions the procedure before workloads and defines a reader with stored-procedure execution but no item-write actions. The private live example now selects SessionPrimary. None of this source was deployed or used to process additional Teams content.
+
+| Check | Result | Boundary |
+| --- | --- | --- |
+| Release backend suite | **139 passed, 1 explicitly skipped** | Includes primary result identity/schema/ETag/session checks and runtime storage-profile guards |
+| Canonical procedure and permission contracts | **6 passed** | Executes the actual deployed JavaScript source against controlled server callbacks; includes absence/error/budget/identity behavior and reader-role boundaries |
+| Deployment guards and script parser | **Passed** | SessionPrimary accepts a single-region Session preview without account changes; unsafe profile/topology/public-network combinations remain rejected |
+| Live Bicep compilation and ARM inspection | **Passed** | Canonical procedure compiles; custom reader's compiled actions include execution but exclude item writes |
+| Frontend production build/type-check | **Passed** | No UI/runtime contract regression |
+| React/hook/component tests | **42 passed** | One-worker rerun avoided shared-host CPU contention after a parallel run hit a test timeout; no timeout was raised or assertion removed |
+| Installed Edge browser journeys | **25 passed** | Existing real local SSE, safe-send, history, offboarding, rich-content and virtualization cases remain intact |
+| Independent real Cosmos clients | **Unexecuted, explicit opt-in skip** | The dedicated synthetic target/procedure/data access were not supplied; no real replica/RU or capacity result is claimed |
+
+`CosmosSessionPrimaryTests` provides the separately executable existing-account check with two Gateway/Session clients, no manually forwarded writer token, synthetic-only tracked writes/cleanup and no Graph calls. It checks current messages, source revocation, principal denial and epoch fencing. See the [opt-in instructions](testing.md#sessionprimary-storage-checks). The remaining real-service and rollout acceptance must not be confused with an intrinsic serverless limitation.
 
 ## Earlier deployment history
 

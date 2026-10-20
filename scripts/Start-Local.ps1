@@ -1,23 +1,25 @@
 [CmdletBinding()]
-param([int]$Port = 5255)
+param(
+    [Parameter(Mandatory)][string]$ConfigurationPath,
+    [ValidateRange(1024, 65535)][int]$Port = 7266
+)
 $ErrorActionPreference = 'Stop'
-$root = Split-Path $PSScriptRoot -Parent
-if (-not $env:TEAMS_LOCAL_PASSWORD) {
-    $secure = Read-Host 'Choose a temporary development password (not stored)' -AsSecureString
-    $env:TEAMS_LOCAL_PASSWORD = [System.Net.NetworkCredential]::new('', $secure).Password
+$root = [IO.Path]::GetFullPath((Split-Path $PSScriptRoot -Parent)) + [IO.Path]::DirectorySeparatorChar
+$path = [IO.Path]::GetFullPath($ConfigurationPath)
+if ($path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { throw 'Keep resolved application configuration outside the repository.' }
+$settings = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+if ($settings.App.GraphMode -ne 'Live' -or $settings.App.Store -ne 'Cosmos' -or $settings.App.Auth -ne 'Entra' -or
+    $settings.App.PublicOrigin -ne "https://localhost:$Port") {
+    throw 'Use real-service Live/Cosmos/Entra settings and the explicitly approved HTTPS localhost origin. No local identity or memory-store mode exists.'
 }
+$previousConfig = $env:TEAMS_CONFIGURATION_PATH
+$previousEnvironment = $env:ASPNETCORE_ENVIRONMENT
 try {
-    $salt = [Security.Cryptography.RandomNumberGenerator]::GetBytes(16)
-    $env:LocalAuth__PasswordSalt = [Convert]::ToHexString($salt)
-    $env:LocalAuth__PasswordHash = [Convert]::ToHexString([Security.Cryptography.Rfc2898DeriveBytes]::Pbkdf2(
-        [Text.Encoding]::UTF8.GetBytes($env:TEAMS_LOCAL_PASSWORD), $salt, 210000, [Security.Cryptography.HashAlgorithmName]::SHA256, 32))
-    Remove-Item Env:TEAMS_LOCAL_PASSWORD
+    $env:TEAMS_CONFIGURATION_PATH = $path
     $env:ASPNETCORE_ENVIRONMENT = 'Development'
-    dotnet run --project (Join-Path $root 'src\Teams.Host') --no-launch-profile --urls "http://localhost:$Port"
-    if ($LASTEXITCODE) { throw 'Local application failed.' }
-}
-finally {
-    Remove-Item Env:LocalAuth__PasswordHash -ErrorAction SilentlyContinue
-    Remove-Item Env:LocalAuth__PasswordSalt -ErrorAction SilentlyContinue
-    Remove-Item Env:TEAMS_LOCAL_PASSWORD -ErrorAction SilentlyContinue
+    dotnet run --project (Join-Path $root 'src\Teams.Host') --no-launch-profile --urls "https://localhost:$Port"
+    if ($LASTEXITCODE) { throw 'Real-service local application failed. Check Live configuration, Entra credentials and private Azure connectivity.' }
+} finally {
+    $env:TEAMS_CONFIGURATION_PATH = $previousConfig
+    $env:ASPNETCORE_ENVIRONMENT = $previousEnvironment
 }

@@ -1,26 +1,39 @@
 import { chromium } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { loadEnvFile } from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 import { credentialKeys, describeEndpoint, generateTotp, readPageState, readSettings, SignInCheckError, validatePasswordEntry, verifyAuthorization, waitForSession } from "./entra-signin.mjs";
-import { applyPilotSettings, validateTeams } from "./teams-validation.mjs";
+import { applyLiveSettings, validateDirectChat, validateTeams } from "./teams-validation.mjs";
 
 let stage = "load local configuration";
 
-async function main() {
-  if (process.argv.length > 4 || process.argv[3] && process.argv[3] !== "--teams")
-    throw new SignInCheckError("Specify one fixture account and optional --teams validation.");
-  const account = process.argv[2] ?? "alex";
-  const teams = process.argv[3] === "--teams";
+/**
+ * @param {string} account
+ * @param {null | ((value: {
+ *   context: import("@playwright/test").BrowserContext,
+ *   page: import("@playwright/test").Page,
+ *   settings: ReturnType<typeof readSettings>,
+ *   session: Awaited<ReturnType<typeof waitForSession>>,
+ *   stage: (value: string) => void
+ * }) => Promise<unknown>)} onAuthenticated
+ * @param {"teams" | "direct-chat" | null} validation
+ */
+export async function withFixtureSession(account = "alex", onAuthenticated = null, validation = null) {
+  const teams = validation === "teams";
+  const direct = validation === "direct-chat";
+  if (direct && account !== "jordan") throw new SignInCheckError("Direct-chat validation is restricted to the approved Jordan-to-Alex journey.");
   const keys = credentialKeys(account);
   const envPath = resolve(import.meta.dirname, "..", "..", "..", ".env");
   validatePasswordEntry(readFileSync(envPath, "utf8"), keys.password);
   loadEnvFile(envPath);
-  const settingsPath = process.env.PILOT_VALIDATION_SETTINGS;
-  const pilotMetadata = settingsPath ? JSON.parse(readFileSync(settingsPath, "utf8")) : null;
-  if (pilotMetadata) applyPilotSettings(pilotMetadata, account);
-  if (teams && !settingsPath) throw new SignInCheckError("PILOT_VALIDATION_SETTINGS must name the private approved resource inventory.");
+  const settingsPath = process.env.LIVE_VALIDATION_SETTINGS;
+  const metadata = settingsPath ? JSON.parse(readFileSync(settingsPath, "utf8")) : null;
+  if (metadata) applyLiveSettings(metadata, account);
+  if ((teams || direct) && !settingsPath) throw new SignInCheckError("LIVE_VALIDATION_SETTINGS must name the private approved Live resource inventory.");
+  if (process.env.PILOT_VALIDATION_SETTINGS)
+    throw new SignInCheckError("Migrate PILOT_VALIDATION_SETTINGS to LIVE_VALIDATION_SETTINGS with schemaVersion 2; existing resource IDs and consent must remain unchanged.");
   const settings = readSettings(process.env, account);
   stage = "launch an isolated browser";
   const browser = await chromium.launch({
@@ -54,13 +67,8 @@ async function main() {
     page.setDefaultTimeout(30_000);
     page.setDefaultNavigationTimeout(45_000);
     stage = "verify the application authentication boundary";
-    const configResponse = await context.request.get(`${settings.origin}/auth/config`, { maxRedirects: 0 });
-    /** @type {unknown} */
-    const config = await configResponse.json();
-    if (configResponse.status() !== 200 || !config || typeof config !== "object" ||
-        !("localAuth" in config) || config.localAuth !== false) {
-      throw new SignInCheckError("The target app does not report Entra-only authentication.");
-    }
+    const anonymous = await context.request.get(`${settings.origin}/api/session`, { maxRedirects: 0 });
+    if (anonymous.status() !== 401) throw new SignInCheckError("The target must reject anonymous sessions.");
     const challenge = await context.request.get(`${settings.origin}/auth/signin`, { maxRedirects: 0 });
     if (challenge.status() !== 302) throw new SignInCheckError("The app did not return an authorization redirect.");
     const authorization = verifyAuthorization(challenge.headers().location, settings);
@@ -152,8 +160,12 @@ async function main() {
       throw new SignInCheckError("A fresh password-plus-TOTP sign-in was not demonstrated.");
     }
     const session = await waitForSession(context.request, settings);
-    const teamsProof = teams && settingsPath && pilotMetadata ?
-      await validateTeams(context, page, settings, pilotMetadata, settingsPath, value => { stage = value; }) : null;
+    const teamsProof = teams && settingsPath && metadata ?
+      await validateTeams(context, page, settings, metadata, settingsPath, value => { stage = value; }) : null;
+    const directProof = direct && settingsPath && metadata ?
+      await validateDirectChat(context, page, settings, metadata, settingsPath, value => { stage = value; }) : null;
+    const additionalProof = onAuthenticated ?
+      await onAuthenticated({ context, page, settings, session, stage: value => { stage = value; } }) : null;
     console.log(JSON.stringify({
       account: settings.account,
       browser: settings.browserChannel,
@@ -161,10 +173,13 @@ async function main() {
       expectedFixtureMatched: true,
       freshTotpChallengeCompleted: true,
       optionalRegistrationDeferred: used.registrationDeferred,
-      localAuth: false,
-      simulated: session.simulated,
-      teamsOperationsPerformed: teams,
+      environment: session.environment,
+      source: session.source,
+      teamsOperationsPerformed: teams || direct || typeof additionalProof === "object" && additionalProof !== null &&
+        "teamsOperationsPerformed" in additionalProof && additionalProof.teamsOperationsPerformed === true,
       ...(teamsProof ? { teamsProof } : {}),
+      ...(directProof ? { directProof } : {}),
+      ...(additionalProof ? { additionalProof } : {}),
     }, null, 2));
   } catch (error) {
     console.error(JSON.stringify({
@@ -183,8 +198,15 @@ async function main() {
   }
 }
 
+async function main() {
+  if (process.argv.length > 4 || process.argv[3] && !["--teams", "--direct-chat"].includes(process.argv[3]))
+    throw new SignInCheckError("Specify one fixture account and optional --teams or --direct-chat validation.");
+  await withFixtureSession(process.argv[2] ?? "alex", null,
+    process.argv[3] === "--teams" ? "teams" : process.argv[3] === "--direct-chat" ? "direct-chat" : null);
+}
+
 // Playwright errors can contain credential values and authorization URLs in call logs.
-main().catch(error => {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main().catch(error => {
   const kind = error instanceof Error && ["TimeoutError", "TargetClosedError", "TypeError"].includes(error.name) ? error.name : "Error";
   console.error(error instanceof SignInCheckError
     ? `Entra sign-in check failed: ${error.message}`

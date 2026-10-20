@@ -3,7 +3,9 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { chromium } from "@playwright/test";
-import { credentialKeys, describeEndpoint, generateTotp, readPageState, readSettings, SignInCheckError, validatePasswordEntry, verifyAuthorization, waitForSession } from "./entra-signin.mjs";
+import { credentialKeys, describeEndpoint, generateTotp, isLiveSession, readPageState, readSettings, SignInCheckError, validatePasswordEntry, verifyAuthorization, waitForSession } from "./entra-signin.mjs";
+import { validateLiveMetadata, waitForOriginalOperation } from "./teams-validation.mjs";
+import { createHash } from "node:crypto";
 
 const seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
 const env = {
@@ -21,12 +23,14 @@ test("verifies the expected session independently of a closed page and rejects i
   const actorId = env.ENTRA_EXPECTED_ACTOR_ID;
   let status = 200;
   let actor = actorId;
-  let localAuth = false;
+  let source = "Microsoft Teams";
+  let legacy = false;
   const server = createServer((incoming, response) => {
     assert.equal(incoming.method, "GET");
     assert.equal(incoming.url, "/api/session");
     response.writeHead(status, { "Content-Type": "application/json" });
-    response.end(JSON.stringify({ id: actor, localAuth, simulated: true }));
+    response.end(JSON.stringify({ id: actor, environment: "Development", source, scopedValidation: true,
+      canStartDirectChats: true, canCreateDirectChats: false, ...(legacy ? { localAuth: false } : {}) }));
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -43,13 +47,16 @@ test("verifies the expected session independently of a closed page and rejects i
     const context = await browser.newContext();
     const page = await context.newPage();
     await page.close();
-    assert.deepEqual(await waitForSession(context.request, { origin, actorId }), { simulated: true });
+    assert.deepEqual(await waitForSession(context.request, { origin, actorId }), { environment: "Development", source: "Microsoft Teams" });
     actor = "unexpected-actor";
     await assert.rejects(waitForSession(context.request, { origin, actorId }), SignInCheckError);
     actor = actorId;
-    localAuth = true;
+    source = "unexpected";
     await assert.rejects(waitForSession(context.request, { origin, actorId }), SignInCheckError);
-    localAuth = false;
+    source = "Microsoft Teams";
+    legacy = true;
+    await assert.rejects(waitForSession(context.request, { origin, actorId }), SignInCheckError);
+    legacy = false;
     for (status of [302, 403, 503]) {
       await assert.rejects(waitForSession(context.request, { origin, actorId }), SignInCheckError);
     }
@@ -129,7 +136,7 @@ test("defers only the explicitly offered registration campaign after password/TO
     await page.goto("https://login.microsoftonline.com/test");
     assert.equal(await page.evaluate(readPageState, input), "rejected-mfa");
   } finally { await browser.close(); }
-  assert.equal(readSettings({ ...env, ENTRA_AUTH_PROFILE: "graph-pilot", ENTRA_DEFER_OPTIONAL_REGISTRATION: "true" }).allowRegistrationDeferral, true);
+  assert.equal(readSettings({ ...env, ENTRA_AUTH_PROFILE: "live", ENTRA_DEFER_OPTIONAL_REGISTRATION: "true" }).allowRegistrationDeferral, true);
   assert.throws(() => readSettings({ ...env, ENTRA_DEFER_OPTIONAL_REGISTRATION: "true" }), SignInCheckError);
 });
 
@@ -231,9 +238,9 @@ test("pins authorization to the expected Entra tenant, app, callback and sign-in
   assert.throws(() => verifyAuthorization(wrongTenant.href, settings), SignInCheckError);
 });
 
-test("uses per-account object IDs and an explicit basic Graph scope profile", () => {
+test("uses per-account object IDs and the exact Live Graph scope profile", () => {
   const settings = readSettings({
-    ...env, ENTRA_AUTH_PROFILE: "graph-pilot",
+    ...env, ENTRA_AUTH_PROFILE: "live",
     TEST_ALEX_OBJECT_ID: env.ENTRA_EXPECTED_ACTOR_ID,
     TEST_ALEX_EXPECTED_USERNAME: env.TEST_ALEX_USER,
     ENTRA_EXPECTED_ACTOR_ID: "", ENTRA_EXPECTED_USERNAME: "",
@@ -258,4 +265,80 @@ test("matches the six-digit SHA1/30-second forms of RFC 6238 test vectors", () =
   ]) {
     assert.equal(generateTotp(seed, Number(seconds) * 1000), expected);
   }
+});
+
+test("preserves the exact existing delegated Live consent including Chat.Create without widening it", () => {
+  const settings = readSettings({ ...env, ENTRA_AUTH_PROFILE: "live-delegated" });
+  const url = new URL(`https://login.microsoftonline.com/${settings.tenantId}/oauth2/v2.0/authorize`);
+  url.searchParams.set("client_id", settings.clientId);
+  url.searchParams.set("redirect_uri", `${settings.origin}/auth/callback`);
+  url.searchParams.set("scope", "openid profile offline_access Chat.Read ChatMessage.Send Channel.ReadBasic.All ChannelMessage.Read.All ChannelMessage.Send Chat.Create");
+  assert.equal(verifyAuthorization(url.href, settings), url.href);
+  assert.throws(() => verifyAuthorization(url.href, { ...settings, authProfile: "live" }), SignInCheckError);
+  url.searchParams.set("scope", url.searchParams.get("scope") + " User.ReadBasic.All");
+  assert.throws(() => verifyAuthorization(url.href, settings), SignInCheckError);
+});
+
+test("historical profile aliases normalize only to the same exact Live consent sets", () => {
+  for (const [alias, canonical] of [["graph-pilot", "live"], ["graph-pilot-direct", "live-delegated"]]) {
+    assert.equal(readSettings({ ...env, ENTRA_AUTH_PROFILE: alias }).authProfile, canonical);
+  }
+  assert.throws(() => readSettings({ ...env, ENTRA_AUTH_PROFILE: "broad-graph" }), SignInCheckError);
+});
+
+test("Live contract rejects retired fields, incorrect source, environment and chat-creation capability", () => {
+  const session = { environment: "Development", source: "Microsoft Teams", scopedValidation: true,
+    canStartDirectChats: true, canCreateDirectChats: false };
+  assert.equal(isLiveSession(session), true);
+  for (const patch of [
+    { simulated: false }, { localAuth: false }, { scenarioAdmin: false }, { basicValidation: false },
+    { environment: "Production" }, { source: "fixture" }, { canCreateDirectChats: true },
+    { canStartDirectChats: undefined }, { scopedValidation: undefined },
+  ]) assert.equal(isLiveSession({ ...session, ...patch }), false);
+});
+
+test("Live metadata pins the same three actors and all five durable resources", () => {
+  const actors = ["alex", "sam", "jordan"].map((persona, index) => ({
+    persona, id: `${index + 3}`.repeat(8) + "-" + `${index + 3}`.repeat(4) + "-" +
+      `${index + 3}`.repeat(4) + "-" + `${index + 3}`.repeat(4) + "-" + `${index + 3}`.repeat(12),
+    upn: `${persona}@example.test`,
+  }));
+  const resources = [
+    { id: "graph-pilot-chat", kind: "chat", title: "Teams Reference Validation chat" },
+    { id: "graph-pilot-channel", kind: "channel", title: "Teams Reference Validation channel" },
+    ...actors.flatMap((actor, index) => actors.slice(index + 1).map(other => ({
+      id: "graph-pilot-dm-" + createHash("sha256").update([actor.id, other.id].sort().join(":")).digest("hex"),
+      kind: "chat", title: `${actor.persona} and ${other.persona}`,
+    }))),
+  ];
+  /** @type {import("./teams-validation.mjs").LiveMetadata} */
+  const metadata = { schemaVersion: 2, tenantId: env.ENTRA_TENANT_ID, webClientId: env.ENTRA_CLIENT_ID,
+    origin: env.REFERENCE_BASE_URL, actors, resources: /** @type {import("./teams-validation.mjs").LiveResource[]} */ (resources) };
+  assert.doesNotThrow(() => validateLiveMetadata(metadata));
+  for (const patch of [
+    { schemaVersion: 1 }, { resources: metadata.resources.slice(0, 2) },
+    { resources: [...metadata.resources.slice(0, 4), { ...metadata.resources[4], id: "unapproved" }] },
+    { actors: [actors[0], actors[0], actors[2]] }, { origin: "http://localhost:5255" },
+    { origin: `${env.REFERENCE_BASE_URL}/path` }, { webClientId: "invalid" },
+  ]) assert.throws(() => validateLiveMetadata({ ...metadata, ...patch }), SignInCheckError);
+});
+
+test("pending Live writes are verified using only GETs of the same operation; uncertainty is never resent", async () => {
+  /** @type {string[]} */
+  const urls = [];
+  const original = { id: "original-operation", state: /** @type {const} */ ("pending"), messageId: null, error: null };
+  let result = { ...original, state: "confirmed", messageId: "teams-message" };
+  /** @type {import("@playwright/test").APIRequestContext} */
+  const request = /** @type {any} */ ({
+    get: async (/** @type {string} */ url) => {
+      urls.push(url);
+      return { status: () => 200, json: async () => result, dispose: async () => {} };
+    },
+  });
+  assert.equal((await waitForOriginalOperation(request, env.REFERENCE_BASE_URL, "graph-pilot-chat", original, 10)).messageId, "teams-message");
+  assert.deepEqual(urls, [`${env.REFERENCE_BASE_URL}/api/conversations/graph-pilot-chat/operations/original-operation`]);
+  result = { ...result, id: "wrong-operation" };
+  await assert.rejects(waitForOriginalOperation(request, env.REFERENCE_BASE_URL, "graph-pilot-chat", original, 10), SignInCheckError);
+  await assert.rejects(waitForOriginalOperation(request, env.REFERENCE_BASE_URL, "graph-pilot-chat",
+    { ...original, state: "unknown" }, 0), SignInCheckError);
 });

@@ -3,6 +3,17 @@ import { setTimeout as delay } from "node:timers/promises";
 
 export class SignInCheckError extends Error {}
 
+/** @param {unknown} value */
+export function isLiveSession(value) {
+  return !!value && typeof value === "object" &&
+    "environment" in value && value.environment === "Development" &&
+    "source" in value && value.source === "Microsoft Teams" &&
+    "scopedValidation" in value && typeof value.scopedValidation === "boolean" &&
+    "canStartDirectChats" in value && typeof value.canStartDirectChats === "boolean" &&
+    "canCreateDirectChats" in value && value.canCreateDirectChats === false &&
+    !["simulated", "localAuth", "scenarioAdmin", "basicValidation"].some(field => field in value);
+}
+
 /** @param {string} [account] */
 export function credentialKeys(account = "alex") {
   if (!["alex", "sam", "jordan"].includes(account)) {
@@ -28,11 +39,10 @@ export async function waitForSession(request, settings, timeoutMs = 30_000) {
       if (response.status() === 200) {
         /** @type {unknown} */
         const session = await response.json();
-        if (!session || typeof session !== "object" || !("id" in session) || session.id !== settings.actorId ||
-            !("localAuth" in session) || session.localAuth !== false || !("simulated" in session) || typeof session.simulated !== "boolean") {
-          throw new SignInCheckError("The session does not match the expected Entra fixture identity and mode.");
+        if (!session || typeof session !== "object" || !("id" in session) || session.id !== settings.actorId || !isLiveSession(session)) {
+          throw new SignInCheckError("The session does not match the expected Entra identity and Live contract.");
         }
-        return { simulated: session.simulated };
+        return { environment: "Development", source: "Microsoft Teams" };
       }
       if (response.status() !== 401) {
         throw new SignInCheckError(`The session endpoint returned HTTP ${response.status()}; no authenticated session was verified.`);
@@ -169,11 +179,14 @@ export function readSettings(env, account = "alex") {
   if (!/^[A-Z2-7]{16,}={0,6}$/.test(seed)) {
     throw new SignInCheckError(`${keys.seed} must contain the Base32 setup key, not a verification code or QR URL.`);
   }
-  const authProfile = env.ENTRA_AUTH_PROFILE ?? "signin";
-  if (!["signin", "graph-pilot"].includes(authProfile)) throw new SignInCheckError("ENTRA_AUTH_PROFILE must be signin or graph-pilot.");
+  const configuredProfile = env.ENTRA_AUTH_PROFILE ?? "signin";
+  const authProfile = configuredProfile === "graph-pilot" ? "live" :
+    configuredProfile === "graph-pilot-direct" ? "live-delegated" : configuredProfile;
+  if (!["signin", "live", "live-delegated"].includes(authProfile))
+    throw new SignInCheckError("ENTRA_AUTH_PROFILE must be signin, live or live-delegated.");
   const deferRegistration = env.ENTRA_DEFER_OPTIONAL_REGISTRATION ?? "false";
-  if (!["true", "false"].includes(deferRegistration) || deferRegistration === "true" && authProfile !== "graph-pilot")
-    throw new SignInCheckError("Optional registration deferral requires explicit graph-pilot opt-in.");
+  if (!["true", "false"].includes(deferRegistration) || deferRegistration === "true" && !["live", "live-delegated"].includes(authProfile))
+    throw new SignInCheckError("Optional registration deferral requires explicit Live validation opt-in.");
   return { account, origin: url.origin, tenantId, clientId, actorId, username, password, seed, browserChannel, authProfile,
     allowRegistrationDeferral: deferRegistration === "true" };
 }
@@ -187,8 +200,9 @@ export function verifyAuthorization(location, settings) {
   const url = new URL(location);
   const scopes = new Set((url.searchParams.get("scope") ?? "").split(/\s+/).filter(Boolean)
     .map(scope => scope.startsWith("https://graph.microsoft.com/") ? scope.slice("https://graph.microsoft.com/".length) : scope));
-  const expectedScopes = ["openid", "profile", "offline_access", ...(settings.authProfile === "graph-pilot" ?
-    ["Chat.Read", "ChatMessage.Send", "Channel.ReadBasic.All", "ChannelMessage.Read.All", "ChannelMessage.Send"] : [])];
+  const expectedScopes = ["openid", "profile", "offline_access", ...(["live", "live-delegated"].includes(settings.authProfile) ?
+    ["Chat.Read", "ChatMessage.Send", "Channel.ReadBasic.All", "ChannelMessage.Read.All", "ChannelMessage.Send"] : []),
+    ...(settings.authProfile === "live-delegated" ? ["Chat.Create"] : [])];
   if (url.origin !== "https://login.microsoftonline.com" || url.username || url.password ||
       url.pathname.toLowerCase() !== `/${settings.tenantId.toLowerCase()}/oauth2/v2.0/authorize` ||
       url.searchParams.get("client_id")?.toLowerCase() !== settings.clientId.toLowerCase() ||

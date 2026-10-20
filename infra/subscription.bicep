@@ -25,3 +25,14 @@ module platform './main.bicep' = {
   }
 }
 output registryLoginServer string = platform.outputs.registryLoginServer
+output publicOrigin string = platform.outputs.publicOrigin
+output environmentId string = platform.outputs.environmentId
+output apiIdentityClientId string = platform.outputs.apiIdentityClientId
+output apiIdentityPrincipalId string = platform.outputs.apiIdentityPrincipalId
+output workerIdentityClientId string = platform.outputs.workerIdentityClientId
+output workerIdentityPrincipalId string = platform.outputs.workerIdentityPrincipalId
+output pubsubPrincipalId string = platform.outputs.pubsubPrincipalId
+output cosmosAccountName string = platform.outputs.cosmosAccountName
+output serviceBusName string = platform.outputs.serviceBusName
+output vaultName string = platform.outputs.vaultName
+output pubsubName string = platform.outputs.pubsubName

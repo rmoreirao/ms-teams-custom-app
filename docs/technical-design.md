@@ -8,7 +8,7 @@ Companion: [Detailed architecture](detailed-architecture.md) covers Azure/Entra 
 | Architecture decision status | ADRs 0001-0006 accepted for reference design; privacy-boundary ADR 0007 proposed; deployment acceptance remains conditional |
 | Version | 0.1 |
 | Public documentation reviewed | 2026-10-15 |
-| Implementation status | Simulator-first dev slice added; see [dev guide](dev-guide.md) and [validation evidence](dev-validation.md). No production capacity or real Graph result is asserted. |
+| Implementation status | Live-only Development uses the bounded real-Teams profile; see [dev guide](dev-guide.md) and [validation evidence](dev-validation.md). Historical real Graph results are bounded functional evidence, not production capacity certification. |
 | Intended audience | Application engineers, architects, platform engineers, security reviewers, and performance engineers |
 
 ## Contents
@@ -41,7 +41,7 @@ The projection is a performance-oriented proposal, not permission to retain pers
 
 The workload assumptions in this guide are synthetic. They are not operational measurements from a deployment. No existing implementation, comparable-scale production result, or guaranteed Graph capacity is asserted.
 
-The executable dev delivery is scoped separately by [ADR 0008](adr/0008-simulator-first-single-region-development.md). It does not implement regional recovery or load testing, and its bounded data model is not evidence for this document's production envelope. The statement above concerns production/reference-scale implementation evidence, not the existence of the dev code.
+The executable Development delivery now supports only Live with real Entra/Azure/Teams; Simulator and GraphPilot runtimes have been removed. Historical [ADR 0008](adr/0008-simulator-first-single-region-development.md) and the current [Live runtime contract](live-runtime.md) distinguish the approved test-data scope from production acceptance. Regional recovery/load certification and this document's production envelope are not established by the bounded deployment.
 
 ### In scope
 
@@ -150,7 +150,7 @@ The send mix is intentionally unspecified. If all busy-period sends target chats
 | Dimension | Initial reference target |
 | --- | --- |
 | Application API | 15,000 sustained RPS at the defined request mix |
-| Short-burst stress | 30,000 RPS for up to five minutes, initially using a Graph simulator |
+| Short-burst stress | 30,000 RPS for up to five minutes against isolated test dependencies, never real Graph |
 | Expected connections | 240,000, assuming 1.2 connections per connected user |
 | Provisioned connection capacity | At least 300,000, subject to fan-out, bandwidth, and supported unit counts |
 | Regional recovery | The surviving region can carry the full production envelope |
@@ -538,7 +538,7 @@ Define escalation ownership, severity criteria, diagnostic evidence, and Microso
 
 | Track | Execution | Required evidence |
 | --- | --- | --- |
-| Azure capacity | Stateful Graph simulator, representative data, real application/authentication enforcement | 200,000 connected users, expected connection multiplier, 15,000 RPS, and read/delivery targets |
+| Azure capacity | Test-only controlled Graph dependencies, representative data, real application/authentication enforcement | 200,000 connected users, expected connection multiplier, 15,000 RPS, and read/delivery targets |
 | Real Graph feasibility | Approved licensed test users, dedicated resources, real delegated calls, agreed budgets | Endpoint latency, throttling, write mix, notification delivery, paging, and reconciliation feasibility |
 | Fault/correctness | Controlled failure injection | Explicit uncertain outcomes, safe retry, access revocation, deletion, replay, and backlog recovery |
 | Browser/mobile | Smaller real-browser suite and representative network/device profiles | Actual rendering, payload cost, accessibility, reconnection, and end-to-end timings |
@@ -546,13 +546,13 @@ Define escalation ownership, severity criteria, diagnostic evidence, and Microso
 
 Azure Load Testing supports JMeter and Locust [R20]. Use compatible protocol extensions or clients for WebSocket workloads. Validate the load generators' CPU, network, file-descriptor, connection, and engine quotas so generator saturation is not mistaken for application capacity.
 
-Simulator modes exist only in isolated performance environments. They must not disable production authorization or substitute app-only sends for delegated Graph behavior in the feasibility track.
+There is no deployable simulator application mode. Any future capacity harness must isolate controlled dependencies in test tooling, preserve real authorization enforcement, and never stress real Graph or substitute app-only sends for delegated behavior in the feasibility track.
 
 ### 11.2 Scenarios
 
 - Ramp through increasing fractions of the 200,000-user target; include representative data and active-reader/sender distributions.
 - Sustain the 15,000-RPS application envelope at the agreed mix.
-- Stress at 30,000 RPS for up to five minutes against the simulator; verify controlled overload and recovery.
+- Stress at 30,000 RPS for up to five minutes against isolated test dependencies; verify controlled overload and recovery.
 - Test warm and cold cache, missing projection coverage, many simultaneous requests for one conversation, and high system-event/reply ratios.
 - Inject synthetic 20-30-second Graph latency, `429` with `Retry-After`, `503`, transport loss after dispatch, and delayed/duplicated/out-of-order notifications.
 - Test high-fan-out updates and a large broadcast independently of write RPS.
@@ -593,7 +593,7 @@ The selected engineering direction is to complete the event-driven bounded proje
 | 5. Validation | Execute separate capacity, real Graph, mobile, correctness, and recovery tracks |
 | 6. Deployment review | Record gate evidence, unresolved risks, accepted SLOs, cost envelope, and operational ownership |
 
-Implementation should use versioned interfaces and infrastructure as code. The current `src\`, `infra\`, and tooling implement the simulator-first dev slice; they do not establish that the production modules, live configuration, or acceptance gates are complete.
+Implementation should use versioned interfaces and infrastructure as code. The current `src\`, `infra\`, and tooling support Live-only Development and separately gated production-shaped role definitions; they do not establish completion of production acceptance gates.
 
 ## 13. Risks and deployment decisions
 

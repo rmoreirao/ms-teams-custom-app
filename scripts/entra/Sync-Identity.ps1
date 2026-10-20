@@ -34,9 +34,15 @@ foreach ($desired in $profile.applications) {
     if ($desired.purpose -ne 'web' -and $desired.assignedUsers) { throw 'Only web may admit users.' }
     if ($desired.purpose -ne 'web' -and $desired.assignedGroups) { throw 'Only web may admit groups.' }
     if ($desired.purpose -ne 'events' -and $desired.callbackPrincipals) { throw 'Callback assignments belong to events.' }
+    if ($desired.graphNotificationPublisher -and ($desired.purpose -ne 'web' -or -not $desired.assignmentRequired)) {
+        throw 'Graph publisher admission is an explicit assignment-required web application setting.'
+    }
     if ($desired.basicGraphValidation -and ($desired.purpose -ne 'web' -or $desired.assignedUsers.Count -ne 3 -or
         $desired.assignedGroups -or @($desired.delegatedGrants | Where-Object consentType -ne 'Principal').Count)) {
         throw 'Basic Graph validation is restricted to the three directly assigned web users with Principal consent.'
+    }
+    if ($desired.directChatValidation -and (-not $desired.basicGraphValidation -or $desired.delegatedGrants.Count -ne 3)) {
+        throw 'Direct chat validation requires the explicit three-user basic Graph profile and three Principal grants.'
     }
     $principals = @()
     foreach ($grant in $desired.delegatedGrants) {
@@ -47,6 +53,7 @@ foreach ($desired in $profile.applications) {
         if ($grant.consentType -eq 'Principal' -and $grant.principalId -notin $desired.assignedUsers) { throw 'Consent users must be explicitly assigned.' }
         $allowedScopes = @('openid', 'profile', 'offline_access', 'ChatMessage.Send', 'ChannelMessage.Send')
         if ($desired.basicGraphValidation) { $allowedScopes += @('Chat.Read', 'Channel.ReadBasic.All', 'ChannelMessage.Read.All') }
+        if ($desired.directChatValidation) { $allowedScopes += 'Chat.Create' }
         if (@($grant.scopes | Where-Object { $_ -notin $allowedScopes }).Count) {
             throw 'Web grants exceed the supported sign-in/send permission boundary.'
         }
@@ -214,9 +221,20 @@ try {
         }
         foreach ($fic in $desired.federatedCredentials) { if ($fic.name -cnotin $fics.name) { Step $purpose 'federation' $fic } }
         $assignments = if ($sp) { @(Collection "servicePrincipals/$($sp.id)/appRoleAssignedTo") } else { @() }
+        $publisher = $null
+        if ($desired.graphNotificationPublisher) {
+            if (@($app.appRoles | Where-Object { $null -ne $_ }).Count) {
+                throw 'Default publisher admission requires a web application with no declared app roles.'
+            }
+            $publishers = @(Collection "servicePrincipals?`$filter=appId eq '0bf30f3b-4a52-48df-9a82-234910c4a086'")
+            if ($publishers.Count -ne 1 -or $publishers[0].appId -ne '0bf30f3b-4a52-48df-9a82-234910c4a086') {
+                throw 'The existing Microsoft Graph Change Tracking principal is missing or ambiguous.'
+            }
+            $publisher = $publishers[0]
+        }
         if ($purpose -eq 'web') {
             foreach ($assignment in $assignments) {
-                if ($assignment.principalId -notin (@($desired.assignedUsers) + @($desired.assignedGroups)) -or
+                if ($assignment.principalId -notin (@($desired.assignedUsers) + @($desired.assignedGroups) + @($publisher.id)) -or
                     $assignment.appRoleId -ne [guid]::Empty.ToString()) {
                     throw 'Unexpected web admission assignment; explicit review required.'
                 }
@@ -229,6 +247,9 @@ try {
         foreach ($group in $desired.assignedGroups) {
             $null = Graph GET "groups/$group`?`$select=id"
             if ($group -notin $assignments.principalId) { Step $purpose 'group' @{ principalId = $group; appRoleId = [guid]::Empty.ToString() } '' $true }
+        }
+        if ($publisher -and $publisher.id -notin $assignments.principalId) {
+            Step $purpose 'publisher' @{ principalId = $publisher.id; appRoleId = [guid]::Empty.ToString() } '' $true
         }
         if ($purpose -eq 'events') {
             foreach ($assignment in $assignments) {
@@ -312,6 +333,7 @@ try {
             'user' { $step.body.resourceId = $ids.principalId; $null = Graph POST "servicePrincipals/$($ids.principalId)/appRoleAssignedTo" $step.body }
             'group' { $step.body.resourceId = $ids.principalId; $null = Graph POST "servicePrincipals/$($ids.principalId)/appRoleAssignedTo" $step.body }
             'callback' { $step.body.resourceId = $ids.principalId; $null = Graph POST "servicePrincipals/$($ids.principalId)/appRoleAssignedTo" $step.body }
+            'publisher' { $step.body.resourceId = $ids.principalId; $null = Graph POST "servicePrincipals/$($ids.principalId)/appRoleAssignedTo" $step.body }
             'consent' {
                 if ($step.id) { $null = Graph PATCH "oauth2PermissionGrants/$($step.id)" @{ scope = $step.body.scope } }
                 else { $step.body.clientId = $ids.principalId; $null = Graph POST 'oauth2PermissionGrants' $step.body }

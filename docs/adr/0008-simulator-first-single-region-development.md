@@ -2,11 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Accepted for dev scope; deployed in Sweden Central with sign-in consent provisioned; authenticated validation pending fresh sign-in |
+| Status | Historical runtime decision superseded by Live-only Development; regional/private-network choices retained |
 | Scope | Synthetic content and dedicated test identities only |
 | Related decisions | ADRs 0001-0007 |
 
 ## Decision
+
+**Amendment:** Simulator and legacy GraphPilot executables, fixture jobs/controls and local persona authentication have been removed. Development now runs only Live against real Teams. The description below preserves the original decision/evidence, not supported runtime instructions. The existing three-user/resource boundary and private Sweden topology remain; mocks are test-only. See the [current dev guide](../dev-guide.md).
 
 Implement one Sweden Central dev deployment with .NET 10 and React/TypeScript, using the Split View prototype. The user selected Sweden on 2026-10-16 after West Europe/Germany capacity attempts. Keep Front Door Premium/WAF and private app/data services; permit an authenticated public ACR endpoint for GitHub-hosted builds. Anonymous image pull and registry admin credentials are disabled. No deployment VM or self-hosted runner is needed.
 

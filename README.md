@@ -4,9 +4,9 @@ A technical design for a responsive web application that exposes Microsoft Teams
 
 The reference design separates application capacity from Microsoft Graph capacity. Recent reads and real-time delivery scale in Azure; user-authored writes remain subject to Teams permissions, latency, and throttling limits.
 
-> **Basic real-Teams validation deployed in Sweden Central.** [Open the Web App](https://teamsrefdev-unc3jasrpkgbo-web-htdnfyf3dbbjbca2.b02.azurefd.net). Alex, Sam and Jordan completed real chat read/send, channel read/post and thread reply journeys through delegated Graph. This explicit `GraphPilot` mode reuses existing infrastructure and refreshes every 30 seconds; the stronger event-driven production mode remains gated. SLOs are proposed targets, not demonstrated production capacity.
+> **Azure event-driven validation is deployed and verified in Sweden Central.** [Open the Web App](https://teamsrefdev-unc3jasrpkgbo-web-htdnfyf3dbbjbca2.b02.azurefd.net). Real Graph chat/channel changes traversed signed encrypted notifications, durable queues, Cosmos projection/outbox and Web PubSub into browser deltas; normal app chat/reply sends also passed. The previous unconditional 30-second poll is gone from Live mode. This remains the approved three-user/five-resource synthetic scope, not production capacity/SLO certification. See [current evidence](docs/dev-validation.md).
 
-## Run the dev application
+## Run the development application
 
 Install .NET 10 SDK, Node.js 22.12 or newer in the Node 22 line, npm, and PowerShell 7. From the repository root:
 
@@ -15,18 +15,20 @@ Push-Location src\Web
 npm ci
 npm run build
 Pop-Location
-.\scripts\Start-Local.ps1
+.\scripts\Start-Local.ps1 -ConfigurationPath '<private-directory>\appsettings.local.json'
 ```
 
-Choose a temporary development password at the prompt, open `http://localhost:5255`, select **Local development sign-in**, and use a fixture persona with that password. No default password is supplied. Local mode uses volatile server memory; Azure mode requires Entra and managed services. Both visibly distinguish simulator confirmation from Teams delivery.
+**Development is Teams-connected only.** Simulator and legacy GraphPilot runtimes, local persona sign-in, scenario controls, and fixture seeding/reset paths have been removed. Normal local runs require real Entra/Azure/Teams configuration, approved private-network connectivity, a valid HTTPS development certificate, and an explicitly approved `https://localhost:7266/auth/callback` registration. No registration or permission is changed by the launcher. Use the hosted development app when those prerequisites are unavailable.
 
 Run `.\scripts\Validate.ps1 -Browser` for build, unit/component, authenticated API, and real-browser checks. Browser prerequisites and the Azure/Entra approval gates are covered in the [dev guide](docs/dev-guide.md).
+
+Offline checks use **test-only dependency doubles**, never a selectable application runtime. The manual [Deploy dev workflow](.github/workflows/deploy-dev.yml) releases immutable images to the existing Live API and worker without changing their configuration or seeding data. See [release prerequisites](docs/dev-guide.md#github-actions).
 
 ## Start here
 
 | Document | Purpose |
 | --- | --- |
-| [Basic real-Teams validation](docs/graph-pilot.md) | Deployed three-user scope, actual Graph read/write evidence, API-only releases, private configuration and MFA campaign handling |
+| [Basic real-Teams validation](docs/graph-pilot.md) | Historical direct-Graph baseline, real read/write evidence, private configuration and MFA campaign handling |
 | [Live Teams implementation plan](docs/live-integration-plan.md) | Dependency-ordered work packages for the final event-driven projection, live Graph integration, scaling, and recovery |
 | [Live runtime and rollout](docs/live-runtime.md) | Implemented roles/configuration, policy-feed contract, staged deployment, correctness boundaries, and explicit production blockers |
 | [Entra configuration and rebuild](docs/entra-configuration.md) | Identity desired-state reconciliation, reusable rebuild sequence, federation/consent distinctions, and remaining manual approval/rotation steps |
@@ -39,6 +41,10 @@ Run `.\scripts\Validate.ps1 -Browser` for build, unit/component, authenticated A
 | [Architecture decision records](docs/adr/README.md) | Decisions, alternatives, consequences, and deployment acceptance conditions |
 | [Vertical architecture overview](docs/diagrams/architecture-overview.svg) | Readable overview of the interactive read and write paths |
 | [Editable diagram source](docs/diagrams/architecture-overview.excalidraw) | Excalidraw source for the architecture overview |
+
+The deployed bounded Live increment wires targeted push/revision catch-up, preserves loaded history, adds sanitized rich formatting and large-history virtualization, and opens the three approved existing chat pairs. It combines the five logical roles in the existing two Container Apps only under explicit `DelegatedSynthetic` configuration. It does not complete automatic production chat onboarding or the production policy/G0-G7 gates. See the [bounded Azure runbook](docs/live-runtime.md#bounded-existing-platform-azure-validation) and [end-state status](docs/live-integration-plan.md#end-state-app-integration-follow-up-2026-10-19).
+
+Live storage now also supports the single-region `SessionPrimary` profile: read-only primary-replica point reads establish current authority/revision barriers on a Session account. Serverless/Session is not an intrinsic real-time blocker, and this profile does not require replacing the account or changing its consistency. The original Strong profile remains available. See the [storage/runtime contract](docs/live-runtime.md#runtime-and-storage-boundaries).
 
 ## Try the UI prototypes
 
@@ -61,7 +67,7 @@ The four layouts remain standalone alternatives; **Split View is selected for th
 
 The executable frontend now follows [the New chat reference](prototypes/05-new-chat.html): **New chat** beside Messages opens a searchable destination pane, and choosing a chat opens its existing composer with the draft intact. Keyboard focus follows the task; Escape closes search, and narrow screens show one task at a time. Selecting a destination sends nothing and creates no duplicate conversation.
 
-This is capability-aware, not an organization directory. Search uses authorized, loaded chat titles; pagination can load additional conversations. The backend does not expose directory profiles/email lookup or arbitrary chat creation. The UI explains that limitation instead of inventing people or reporting a fake new chat. In GraphPilot only the dedicated approved test chat is offered, including its existing group-chat semantics. Message delivery, channel replies, authorization, 30-second pilot refresh and in-memory-only drafts retain their existing contracts.
+The current bounded Live profile finds the other approved people under fresh source authority and reuses their three prepared one-to-one chats. Opening sends no message and creates no Graph resource. Each chat is checked against its exact two members and approved history cutoff. Existing consent and resource IDs are preserved; organization-wide discovery and automatic new-chat creation are not enabled. Other workspaces retain authorized existing-chat search with pagination and an explicit capability explanation. Updates use push/catch-up, not the retired 30-second pilot poll. Drafts remain in memory.
 
 ### Reach someone new: three standalone Split View prototypes
 
@@ -87,7 +93,7 @@ This overview deliberately shows only the interactive paths. The technical desig
 | --- | --- |
 | Concurrent signed-in users | 200,000, with a smaller active-reader/sender population |
 | Application API capacity | 15,000 sustained RPS at the specified workload mix |
-| Application stress test | 30,000 RPS short bursts against a Graph simulator |
+| Application stress test | 30,000 RPS short bursts against isolated test dependencies, never real Graph |
 | Client connection capacity | 300,000 provisioned connections, subject to payload and fan-out validation |
 | Data ownership | Teams is the system of record; Azure holds an authorized, bounded recent-message projection |
 

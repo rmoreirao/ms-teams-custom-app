@@ -1,5 +1,5 @@
-using Microsoft.AspNetCore.DataProtection;
 using System.Text;
+using Microsoft.AspNetCore.DataProtection;
 using Teams.Core;
 using Teams.Host;
 using Teams.Infrastructure;
@@ -8,138 +8,113 @@ namespace Teams.Tests;
 
 public sealed class MessagingTests
 {
-    private readonly Clock clock = new();
-    private readonly MemoryStateStore store = new();
-    private readonly Actor alex = new("tenant", "alex", "Alex");
-    private readonly Actor sam = new("tenant", "sam", "Sam");
+    private readonly LiveFixture fixture = new();
     private readonly ICommandTokens tokens;
-    private readonly Simulator simulator;
+    private readonly GraphResultStub graph;
     private readonly Messaging service;
+    private Actor Alex => fixture.Alex;
     public MessagingTests()
     {
-        tokens = new CommandTokens(new EphemeralDataProtectionProvider(), clock);
-        simulator = new(clock, store);
-        service = new(store, simulator, new MemoryBudget(clock), tokens, clock);
-        Fixtures.SeedAsync(store, "tenant", ["alex", "sam", "jordan"], clock, default).GetAwaiter().GetResult();
+        tokens = new CommandTokens(new EphemeralDataProtectionProvider(), fixture.Clock);
+        graph = new(fixture.Clock);
+        service = new(fixture.Store, graph, new MemoryBudget(fixture.Clock), tokens, fixture.Clock);
     }
-    private async Task<SendCommand> Command(string body = "A synthetic message", string? parent = null)
+    private async Task<SendCommand> Command(string body = "Test message", string? parent = null)
     {
-        var page = await service.ReadAsync(alex, parent is null ? "chat-handover" : "channel-general", null, null, 0, default);
+        var page = await service.ReadAsync(Alex, parent is null ? "chat-handover" : "channel-general", null, null, 0, default);
         return new(Guid.NewGuid().ToString(), page.Window, body, parent);
     }
     [Fact]
-    public async Task ReplayingConfirmedOperationDoesNotSendTwice()
+    public async Task ReplayingConfirmedOperationDoesNotDispatchOrPersistBodyTwice()
     {
         var command = await Command();
-        var first = await service.SendAsync(alex, "chat-handover", command, default);
-        clock.Advance(TimeSpan.FromHours(1));
-        var replay = await service.SendAsync(alex, "chat-handover", command, default);
+        var first = await service.SendAsync(Alex, "chat-handover", command, default);
+        fixture.Clock.Advance(TimeSpan.FromSeconds(2));
+        Assert.Equal(first, await service.SendAsync(Alex, "chat-handover", command, default));
         Assert.Equal(OperationState.Confirmed, first.State);
-        Assert.Equal(first, replay);
-        var conversation = await store.GetAsync("tenant", "chat-handover", default);
-        Assert.Single(conversation!.Value.Messages, m => m.Body == command.Body);
-        Assert.Equal("", (await store.GetOperationAsync("tenant", "chat-handover", command.OperationId, default))!.Value.Body);
+        Assert.Equal(1, graph.Sends);
+        Assert.Equal("", (await fixture.Store.GetOperationAsync(fixture.Tenant, "chat-handover", command.OperationId, default))!.Value.Body);
+        Assert.Single(await fixture.Store.MessagesAsync(Alex, "chat-handover", null, fixture.Clock.GetUtcNow().AddDays(-7), null, null, default),
+            m => m.Body == command.Body);
     }
     [Fact]
-    public async Task SameIdWithDifferentPayloadConflicts()
+    public async Task SameOperationWithDifferentPayloadConflicts()
     {
         var command = await Command();
-        await service.SendAsync(alex, "chat-handover", command, default);
-        var error = await Assert.ThrowsAsync<AppError>(() => service.SendAsync(alex, "chat-handover", command with { Body = "changed" }, default));
-        Assert.Equal(409, error.Status);
+        await service.SendAsync(Alex, "chat-handover", command, default);
+        Assert.Equal(409, (await Assert.ThrowsAsync<AppError>(() =>
+            service.SendAsync(Alex, "chat-handover", command with { Body = "changed" }, default))).Status);
     }
     [Fact]
-    public async Task UnknownResolvesOriginalReceiptWithoutResending()
+    public async Task UnknownOutcomeRemainsUnknownWithoutUnsafeResendOrFabricatedReceipt()
     {
-        simulator.Next(alex.Id, "unknown");
+        graph.NextResult = OperationState.Unknown;
         var command = await Command();
-        var unknown = await service.SendAsync(alex, "chat-handover", command, default);
-        Assert.Equal(OperationState.Unknown, unknown.State);
-        Assert.Equal(unknown, await service.SendAsync(alex, "chat-handover", command, default));
-        var confirmed = await service.StatusAsync(alex, "chat-handover", command.OperationId, default);
-        Assert.Equal(OperationState.Confirmed, confirmed.State);
-        Assert.Single((await store.GetAsync("tenant", "chat-handover", default))!.Value.Messages, m => m.Body == command.Body);
+        var result = await service.SendAsync(Alex, "chat-handover", command, default);
+        Assert.Equal(OperationState.Unknown, result.State);
+        Assert.Equal(result, await service.SendAsync(Alex, "chat-handover", command, default));
+        Assert.Equal(result, await service.StatusAsync(Alex, "chat-handover", command.OperationId, default));
+        Assert.Equal(1, graph.Sends);
+        Assert.Null(await fixture.Store.MessageAsync(fixture.Tenant, "chat-handover", command.OperationId, null, default));
     }
     [Fact]
     public async Task RejectedSendCreatesNoMessage()
     {
-        simulator.Next(alex.Id, "reject");
+        graph.NextResult = OperationState.Rejected;
         var command = await Command();
-        Assert.Equal(OperationState.Rejected, (await service.SendAsync(alex, "chat-handover", command, default)).State);
-        Assert.DoesNotContain((await store.GetAsync("tenant", "chat-handover", default))!.Value.Messages, m => m.Body == command.Body);
+        Assert.Equal(OperationState.Rejected, (await service.SendAsync(Alex, "chat-handover", command, default)).State);
+        Assert.Null(await fixture.Store.MessageAsync(fixture.Tenant, "chat-handover", command.OperationId, null, default));
     }
     [Fact]
     public async Task NonmembersAndCrossTenantActorsCannotRead()
     {
-        Assert.Equal(404, (await Assert.ThrowsAsync<AppError>(() =>
-            service.ReadAsync(new("tenant", "jordan", "Jordan"), "chat-handover", null, null, 0, default))).Status);
-        Assert.Equal(404, (await Assert.ThrowsAsync<AppError>(() =>
-            service.ReadAsync(alex with { TenantId = "other" }, "chat-handover", null, null, 0, default))).Status);
+        foreach (var actor in new[] { fixture.Jordan, Alex with { TenantId = "other" } })
+            Assert.Equal(404, (await Assert.ThrowsAsync<AppError>(() =>
+                service.ReadAsync(actor, "chat-handover", null, null, 0, default))).Status);
     }
     [Fact]
-    public async Task ThreeUserFixturesGiveJordanLimitedHistoryWithoutAccessToTheHandover()
+    public async Task LateMemberSeesOnlyAuthorizedHistory()
     {
-        var jordan = new Actor("tenant", "jordan", "Jordan");
-        var conversations = await service.ListAsync(jordan, default);
-        Assert.Equal(["chat-project", "chat-restricted"], conversations.Select(c => c.Id).Order().ToArray());
-        var page = await service.ReadAsync(jordan, "chat-project", null, null, 0, default);
-        Assert.Equal(2, page.Messages.Count);
-        Assert.DoesNotContain(page.Messages, message => message.Id == "fixture-5");
-        var existingMember = await service.ReadAsync(alex, "chat-project", null, null, 0, default);
-        Assert.Equal(3, existingMember.Messages.Count);
-        Assert.Equal(404, (await Assert.ThrowsAsync<AppError>(() =>
-            service.ReadAsync(jordan, "chat-handover", null, null, 0, default))).Status);
-    }
-    [Fact]
-    public void FixtureCreationRejectsMissingDuplicateAndExtraActors()
-    {
-        foreach (var ids in new[] {
-            new[] { "alex", "sam" },
-            new[] { "alex", "sam", "sam" },
-            new[] { "alex", "sam", "" },
-            new[] { "alex", "sam", "jordan", "unexpected" }
-        })
-            Assert.Throws<InvalidOperationException>(() => Fixtures.Create("tenant", ids, clock.GetUtcNow()));
+        var now = fixture.Clock.GetUtcNow();
+        await fixture.Store.SetEntitlementAsync(new(fixture.Tenant, "chat-handover", fixture.Jordan.Id, fixture.Jordan.Name,
+            now.AddMinutes(-20), now, now.AddMinutes(5), "late-member", true, false, 1), default);
+        var page = await service.ReadAsync(fixture.Jordan, "chat-handover", null, null, 0, default);
+        Assert.Equal(5, page.Messages.Count);
+        Assert.All(page.Messages, message => Assert.True(message.CreatedAt >= now.AddMinutes(-20)));
+        Assert.Equal(403, (await Assert.ThrowsAsync<AppError>(() => service.SendAsync(fixture.Jordan, "chat-handover",
+            new(Guid.NewGuid().ToString(), page.Window, "not allowed", null), default))).Status);
     }
     [Fact]
     public async Task OperationStatusBelongsToItsActor()
     {
         var command = await Command();
-        await service.SendAsync(alex, "chat-handover", command, default);
+        await service.SendAsync(Alex, "chat-handover", command, default);
         Assert.Equal(404, (await Assert.ThrowsAsync<AppError>(() =>
-            service.StatusAsync(sam, "chat-handover", command.OperationId, default))).Status);
+            service.StatusAsync(fixture.Sam, "chat-handover", command.OperationId, default))).Status);
     }
     [Fact]
-    public async Task RevokedMembershipDeniesAlreadyOpenedView()
+    public async Task RevocationDeniesAlreadyOpenedView()
     {
-        await service.ReadAsync(sam, "chat-handover", null, null, 0, default);
-        var current = (await store.GetAsync("tenant", "chat-handover", default))!;
-        await store.SaveAsync(current with
-        {
-            Value = current.Value with
-            {
-                Members = current.Value.Members.Select(m => m.Id == sam.Id ? m with { Active = false } : m).ToList()
-            }
-        }, default);
+        await service.ReadAsync(Alex, "chat-handover", null, null, 0, default);
+        fixture.Clock.Advance(TimeSpan.FromSeconds(1));
+        var now = fixture.Clock.GetUtcNow();
+        await fixture.Store.SetEntitlementAsync(new(fixture.Tenant, "chat-handover", Alex.Id, Alex.Name, now.AddDays(-7),
+            now, now.AddMinutes(5), "revoked", false, false, 1), default);
         Assert.Equal(404, (await Assert.ThrowsAsync<AppError>(() =>
-            service.ReadAsync(sam, "chat-handover", null, null, 0, default))).Status);
+            service.ReadAsync(Alex, "chat-handover", null, null, 0, default))).Status);
     }
     [Fact]
     public async Task EqualTimestampPaginationHasNoGapsOrDuplicates()
     {
-        var current = (await store.GetAsync("tenant", "chat-handover", default))!;
-        await store.SaveAsync(current with
-        {
-            Value = current.Value with
-            {
-                Messages = current.Value.Messages.Select(m => m with { CreatedAt = clock.GetUtcNow() }).ToList()
-            }
-        }, default);
+        var at = fixture.Clock.GetUtcNow();
+        for (var index = 0; index < 45; index++)
+            await fixture.Store.ApplyAsync(fixture.Tenant, "chat-empty",
+                new($"equal-{index:D2}", Alex.Id, Alex.Name, "Equal timestamp", at, at), default);
         List<string> ids = [];
         string? cursor = null;
         do
         {
-            var page = await service.ReadAsync(alex, "chat-handover", cursor, null, 0, default);
+            var page = await service.ReadAsync(Alex, "chat-empty", cursor, null, 0, default);
             ids.AddRange(page.Messages.Select(m => m.Id));
             cursor = page.Cursor;
         } while (cursor is not null);
@@ -147,172 +122,84 @@ public sealed class MessagingTests
         Assert.Equal(45, ids.Distinct().Count());
     }
     [Fact]
-    public async Task HistoryRestrictionFiltersContentAndThreadParents()
+    public async Task HiddenThreadParentCannotBeReadOrUsedForAReply()
     {
-        var current = (await store.GetAsync("tenant", "channel-general", default))!;
-        var cutoff = clock.GetUtcNow().AddMinutes(-68);
-        await store.SaveAsync(current with
-        {
-            Value = current.Value with
-            {
-                Members = current.Value.Members.Select(m => m.Id == alex.Id ? m with { HistoryFrom = cutoff } : m).ToList()
-            }
-        }, default);
-        var page = await service.ReadAsync(alex, "channel-general", null, null, 0, default);
-        Assert.All(page.Messages, m => Assert.True(m.CreatedAt >= cutoff));
+        fixture.Clock.Advance(TimeSpan.FromSeconds(1));
+        var now = fixture.Clock.GetUtcNow();
+        await fixture.Store.SetEntitlementAsync(new(fixture.Tenant, "channel-general", Alex.Id, Alex.Name, now.AddMinutes(-10),
+            now, now.AddMinutes(5), "restricted-history", true, true, 1), default);
         Assert.Equal(404, (await Assert.ThrowsAsync<AppError>(() =>
-            service.ReadAsync(alex, "channel-general", null, "fixture-51", 0, default))).Status);
+            service.ReadAsync(Alex, "channel-general", null, "root", 0, default))).Status);
+        var command = await Command(parent: "root");
+        Assert.Equal(400, (await Assert.ThrowsAsync<AppError>(() =>
+            service.SendAsync(Alex, "channel-general", command, default))).Status);
     }
     [Fact]
     public async Task MissingCoverageIsNotFabricatedEmptyContent()
     {
-        var current = (await store.GetAsync("tenant", "chat-empty", default))!;
-        await store.SaveAsync(current with { Value = current.Value with { CoverageReady = false } }, default);
+        await fixture.Store.SetCoverageAsync(new(fixture.Tenant, "chat-empty", false, fixture.Clock.GetUtcNow(), null, "gap"), default);
         Assert.Equal("projection_preparing", (await Assert.ThrowsAsync<AppError>(() =>
-            service.ReadAsync(alex, "chat-empty", null, null, 0, default))).Code);
+            service.ReadAsync(Alex, "chat-empty", null, null, 0, default))).Code);
     }
     [Fact]
-    public async Task CommandTokensAreActorConversationPurposeAndExpiryBound()
+    public async Task CommandWindowsAreActorConversationPurposeSessionAndExpiryBound()
     {
         var command = await Command();
-        Assert.Throws<AppError>(() => tokens.Validate(sam, "chat-handover", "command:0", command.Window));
-        Assert.Throws<AppError>(() => tokens.Validate(alex, "chat-empty", "command:0", command.Window));
-        Assert.Throws<AppError>(() => tokens.Validate(alex with { SessionId = "different" }, "chat-handover", "command:0", command.Window));
-        Assert.Throws<AppError>(() => tokens.Validate(alex, "chat-handover", "page:", command.Window));
-        clock.Advance(TimeSpan.FromMinutes(6));
-        Assert.Equal(410, (await Assert.ThrowsAsync<AppError>(() =>
-            service.SendAsync(alex, "chat-handover", command, default))).Status);
+        Assert.Throws<AppError>(() => tokens.Validate(fixture.Sam, "chat-handover", "command:1", command.Window));
+        Assert.Throws<AppError>(() => tokens.Validate(Alex, "chat-empty", "command:1", command.Window));
+        Assert.Throws<AppError>(() => tokens.Validate(Alex with { SessionId = "different" }, "chat-handover", "command:1", command.Window));
+        Assert.Throws<AppError>(() => tokens.Validate(Alex, "chat-handover", "page:1", command.Window));
+        fixture.Clock.Advance(TimeSpan.FromMinutes(6));
+        await fixture.RenewAsync();
+        Assert.Equal(410, (await Assert.ThrowsAsync<AppError>(() => service.SendAsync(Alex, "chat-handover", command, default))).Status);
     }
     [Fact]
-    public async Task ConcurrentIdenticalSubmissionsHaveOneSideEffect()
+    public async Task ConcurrentIdenticalSubmissionsHaveOneGraphDispatch()
     {
         var command = await Command();
-        var results = await Task.WhenAll(Enumerable.Range(0, 10).Select(_ => service.SendAsync(alex, "chat-handover", command, default)));
+        var results = await Task.WhenAll(Enumerable.Range(0, 10).Select(_ => service.SendAsync(Alex, "chat-handover", command, default)));
         Assert.All(results, result => Assert.Equal(OperationState.Confirmed, result.State));
-        Assert.Single((await store.GetAsync("tenant", "chat-handover", default))!.Value.Messages, m => m.Body == command.Body);
+        Assert.Equal(1, graph.Sends);
     }
-    [Fact]
-    public async Task DuplicateWhileBudgetWaitsReturnsPendingRatherThanAnUnsafeCapacityRejection()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PendingClaimCannotBeRedispatchedByADuplicateOrExpiredOwner(bool expire)
     {
         var budget = new WaitingBudget();
-        var delayed = new Messaging(store, simulator, budget, tokens, clock);
+        var messaging = new Messaging(fixture.Store, graph, budget, tokens, fixture.Clock);
         var command = await Command();
-        var owner = delayed.SendAsync(alex, "chat-handover", command, default);
+        var owner = messaging.SendAsync(Alex, "chat-handover", command, default);
         await budget.Entered.Task;
-        var duplicate = await delayed.SendAsync(alex, "chat-handover", command, default);
-        Assert.Equal(OperationState.Pending, duplicate.State);
+        Assert.Equal(OperationState.Pending, (await messaging.SendAsync(Alex, "chat-handover", command, default)).State);
+        if (expire)
+        {
+            fixture.Clock.Advance(TimeSpan.FromSeconds(36));
+            Assert.Equal(OperationState.Rejected, (await messaging.StatusAsync(Alex, "chat-handover", command.OperationId, default)).State);
+        }
         budget.Release.SetResult();
-        Assert.Equal(OperationState.Confirmed, (await owner).State);
-        Assert.Single((await store.GetAsync("tenant", "chat-handover", default))!.Value.Messages, m => m.Body == command.Body);
-    }
-    [Fact]
-    public async Task ExpiringAPendingClaimPreventsItsOriginalOwnerFromDispatching()
-    {
-        var budget = new WaitingBudget();
-        var delayed = new Messaging(store, simulator, budget, tokens, clock);
-        var command = await Command();
-        var owner = delayed.SendAsync(alex, "chat-handover", command, default);
-        await budget.Entered.Task;
-        clock.Advance(TimeSpan.FromSeconds(36));
-        Assert.Equal(OperationState.Rejected, (await delayed.StatusAsync(alex, "chat-handover", command.OperationId, default)).State);
-        budget.Release.SetResult();
-        Assert.Equal(OperationState.Rejected, (await owner).State);
-        Assert.DoesNotContain((await store.GetAsync("tenant", "chat-handover", default))!.Value.Messages, m => m.Body == command.Body);
-    }
-    [Fact]
-    public void DuplicateAndOutOfOrderNotificationsDoNotResurrectDeletedMessages()
-    {
-        var conversation = Fixtures.Create("tenant", ["alex", "sam", "jordan"], clock.GetUtcNow())[0];
-        var original = conversation.Messages[0];
-        Assert.Same(conversation, Projection.Apply(conversation, original, clock.GetUtcNow()));
-        var deleted = original with { Deleted = true, Body = "", SourceVersion = "2", ModifiedAt = clock.GetUtcNow() };
-        var changed = Projection.Apply(conversation, deleted, clock.GetUtcNow());
-        var replay = Projection.Apply(changed, original, clock.GetUtcNow());
-        Assert.Same(changed, replay);
-        Assert.True(replay.Messages.Single(m => m.Id == original.Id).Deleted);
-        Assert.Equal("", replay.Messages.Single(m => m.Id == original.Id).Body);
-    }
-    [Fact]
-    public async Task SeedIsRepeatableWithoutResettingMessages()
-    {
-        Assert.Equal(0, await Fixtures.SeedAsync(store, "tenant", ["alex", "sam", "jordan"], clock, default));
-        Assert.Equal(6, (await store.ListAsync("tenant", default)).Count);
-    }
-    [Fact]
-    public async Task SimulatorRestartRetainsExactUnknownReceipt()
-    {
-        simulator.Next(alex.Id, "unknown");
-        var command = await Command();
-        await service.SendAsync(alex, "chat-handover", command, default);
-        var restarted = new Messaging(store, new Simulator(clock, store), new MemoryBudget(clock), tokens, clock);
-        Assert.Equal(OperationState.Confirmed, (await restarted.StatusAsync(alex, "chat-handover", command.OperationId, default)).State);
+        Assert.Equal(expire ? OperationState.Rejected : OperationState.Confirmed, (await owner).State);
+        Assert.Equal(expire ? 0 : 1, graph.Sends);
     }
     [Fact]
     public async Task OffboardedPrincipalCannotReadOrListDespiteExistingMembership()
     {
-        await store.SetBlockedAsync("tenant", alex.Id, true, default);
-        Assert.Equal(401, (await Assert.ThrowsAsync<AppError>(() => service.ListAsync(alex, default))).Status);
-        Assert.Equal(401, (await Assert.ThrowsAsync<AppError>(() => service.ReadAsync(alex, "chat-handover", null, null, 0, default))).Status);
-        await store.SetBlockedAsync("tenant", alex.Id, false, default);
-        Assert.NotEmpty(await service.ListAsync(alex, default));
+        await fixture.Store.SetBlockedAsync(fixture.Tenant, Alex.Id, true, default);
+        Assert.Equal(401, (await Assert.ThrowsAsync<AppError>(() => service.ListAsync(Alex, default))).Status);
+        Assert.Equal(401, (await Assert.ThrowsAsync<AppError>(() => service.ReadAsync(Alex, "chat-handover", null, null, 0, default))).Status);
     }
     [Fact]
-    public async Task ResetInvalidatesOldCommandWindowsWithoutLosingOperationEvidence()
+    public void AggregateProjectionNeverResurrectsDeletedContentAndRemainsBounded()
     {
-        var command = await Command();
-        await Fixtures.ResetAsync(store, "tenant", ["alex", "sam", "jordan"], clock, default);
-        Assert.Equal(410, (await Assert.ThrowsAsync<AppError>(() => service.SendAsync(alex, "chat-handover", command, default))).Status);
-        await Fixtures.VerifyAsync(store, "tenant", ["alex", "sam", "jordan"], default);
-    }
-    [Fact]
-    public void ProjectionRemainsBelowCosmosItemLimitForWorstCaseUnicode()
-    {
-        var value = Fixtures.Create("tenant", ["alex", "sam", "jordan"], clock.GetUtcNow())[0];
+        var now = fixture.Clock.GetUtcNow();
+        var original = new Message("one", Alex.Id, Alex.Name, "Original", now, now);
+        var value = new Conversation("projection", fixture.Tenant, "Projection", "chat", null, [], [original], []);
+        var deleted = Projection.Apply(value, original with { Deleted = true, SourceVersion = "2" }, now);
+        Assert.Same(deleted, Projection.Apply(deleted, original, now));
+        Assert.Equal("", deleted.Messages.Single().Body);
         for (var i = 0; i < 200; i++)
-            value = Projection.Apply(value, new(i.ToString(), "alex", "Alex", new string('\u65e5', 4096),
-                clock.GetUtcNow().AddSeconds(i), clock.GetUtcNow()), clock.GetUtcNow());
+            value = Projection.Apply(value, new(i.ToString(), Alex.Id, Alex.Name, new string('\u65e5', 4096), now.AddSeconds(i), now), now);
         Assert.True(Encoding.UTF8.GetByteCount(System.Text.Json.JsonSerializer.Serialize(value)) < 1_100_000);
-    }
-    [Fact]
-    public async Task ExplicitRetirementPreservesMessagesHistoryAndOperationEvidence()
-    {
-        var group = (await store.GetAsync("tenant", "chat-project", default))!;
-        var priorMember = group.Value.Members.Single(m => m.Id == "jordan");
-        await store.SaveAsync(group with { Value = group.Value with
-        {
-            Members = group.Value.Members.Select(m => m.Id == "jordan" ? m with { Id = "retired", Name = "Former fixture" } : m).ToList()
-        } }, default);
-        var command = await Command();
-        await service.SendAsync(alex, "chat-handover", command, default);
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            Fixtures.VerifyAsync(store, "tenant", ["alex", "sam", "jordan"], default));
-        await Fixtures.RetireActorAsync(store, "tenant", ["alex", "sam", "jordan"], "retired", clock, default);
-        var migrated = (await store.GetAsync("tenant", "chat-project", default))!.Value;
-        Assert.Equal(priorMember.HistoryFrom, migrated.Members.Single(m => m.Id == "jordan").HistoryFrom);
-        Assert.DoesNotContain(migrated.Members, m => m.Id == "retired");
-        Assert.Equal(group.Value.Messages, migrated.Messages);
-        Assert.Equal(group.Value.Epoch + 1, migrated.Epoch);
-        Assert.True(await store.IsBlockedAsync("tenant", "retired", default));
-        Assert.NotNull(await store.GetOperationAsync("tenant", "chat-handover", command.OperationId, default));
-        await Fixtures.VerifyAsync(store, "tenant", ["alex", "sam", "jordan"], default);
-        await Fixtures.RetireActorAsync(store, "tenant", ["alex", "sam", "jordan"], "retired", clock, default);
-        Assert.Equal(migrated.Epoch, (await store.GetAsync("tenant", "chat-project", default))!.Value.Epoch);
-    }
-    [Fact]
-    public async Task RetirementRefusesActiveActorsAndLiveResourceMappings()
-    {
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            Fixtures.RetireActorAsync(store, "tenant", ["alex", "sam", "jordan"], "sam", clock, default));
-        var group = (await store.GetAsync("tenant", "chat-project", default))!;
-        await store.SaveAsync(group with { Value = group.Value with { GraphChatId = "real-chat" } }, default);
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            Fixtures.RetireActorAsync(store, "tenant", ["alex", "sam", "jordan"], "retired", clock, default));
-    }
-    private sealed class Clock : TimeProvider
-    {
-        private DateTimeOffset now = new(2026, 10, 15, 12, 0, 0, TimeSpan.Zero);
-        public override DateTimeOffset GetUtcNow() => now;
-        public void Advance(TimeSpan by) => now += by;
     }
     private sealed class WaitingBudget : ICommandBudget
     {

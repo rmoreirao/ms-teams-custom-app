@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..')) + [IO.Path]::DirectorySeparatorChar
 $checkpointFile = [IO.Path]::GetFullPath($CheckpointPath)
-if ($checkpointFile.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { throw 'Pilot inventories must remain outside the repository.' }
+if ($checkpointFile.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { throw 'Development Teams inventories must remain outside the repository.' }
 $inventory = Get-Content -Raw -LiteralPath $InventoryPath | ConvertFrom-Json
 if ($inventory.users.Count -ne 3 -or @($inventory.users.id | Sort-Object -Unique).Count -ne 3) {
     throw 'Exactly three approved fixture users are required.'
@@ -50,7 +50,7 @@ if ($scope.tenantId -ne $inventory.tenantId -or
     ((@($scope.actorIds | Sort-Object) -join ',') -ne (@($inventory.users.id | Sort-Object) -join ','))) {
     throw 'Existing checkpoint belongs to another tenant or actor set.'
 }
-if ($scope.complete) { Write-Output 'Dedicated pilot scope already complete; no new resources created.'; $headers.Clear(); return }
+if ($scope.complete) { Write-Output 'Dedicated Development Teams scope already complete; no new resources created.'; $headers.Clear(); return }
 if (($scope.teamDispatchStarted -and -not $scope.teamId) -or ($scope.chatDispatchStarted -and -not $scope.chatId)) {
     throw 'A creation outcome is uncertain. Inspect the original tagged resource before any new POST.'
 }

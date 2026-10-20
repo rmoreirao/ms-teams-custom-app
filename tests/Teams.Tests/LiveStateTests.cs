@@ -136,9 +136,57 @@ public sealed class LiveStateTests
         var first = await store.ChangesAsync(actor, "chat", 0, default);
         Assert.False(first.ResetRequired);
         Assert.Equal("one", Assert.Single(first.Changes).MessageId);
+        Assert.Equal("Content", Assert.Single(first.Messages!).Body);
         for (var i = 0; i < 105; i++) await store.ApplyAsync("tenant", "chat", Message($"message-{i}"), default);
         Assert.True((await store.ChangesAsync(actor, "chat", 0, default)).ResetRequired);
         await Assert.ThrowsAsync<AppError>(() => store.ChangesAsync(actor, "chat", -1, default));
+    }
+    [Fact]
+    public async Task CatchupIncludesReplyContextAndDeletedBodiesAreNeverReturned()
+    {
+        await Prepare();
+        var root = Message("root");
+        var reply = Message("reply") with { ParentId = root.Id };
+        await store.ApplyAsync("tenant", "chat", root, default);
+        await store.ApplyAsync("tenant", "chat", reply, default);
+        var first = await store.ChangesAsync(actor, "chat", 0, default);
+        Assert.Contains(first.Changes, change => change.MessageId == "reply" && change.ParentId == "root");
+        Assert.Contains(first.Messages!, message => message.Id == "reply" && message.ParentId == "root");
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await store.ApplyAsync("tenant", "chat", reply with {
+            Deleted = true, Body = "", SourceVersion = "deleted", ModifiedAt = clock.GetUtcNow()
+        }, default);
+        var deleted = Assert.Single((await store.ChangesAsync(actor, "chat", 2, default)).Messages!);
+        Assert.True(deleted.Deleted);
+        Assert.Equal("", deleted.Body);
+    }
+    [Fact]
+    public async Task CatchupFiltersHiddenHistoryAndReturnsTheCurrentBoundary()
+    {
+        await Prepare();
+        await store.ApplyAsync("tenant", "chat", Message("old", at: clock.GetUtcNow().AddDays(-1)), default);
+        await store.ApplyAsync("tenant", "chat", Message("current"), default);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await store.SetEntitlementAsync(new("tenant", "chat", "alex", "Alex", clock.GetUtcNow().AddMinutes(-1),
+            clock.GetUtcNow(), clock.GetUtcNow().AddMinutes(1), "authority-2", true, true, 0), default);
+        var changes = await store.ChangesAsync(actor, "chat", 0, default);
+        Assert.False(changes.ResetRequired);
+        Assert.Equal("current", Assert.Single(changes.Messages!).Id);
+        Assert.Equal(clock.GetUtcNow().AddMinutes(-1), changes.HistoryFrom);
+    }
+    [Fact]
+    public async Task CatchupCannotExposeRepliesWhoseParentIsOutsideVisibleHistory()
+    {
+        await Prepare();
+        await store.ApplyAsync("tenant", "chat", Message("hidden-parent", at: clock.GetUtcNow().AddDays(-1)), default);
+        await store.ApplyAsync("tenant", "chat", Message("recent-reply", "Protected reply") with { ParentId = "hidden-parent" }, default);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await store.SetEntitlementAsync(new("tenant", "chat", "alex", "Alex", clock.GetUtcNow().AddMinutes(-1),
+            clock.GetUtcNow(), clock.GetUtcNow().AddMinutes(1), "authority-2", true, true, 0), default);
+        var changes = await store.ChangesAsync(actor, "chat", 0, default);
+        Assert.Empty(changes.Changes);
+        Assert.Empty(changes.Messages!);
+        Assert.Equal(2, changes.Revision);
     }
     [Fact]
     public async Task StaleWriterCannotClaimAnOperationInANewerEpoch()
@@ -186,7 +234,6 @@ public sealed class LiveStateTests
     }
     private sealed class LiveTransport : IGraphTransport
     {
-        public bool Simulated => false;
         public Task<WriteResult> SendAsync(Actor actor, Conversation conversation, SendOperation operation, CancellationToken ct) =>
             Task.FromResult(new WriteResult(OperationState.Confirmed, new(operation.Id, actor.Id, actor.Name, operation.Body,
                 DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)));

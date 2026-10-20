@@ -5,6 +5,7 @@
 .git
 .playwright-cli
 .env*
+**/.env*
 artifacts
 prototypes
 tests/**/TestResults

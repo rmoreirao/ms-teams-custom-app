@@ -51,53 +51,65 @@ public sealed class NotificationTokenValidator(string tenant, string clientId,
 public sealed class NotificationIntake(LiveOptions options, string tenant, LiveControlStore control,
     INotificationTokenValidator tokens, IEncryptedNotificationInbox inbox, TimeProvider clock)
 {
-    public async Task AcceptAsync(JsonElement payload, bool lifecycle, CancellationToken ct)
+    private static JsonElement Required(JsonElement value, string field) =>
+        value.ValueKind == JsonValueKind.Object && value.TryGetProperty(field, out var found) ? found :
+            throw new AppError(400, $"notification_missing_{field}", "A required notification field is missing.");
+    public async Task<int> AcceptAsync(JsonElement payload, bool lifecycle, CancellationToken ct)
     {
         using var measurement = LiveTelemetry.Measure("notification-intake");
         if (!options.SynchronizationEnabled)
             throw new AppError(503, "synchronization_disabled", "Notification persistence is awaiting synchronization approval.");
-        var values = payload.GetProperty("value");
+        var values = Required(payload, "value");
         if (values.ValueKind != JsonValueKind.Array || values.GetArrayLength() is < 1 or > 100)
             throw new AppError(400, "notification_invalid", "Notification collection is invalid.");
         if (!lifecycle)
         {
-            var validation = payload.GetProperty("validationTokens");
+            var validation = Required(payload, "validationTokens");
             await tokens.ValidateAsync(validation.EnumerateArray().Select(t => t.GetString()
                 ?? throw new SecurityTokenValidationException("Invalid validation token.")).ToArray(), ct);
         }
         List<EncryptedNotification> accepted = [];
         foreach (var item in values.EnumerateArray())
         {
-            var id = item.GetProperty("subscriptionId").GetString() ?? "";
+            var id = Required(item, "subscriptionId").GetString() ?? "";
             var subscription = await control.FindSubscriptionAsync(id, ct)
                 ?? throw new AppError(403, "subscription_unknown", "Subscription is not registered.");
             var configured = options.SubscriptionScopes.SingleOrDefault(s => s.Id == subscription.ScopeId);
-            var state = item.GetProperty("clientState").GetString() ?? "";
-            if (configured is null || subscription.GraphId != id || configured.Path != subscription.Resource || item.GetProperty("tenantId").GetString() != tenant ||
+            var state = Required(item, "clientState").GetString() ?? "";
+            // Graph can omit tenantId on lifecycle events; the tenant-scoped lookup and secret state still bind them.
+            var suppliedTenant = item.TryGetProperty("tenantId", out var tenantValue) ? tenantValue.GetString() : null;
+            if (configured is null || subscription.GraphId != id || configured.Path != subscription.Resource ||
+                suppliedTenant is not null && suppliedTenant != tenant || !lifecycle && suppliedTenant != tenant ||
                 !CryptographicOperations.FixedTimeEquals(SHA256.HashData(Encoding.UTF8.GetBytes(state)),
                     SHA256.HashData(Encoding.UTF8.GetBytes(subscription.ClientState))))
                 throw new AppError(403, "notification_invalid", "Subscription scope, tenant or validation state does not match.");
             if (lifecycle)
             {
-                var action = item.GetProperty("lifecycleEvent").GetString();
+                var action = Required(item, "lifecycleEvent").GetString();
                 if (action is not ("reauthorizationRequired" or "subscriptionRemoved" or "missed"))
                     throw new AppError(400, "lifecycle_unsupported", "Unsupported lifecycle event.");
                 accepted.Add(new(tenant, $"scope:{configured.Id}", configured.Path, "", null, clock.GetUtcNow(), action,
                     SubscriptionId: id));
                 continue;
             }
-            var path = GraphMessages.NormalizeResource(item.GetProperty("resource").GetString() ?? "");
+            var path = GraphMessages.NormalizeResource(Required(item, "resource").GetString() ?? "");
             var approved = options.Resources.Where(configured.Covers).SingleOrDefault(r =>
                 path.StartsWith(r.Path + "/", StringComparison.Ordinal));
             // Aggregate scopes can cover resources outside the approved projection; never persist those payloads.
-            if (approved is null) { LiveTelemetry.FilteredNotifications.Add(1); continue; }
+            if (approved is null)
+            {
+                if (configured.Path is not ("chats/getAllMessages" or "teams/getAllMessages"))
+                    throw new AppError(403, "notification_resource_mismatch", "The notification left its exact approved subscription resource.");
+                LiveTelemetry.FilteredNotifications.Add(1);
+                continue;
+            }
             var suffix = path[(approved.Path.Length + 1)..].Split('/');
             if (suffix.Length != 1 && (suffix.Length != 3 || suffix[1] != "replies" || approved.Kind != "channel"))
                 throw new AppError(400, "notification_resource_invalid", "Message resource context is invalid.");
-            var change = item.GetProperty("changeType").GetString();
+            var change = Required(item, "changeType").GetString();
             if (change is not ("created" or "updated" or "deleted")) throw new AppError(400, "change_unsupported", "Unsupported message change.");
-            var encrypted = item.GetProperty("encryptedContent");
-            var key = encrypted.GetProperty("encryptionCertificateId").GetString() ?? "";
+            var encrypted = Required(item, "encryptedContent");
+            var key = Required(encrypted, "encryptionCertificateId").GetString() ?? "";
             if (!options.NotificationKeys.ContainsKey(key))
                 throw new AppError(503, "notification_key_unknown", "The notification key version is not available.");
             accepted.Add(new(tenant, approved.Id, path, change, encrypted.Clone(), clock.GetUtcNow()));
@@ -107,6 +119,7 @@ public sealed class NotificationIntake(LiveOptions options, string tenant, LiveC
             await inbox.EnqueueAsync(accepted, ct);
             LiveTelemetry.AcceptedNotifications.Add(accepted.Count);
         }
+        return accepted.Count;
     }
 }
 public interface INotificationKeyDecryptor

@@ -11,14 +11,16 @@ public sealed record SubscriptionState(string ScopeId, string Resource, string C
 public sealed record RepairState(string ResourceId, string Path, string? ParentId, string? NextLink, bool Pending,
     DateTimeOffset UpdatedAt, bool Verifying = false, string? ScanCursor = null, long? Generation = null);
 public sealed record LifecycleSignal(string Action, DateTimeOffset At, bool Handled = false);
+public sealed record NotificationReceipt(string ResourceId, string MessageId, string? ParentId, long Revision,
+    string SourceVersion, DateTimeOffset ReceivedAt, DateTimeOffset ProjectedAt);
 public sealed class LiveControlStore(IPartitionDocuments documents, TimeProvider clock, string tenant)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     private string Pk(string id) => $"{tenant}|control|{Hash(id)}";
-    private PartitionDocument Wrap<T>(string id, string pk, string kind, T value, bool pending = false) =>
+    private PartitionDocument Wrap<T>(string id, string pk, string kind, T value, bool pending = false, int ttl = -1) =>
         new(id, pk, kind, tenant, value is RepairState repair ? repair.ResourceId : "", "",
-            clock.GetUtcNow(), 0, -1, JsonSerializer.Serialize(value, Json), pending,
+            clock.GetUtcNow(), 0, ttl, JsonSerializer.Serialize(value, Json), pending,
             SortTime: clock.GetUtcNow().ToUniversalTime().ToString("O"));
     private static T Decode<T>(PartitionDocument value)
     {
@@ -83,4 +85,17 @@ public sealed class LiveControlStore(IPartitionDocuments documents, TimeProvider
     }
     public Task<bool> SaveLifecycleAsync(string scope, LifecycleSignal signal, string? version, CancellationToken ct) =>
         documents.WriteAsync([new(Wrap("lifecycle", Pk(scope), "lifecycle", signal), version)], ct);
+    public async Task<NotificationReceipt?> ReceiptAsync(string resource, string message, string? parent, CancellationToken ct)
+    {
+        var value = await documents.ReadAsync(Pk($"receipt:{resource}:{parent}:{message}"), "receipt", ct);
+        return value is null ? null : Decode<NotificationReceipt>(value.Value);
+    }
+    public async Task SaveReceiptAsync(NotificationReceipt receipt, CancellationToken ct)
+    {
+        var pk = Pk($"receipt:{receipt.ResourceId}:{receipt.ParentId}:{receipt.MessageId}");
+        var existing = await documents.ReadAsync(pk, "receipt", ct);
+        if (existing is not null && Decode<NotificationReceipt>(existing.Value).ReceivedAt > receipt.ReceivedAt) return;
+        if (!await documents.WriteAsync([new(Wrap("receipt", pk, "notification-receipt", receipt, ttl: 14 * 86400), existing?.Version)], ct))
+            throw new AppError(409, "receipt_conflict", "Notification provenance changed concurrently; retry the original delivery.");
+    }
 }
