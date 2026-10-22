@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
@@ -60,7 +59,7 @@ public sealed class SyntheticUserContexts(IDistributedCache cache, IDataProtecti
 }
 
 public sealed class DelegatedSyntheticGraph(IHttpClientFactory clients, IServiceScopeFactory scopes,
-    SyntheticUserContexts contexts, IGraphCallBudget budget, LiveOptions options, IConfiguration configuration,
+    SyntheticUserContexts contexts, LiveOptions options, IConfiguration configuration,
     LiveControlStore controlStore) : IGraphBackground
 {
     public IGraphBackground ForResource(string resourcePath)
@@ -100,9 +99,6 @@ public sealed class DelegatedSyntheticGraph(IHttpClientFactory clients, IService
     private async Task<JsonElement> RequestAsync(string actor, ApprovedResource resource, HttpMethod method,
         string path, object? body, CancellationToken ct)
     {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        deadline.CancelAfter(TimeSpan.FromSeconds(25));
-        ct = deadline.Token;
         var uri = GraphUrls.Validate(path);
         var canonical = GraphUrls.ResourcePath(uri);
         var control = canonical == "subscriptions" || canonical.StartsWith("subscriptions/", StringComparison.Ordinal);
@@ -127,39 +123,12 @@ public sealed class DelegatedSyntheticGraph(IHttpClientFactory clients, IService
             !(canonical == root || canonical == $"{root}/members" ||
               canonical == resource.Path || canonical.StartsWith(resource.Path + "/", StringComparison.Ordinal))))
             throw new AppError(403, "synthetic_scope_denied", "The requested Graph path is outside the approved test resource.");
-        string token;
-        try
+        return await GraphRequests.SendAsync(() => clients.CreateClient("live-graph"), async token =>
         {
-            for (;;)
-            {
-                try { await budget.AcquireAsync(control ? "control" : "data", GraphUrls.BudgetResource(uri), ct); break; }
-                catch (AppError error) when (error.Code == "graph_capacity_exceeded")
-                { await Task.Delay(TimeSpan.FromMilliseconds(1300), ct); }
-            }
-            token = await TokenAsync(actor, resource, false, ct);
-        }
-        catch (OperationCanceledException)
-        {
-            throw new AppError(429, "graph_capacity_exceeded", "Capacity or token preparation ended before Graph dispatch; work remains pending.");
-        }
-        catch (AppError error) when (error.Status == 401)
-        {
-            throw new AppError(401, "graph_not_dispatched", error.Message);
-        }
-        using var request = new HttpRequestMessage(method, uri);
-        request.Headers.Authorization = new("Bearer", token);
-        request.Headers.Add("client-request-id", Guid.NewGuid().ToString());
-        if (body is not null) request.Content = JsonContent.Create(body);
-        LiveTelemetry.GraphAttempts.Add(1, new KeyValuePair<string, object?>("mode", "delegated-synthetic-sync"));
-        using var response = await clients.CreateClient("live-graph").SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-        if ((int)response.StatusCode == 429)
-            await budget.CooldownAsync(response.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(30), CancellationToken.None);
-        if (!response.IsSuccessStatusCode)
-            throw new AppError((int)response.StatusCode is 401 or 403 or 404 or 429 ? (int)response.StatusCode : 503,
-                $"graph_{(int)response.StatusCode}", "Graph rejected scoped delegated synchronization; no checkpoint was advanced.");
-        return response.StatusCode == System.Net.HttpStatusCode.NoContent ? JsonSerializer.SerializeToElement(new { }) :
-            await BoundedJson.ReadAsync(response.Content, 16 * 1024 * 1024, ct,
-                allowEmpty: GraphUrls.IsReauthorization(method, uri));
+            try { return await TokenAsync(actor, resource, false, token); }
+            catch (AppError error) when (error.Status == 401)
+            { throw new AppError(401, "graph_not_dispatched", error.Message); }
+        }, method, uri, body, "delegated-synthetic-sync", new GraphRetry(options.GraphRetry), ct);
     }
     private sealed class Scoped(DelegatedSyntheticGraph owner, ApprovedResource resource, string actor) : IGraphBackground
     {

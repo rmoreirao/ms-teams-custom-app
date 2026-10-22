@@ -7,18 +7,10 @@ namespace Teams.Tests;
 
 public sealed class MemoryBudget(TimeProvider clock) : ICommandBudget
 {
-    private readonly object gate = new();
-    private readonly Dictionary<string, DateTimeOffset> permits = [];
     public Task AcquireAsync(Actor actor, Conversation conversation, CancellationToken ct)
     {
-        lock (gate)
-        {
-            var now = clock.GetUtcNow();
-            string[] scopes = [$"{actor.TenantId}|actor:{actor.Id}", $"{actor.TenantId}|conversation:{conversation.Id}"];
-            if (scopes.Any(s => permits.TryGetValue(s, out var at) && at > now))
-                throw new AppError(429, "graph_capacity_exceeded", "Wait before another send.");
-            foreach (var scope in scopes) permits[scope] = now.AddMilliseconds(1250);
-        }
+        ct.ThrowIfCancellationRequested();
+        _ = clock.GetUtcNow();
         return Task.CompletedTask;
     }
 }

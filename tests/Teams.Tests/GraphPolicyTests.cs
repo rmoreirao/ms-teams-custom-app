@@ -144,7 +144,7 @@ public sealed class GraphPolicyTests
         {
             requests.Add(request.RequestUri!.AbsoluteUri);
             return new(HttpStatusCode.OK) { Content = new StringContent("""{"value":[]}""") };
-        })), new Credential(), new Budget());
+        })), new Credential());
         var app = new ApplicationGraph(transport, fixture.Options, new(new MemoryPartitionDocuments(), fixture.Clock, Tenant));
         var scoped = app.ForResource(fixture.Direct.Path);
         await scoped.GetAsync("chats/19:direct@thread.v2/messages?$skiptoken=opaque%2Bvalue", default);
@@ -174,7 +174,7 @@ public sealed class GraphPolicyTests
         {
             requests++;
             throw new InvalidOperationException("No Graph request can precede a valid workload token.");
-        })), new UnavailableCredential(), new Budget());
+        })), new UnavailableCredential());
         var control = new LiveControlStore(new MemoryPartitionDocuments(), fixture.Clock, Tenant);
         var graph = new ApplicationGraph(transport, fixture.Options, control);
         var subscription = new SubscriptionScope("source", fixture.Direct.Path);
@@ -417,11 +417,6 @@ public sealed class GraphPolicyTests
             throw new Azure.Identity.CredentialUnavailableException("PRIVATE token preparation details.");
         public override ValueTask<AccessToken> GetTokenAsync(TokenRequestContext requestContext, CancellationToken cancellationToken) =>
             ValueTask.FromException<AccessToken>(new Azure.Identity.CredentialUnavailableException("PRIVATE token preparation details."));
-    }
-    private sealed class Budget : IGraphCallBudget
-    {
-        public Task AcquireAsync(string lane, string resource, CancellationToken ct) => Task.CompletedTask;
-        public Task CooldownAsync(TimeSpan duration, CancellationToken ct) => Task.CompletedTask;
     }
     private sealed class Clock : TimeProvider
     {

@@ -86,13 +86,8 @@ public sealed class GraphCursorTests
         var contexts = new SyntheticUserContexts(services.GetRequiredService<IDistributedCache>(), new EphemeralDataProtectionProvider(),
             options, configuration, clock, NullLogger<SyntheticUserContexts>.Instance);
         var graph = new DelegatedSyntheticGraph(new NoHttp(), services.GetRequiredService<IServiceScopeFactory>(),
-            contexts, new Budget(), options, configuration, new(new MemoryPartitionDocuments(), clock, tenant));
+            contexts, options, configuration, new(new MemoryPartitionDocuments(), clock, tenant));
         return await Assert.ThrowsAsync<AppError>(() => graph.ReadAsAsync(actor, resource, path, default));
-    }
-    private sealed class Budget : IGraphCallBudget
-    {
-        public Task AcquireAsync(string lane, string resource, CancellationToken ct) => Task.CompletedTask;
-        public Task CooldownAsync(TimeSpan duration, CancellationToken ct) => Task.CompletedTask;
     }
     private sealed class NoHttp : IHttpClientFactory
     {

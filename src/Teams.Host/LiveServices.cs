@@ -55,12 +55,10 @@ public static class LiveServices
         }
         if (options.Hosts("Control", role))
         {
-            services.AddHttpClient("live-graph", c => c.Timeout = TimeSpan.FromSeconds(20))
+            services.AddHttpClient("live-graph", c => c.Timeout = Timeout.InfiniteTimeSpan)
                 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
             services.AddHttpClient("live-authority", c => c.Timeout = TimeSpan.FromSeconds(10))
                 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
-            services.AddSingleton<IGraphCallBudget>(sp => new RedisGraphCallBudget(sp.GetRequiredService<IConnectionMultiplexer>(),
-                tenant, options.SyncClientId, options.GraphIntervalMilliseconds, options.DataIntervalMilliseconds));
             if (options.DelegatedSynthetic)
             {
                 services.AddSingleton<DelegatedSyntheticGraph>();
@@ -75,7 +73,7 @@ public static class LiveServices
                     var sync = new ClientAssertionCredential(tenant, options.SyncClientId, async ct =>
                         (await managed.GetTokenAsync(new TokenRequestContext(["api://AzureADTokenExchange/.default"]), ct)).Token);
                     return new GraphBackground(sp.GetRequiredService<IHttpClientFactory>().CreateClient("live-graph"), sync,
-                        sp.GetRequiredService<IGraphCallBudget>());
+                        sp.GetRequiredService<GraphRetry>());
                 });
                 if (options.EntitlementProvider == "Graph")
                 {
@@ -138,15 +136,13 @@ public static class LiveServices
         }
     }
 }
-public sealed class LiveCommandBudget(ICommandBudget inner, LiveOptions options) : ICommandBudget, IGraphThrottle
+public sealed class LiveCommandBudget(LiveOptions options) : ICommandBudget
 {
     public Task AcquireAsync(Actor actor, Conversation conversation, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         if (!options.AdmissionEnabled || conversation.Epoch != options.WriterEpoch)
             throw new AppError(503, "writer_fenced", "This runtime does not own the approved command epoch.");
-        return inner.AcquireAsync(actor, conversation, ct);
+        return Task.CompletedTask;
     }
-    public Task CooldownAsync(Actor actor, TimeSpan delay, CancellationToken ct) =>
-        inner is IGraphThrottle throttle ? throttle.CooldownAsync(actor, delay, ct) :
-            throw new InvalidOperationException("Live commands require a shared Graph cooldown coordinator.");
 }

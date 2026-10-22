@@ -68,7 +68,7 @@ $busEndpoint=($targets[0].app.properties.template.containers[0].env|Where-Object
 if($busEndpoint -notmatch '^(?<name>[a-z0-9-]+)\.servicebus\.windows\.net$'){throw 'Resolve the existing approved Service Bus namespace endpoint before release.'}
 $refresh=Read-Azure @('servicebus','queue','show','--resource-group',$contract.resourceGroup,
     '--namespace-name',$Matches.name,'--name','graph-read-refresh')
-$refreshAccess=Read-Azure @('role','assignment','list','--scope',$refresh.id,'--include-inherited','--all')
+$refreshAccess=Read-Azure @('role','assignment','list','--scope',$refresh.id,'--include-inherited')
 Assert-ServiceDevReadRefresh $refresh $refreshAccess $contract
 Write-Output 'Plan: image-only release to five existing isolated service workloads. No identity, grants, provisioning, admission, edge, scale or data changes.'
 if(-not $Apply -or -not $PSCmdlet.ShouldProcess(($targets.name-join ', '),"Release immutable service image $Image")){return}

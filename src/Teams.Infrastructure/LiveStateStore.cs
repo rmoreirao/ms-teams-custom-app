@@ -253,16 +253,25 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
         documents.WriteAsync([new(Operation(value), null)], ct);
     public async Task<bool> SaveOperationAsync(Versioned<SendOperation> value, CancellationToken ct)
     {
-        List<DocumentWrite> writes = [new(Operation(value.Value), value.Version)];
-        if (value.Value.State == OperationState.Dispatching)
+        for (;;)
         {
-            var pk = Partition(value.Value.TenantId, value.Value.ConversationId);
-            var metadata = await documents.ReadCurrentAsync(pk, "conversation", ct);
-            if (metadata is null || Decode<Conversation>(metadata.Value).Epoch != value.Value.Epoch)
-                throw new AppError(503, "writer_fenced", "Conversation ownership changed before dispatch.");
-            writes.Add(new(metadata.Value, metadata.Version));
+            ct.ThrowIfCancellationRequested();
+            List<DocumentWrite> writes = [new(Operation(value.Value), value.Version)];
+            if (value.Value.State == OperationState.Dispatching)
+            {
+                var pk = Partition(value.Value.TenantId, value.Value.ConversationId);
+                var metadata = await documents.ReadCurrentAsync(pk, "conversation", ct);
+                if (metadata is null || Decode<Conversation>(metadata.Value).Epoch != value.Value.Epoch)
+                    throw new AppError(503, "writer_fenced", "Conversation ownership changed before dispatch.");
+                writes.Add(new(metadata.Value, metadata.Version));
+            }
+            if (await documents.WriteAsync(writes, ct)) return true;
+            if (value.Value.State != OperationState.Dispatching) return false;
+            var operation = await GetOperationAsync(value.Value.TenantId, value.Value.ConversationId, value.Value.Id, ct);
+            if (operation?.Version != value.Version) return false;
+            // Another operation can advance the conversation fence without taking this operation's claim.
+            await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(1, 11)), ct);
         }
-        return await documents.WriteAsync(writes, ct);
     }
     public Task<bool> CommitAsync(Versioned<Conversation> conversation, Versioned<SendOperation>? operation, CancellationToken ct) =>
         CommitProjectionAsync(conversation, operation, null, ct);

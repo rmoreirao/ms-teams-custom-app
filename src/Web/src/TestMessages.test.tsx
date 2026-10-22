@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { App } from "./App";
+import { TestMessages } from "./TestMessages";
 import type { Conversation, Operation } from "./api";
 
 const conversations: Conversation[] = [
@@ -43,13 +44,14 @@ async function openChat() {
     fireEvent.click(screen.getByRole("button", { name: "Open chat: Sam Rivera" }));
   });
 }
-function openPopup(count?: string, message?: string) {
-  fireEvent.click(screen.getByRole("button", { name: "Send test messages" }));
-  if (count !== undefined) fireEvent.change(screen.getByRole("spinbutton", { name: "Number of messages" }), { target: { value: count } });
-  if (message !== undefined) fireEvent.change(screen.getByRole("textbox", { name: "Test Message" }), { target: { value: message } });
+function openPopup(count?: string, message?: string, concurrency?: string) {
+  fireEvent.click(screen.getByText("Send test messages", { selector: "button" }));
+  if (count !== undefined) fireEvent.change(screen.getByLabelText("Number of messages"), { target: { value: count } });
+  if (message !== undefined) fireEvent.change(screen.getByLabelText("Test Message"), { target: { value: message } });
+  if (concurrency !== undefined) fireEvent.change(screen.getByLabelText("Concurrent messages"), { target: { value: concurrency } });
 }
 async function submit() {
-  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Send messages" })); });
+  await act(async () => { fireEvent.click(within(document.querySelector("dialog")!).getByText("Send messages", { selector: "button" })); });
 }
 
 beforeEach(() => {
@@ -72,38 +74,76 @@ describe("personal-chat test messages", () => {
   it("opens with 30 messages and editable default text, and cancellation sends nothing", async () => {
     const requests = mockApi();
     await openChat();
-    const composer = screen.getByRole("textbox", { name: "Write a message" });
+    const composer = screen.getByLabelText("Write a message");
     fireEvent.change(composer, { target: { value: "My unsent draft" } });
     openPopup();
     expect(screen.getByRole("dialog", { name: "Send test messages" })).toHaveTextContent("Sam Rivera");
-    expect(screen.getByRole("spinbutton", { name: "Number of messages" })).toHaveValue(30);
-    expect(screen.getByRole("spinbutton", { name: "Number of messages" })).toHaveFocus();
-    expect(screen.getByRole("textbox", { name: "Test Message" })).toHaveValue("Test message");
+    expect(screen.getByLabelText("Number of messages")).toHaveValue(30);
+    expect(screen.getByLabelText("Concurrent messages")).toHaveValue(30);
+    expect(screen.getByLabelText("Number of messages")).toHaveFocus();
+    expect(screen.getByLabelText("Test Message")).toHaveValue("Test message");
     expect(screen.getByRole("button", { name: "Send test messages" }).closest("header")).toContainElement(
       screen.getByRole("button", { name: "Change chat" }));
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(within(document.querySelector("dialog")!).getByText("Cancel", { selector: "button" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(requests).toHaveLength(0);
     expect(composer).toHaveValue("My unsent draft");
   });
 
-  it("sends exactly 30 paced, uniquely identified numbered messages to the other person's chat", async () => {
+  describe("parallel batch controls", () => {
+    it.each(["", "0", "-1", "1.5", "31"])("rejects invalid concurrency %j without dispatch", async concurrency => {
+      const send = vi.fn();
+      render(<TestMessages recipient="Sam Rivera" available send={send} />);
+      openPopup("30", undefined, concurrency);
+      const form = document.querySelector("dialog")!;
+      expect(within(form).getByText("Send messages", { selector: "button" })).toBeDisabled();
+      await act(async () => { fireEvent.submit(form.querySelector("form")!); });
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it("starts the requested concurrency immediately and retains initial throttles after successful retries", async () => {
+      const completions: (() => void)[] = [];
+      let inFlight = 0;
+      let maximum = 0;
+      const send = vi.fn((body: string) => {
+        maximum = Math.max(maximum, ++inFlight);
+        const throttled = completions.length < 2;
+        return new Promise<Operation>(resolve => completions.push(() => {
+          inFlight--;
+          resolve({ id: body, state: "confirmed", messageId: body, error: null,
+            attempts: throttled ? 2 : 1, firstStatus: throttled ? 429 : 201, throttles: throttled ? 1 : 0 });
+        }));
+      });
+      render(<TestMessages recipient="Sam Rivera" available send={send} />);
+      openPopup("5", undefined, "2");
+      await submit();
+      expect(send).toHaveBeenCalledTimes(2);
+      for (let index = 0; index < 5; index++) {
+        await act(async () => { completions[index](); });
+        expect(send).toHaveBeenCalledTimes(Math.min(5, index + 3));
+      }
+      expect(maximum).toBe(2);
+      const status = within(document.querySelector("dialog")!).getByRole("status");
+      expect(status).toHaveTextContent("5 of 5 attempted. 5 confirmed");
+      expect(status).toHaveTextContent("Reported initial Graph responses: 3 accepted, 2 throttled.");
+      expect(status).toHaveTextContent("7 attempts including 2 retries; 2 throttle responses.");
+    });
+  });
+
+  it("sends exactly 30 immediate, uniquely identified numbered messages to the other person's chat", async () => {
     const requests = mockApi();
     await openChat();
     fireEvent.change(screen.getByRole("textbox", { name: "Write a message" }), { target: { value: "Keep this draft" } });
     openPopup();
     await submit();
-    expect(requests).toHaveLength(1);
-    await act(async () => { await vi.advanceTimersByTimeAsync(1499); });
-    expect(requests).toHaveLength(1);
-    await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
+    expect(requests).toHaveLength(30);
     expect(requests.map(item => item.command.body)).toEqual(Array.from({ length: 30 }, (_, index) => `Test message - ${index + 1}`));
     expect(new Set(requests.map(item => item.command.operationId)).size).toBe(30);
     for (const [index, item] of requests.entries()) {
       expect(item.path).toBe("/api/conversations/direct/messages");
       expect(item.command).toMatchObject({ window: "authorized-window", parentId: null });
       expect(item.headers).toEqual({ "Content-Type": "application/json", "X-CSRF-TOKEN": "csrf" });
-      if (index) expect(item.at - requests[index - 1].at).toBeGreaterThanOrEqual(1500);
+      if (index) expect(item.at).toBe(requests[0].at);
     }
     expect(within(screen.getByRole("dialog")).getByRole("status")).toHaveTextContent(
       "30 of 30 attempted. 30 confirmed, 0 not sent, 0 pending or uncertain.");
@@ -120,15 +160,15 @@ describe("personal-chat test messages", () => {
     await openChat();
     openPopup("3", "My test");
     await submit();
-    expect(screen.getByRole("button", { name: "Send test messages" })).toBeEnabled();
+    expect(screen.getByText("Send test messages", { selector: "button" })).toBeEnabled();
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     expect(requests.map(item => item.command.body)).toEqual(["My test - 1", "My test - 2", "My test - 3"]);
     expect(within(screen.getByRole("dialog")).getByRole("status")).toHaveTextContent(
       "3 of 3 attempted. 1 confirmed, 1 not sent, 1 pending or uncertain.");
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(within(document.querySelector("dialog")!).getByText("Close", { selector: "button" }));
     expect(screen.getByRole("button", { name: "Check original send" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Send test messages" })).toBeEnabled();
-    fireEvent.change(screen.getByRole("textbox", { name: "Write a message" }), { target: { value: "An independent new message" } });
+    expect(screen.getByText("Send test messages", { selector: "button" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Write a message"), { target: { value: "An independent new message" } });
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
     expect(requests).toHaveLength(3);
   });
@@ -148,12 +188,12 @@ describe("personal-chat test messages", () => {
     await openChat();
     openPopup("30", "   ");
     expect(screen.getByRole("button", { name: "Send messages" })).toBeDisabled();
-    const input = screen.getByRole("textbox", { name: "Test Message" });
+    const input = screen.getByLabelText("Test Message");
     expect(input).toHaveAttribute("maxlength", "4091");
     fireEvent.change(input, { target: { value: "x".repeat(4092) } });
-    expect(screen.getByRole("button", { name: "Send messages" })).toBeDisabled();
+    expect(within(document.querySelector("dialog")!).getByText("Send messages", { selector: "button" })).toBeDisabled();
     fireEvent.change(input, { target: { value: "x".repeat(4091) } });
-    expect(screen.getByRole("button", { name: "Send messages" })).toBeEnabled();
+    expect(within(document.querySelector("dialog")!).getByText("Send messages", { selector: "button" })).toBeEnabled();
     expect(requests).toHaveLength(0);
   });
 
@@ -163,7 +203,7 @@ describe("personal-chat test messages", () => {
       finish = () => resolve(json({ id: command.operationId, state: "confirmed", messageId: "sent", error: null }, 201));
     }));
     await openChat();
-    openPopup("3");
+    openPopup("3", undefined, "1");
     const form = screen.getByRole("dialog").querySelector("form")!;
     await act(async () => { fireEvent.submit(form); fireEvent.submit(form); });
     expect(requests).toHaveLength(1);
@@ -171,13 +211,14 @@ describe("personal-chat test messages", () => {
     await act(async () => { finish(); await vi.advanceTimersByTimeAsync(10_000); });
     expect(requests).toHaveLength(1);
     expect(within(screen.getByRole("dialog")).getByRole("status")).toHaveTextContent(
-      "Batch stopped.1 of 3 attempted. 1 confirmed, 0 not sent, 0 pending or uncertain.2 messages were not attempted.");
+      "Batch stopped.1 of 3 attempted. 1 confirmed, 0 not sent, 0 pending or uncertain.");
+    expect(within(screen.getByRole("dialog")).getByRole("status")).toHaveTextContent("2 messages were not attempted.");
   });
 
   it("cancels queued sends when leaving the chat", async () => {
-    const requests = mockApi();
+    const requests = mockApi(() => new Promise(() => {}));
     await openChat();
-    openPopup("3");
+    openPopup("3", undefined, "1");
     await submit();
     await act(async () => {
       fireEvent.click(within(screen.getByRole("navigation")).getByRole("button", { name: "Project groupChat" }));
@@ -189,15 +230,18 @@ describe("personal-chat test messages", () => {
   });
 
   it("stops on loss of connectivity and does not automatically resume", async () => {
-    const requests = mockApi();
+    let finish!: () => void;
+    const requests = mockApi(command => new Promise(resolve => {
+      finish = () => resolve(json({ id: command.operationId, state: "confirmed", messageId: "sent", error: null }, 201));
+    }));
     await openChat();
-    openPopup("3");
+    openPopup("3", undefined, "1");
     await submit();
     await act(async () => {
       vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
       window.dispatchEvent(new Event("offline"));
     });
-    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    await act(async () => { finish(); });
     expect(requests).toHaveLength(1);
     expect(within(screen.getByRole("dialog")).getByRole("status")).toHaveTextContent("Batch stopped.");
     await act(async () => {
@@ -226,18 +270,16 @@ describe("personal-chat test messages", () => {
     await openChat();
     openPopup("3", "Independent");
     await submit();
-    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
     expect(requests.map(item => item.command.body)).toEqual(["Independent - 1", "Independent - 2", "Independent - 3"]);
     expect(within(screen.getByRole("dialog")).getByRole("status")).toHaveTextContent(
       "3 of 3 attempted. 0 confirmed, 0 not sent, 3 pending or uncertain.");
     expect(screen.getAllByRole("status", { name: "Sending" })).toHaveLength(3);
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    const composer = screen.getByRole("textbox", { name: "Write a message" });
+    fireEvent.click(within(document.querySelector("dialog")!).getByText("Close", { selector: "button" }));
+    const composer = screen.getByLabelText("Write a message");
     fireEvent.change(composer, { target: { value: "A new manual message" } });
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Send" })); });
+    await act(async () => { fireEvent.submit(composer.closest("form")!); });
     expect(composer).toHaveValue("");
     expect(screen.getByText("A new manual message")).toBeVisible();
-    await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
     expect(requests).toHaveLength(4);
     await act(async () => { finish[1](); });
     expect(within(screen.getByText("Independent - 2").closest("article")!).getByRole("status", { name: "Sent" })).toBeVisible();
@@ -247,47 +289,45 @@ describe("personal-chat test messages", () => {
     expect(requests).toHaveLength(4);
   });
 
-  it("accepts consecutive manual sends immediately, without dispatching duplicates or bypassing pacing", async () => {
+  it("accepts consecutive manual sends immediately without dispatching duplicate submissions", async () => {
     const requests = mockApi(() => new Promise(() => {}));
     await openChat();
-    const composer = screen.getByRole("textbox", { name: "Write a message" });
+    const composer = screen.getByLabelText("Write a message");
     fireEvent.change(composer, { target: { value: "First manual send" } });
     const form = composer.closest("form")!;
     await act(async () => { fireEvent.submit(form); fireEvent.submit(form); });
     expect(requests).toHaveLength(1);
     fireEvent.change(composer, { target: { value: "Second manual send" } });
-    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    expect(within(form).getByText("Send", { selector: "button" })).toBeEnabled();
     await act(async () => { fireEvent.submit(form); });
     expect(screen.getByText("First manual send")).toBeVisible();
     expect(screen.getByText("Second manual send")).toBeVisible();
     expect(composer).toHaveValue("");
-    await act(async () => { await vi.advanceTimersByTimeAsync(1499); });
-    expect(requests).toHaveLength(1);
-    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(requests).toHaveLength(2);
     expect(requests.map(item => item.command.body)).toEqual(["First manual send", "Second manual send"]);
     expect(screen.getAllByRole("status", { name: "Sending" })).toHaveLength(2);
   });
 
-  it("does not dispatch or automatically resume a queued manual send after going offline", async () => {
+  it("disables new manual sends while offline and never automatically submits their draft", async () => {
     const requests = mockApi();
     await openChat();
-    const composer = screen.getByRole("textbox", { name: "Write a message" });
-    for (const body of ["Already dispatched", "Not dispatched"]) {
-      fireEvent.change(composer, { target: { value: body } });
-      await act(async () => { fireEvent.submit(composer.closest("form")!); });
-    }
+    const composer = screen.getByLabelText("Write a message");
+    fireEvent.change(composer, { target: { value: "Already dispatched" } });
+    await act(async () => { fireEvent.submit(composer.closest("form")!); });
     await act(async () => {
       vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
       window.dispatchEvent(new Event("offline"));
       await vi.advanceTimersByTimeAsync(2000);
     });
+    fireEvent.change(composer, { target: { value: "Not dispatched" } });
     expect(requests).toHaveLength(1);
-    expect(within(screen.getByText("Not dispatched").closest("article")!).getByRole("status", { name: "Not sent" })).toBeVisible();
+    expect(within(composer.closest("form")!).getByText("Send", { selector: "button" })).toBeDisabled();
     await act(async () => {
       vi.spyOn(navigator, "onLine", "get").mockReturnValue(true);
       window.dispatchEvent(new Event("online"));
       await vi.advanceTimersByTimeAsync(2000);
     });
     expect(requests).toHaveLength(1);
+    expect(composer).toHaveValue("Not dispatched");
   });
 });

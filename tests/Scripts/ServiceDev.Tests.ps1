@@ -98,7 +98,13 @@ foreach($role in @(Get-ServiceDevRoles)){$state.apps[$role]=New-App $role}
 function az {
     $global:LASTEXITCODE=0
     if($args[0] -eq 'servicebus'){return $refresh|ConvertTo-Json -Depth 100}
-    if($args[0] -eq 'role'){return ConvertTo-Json -InputObject @($refreshGrants) -Depth 100}
+    if($args[0] -eq 'role'){
+        if($args -contains '--all' -or $args -notcontains '--include-inherited' -or
+            $args[[Array]::IndexOf($args,'--scope')+1] -cne $refresh.id){
+            throw 'Queue access must use its exact scope and inherited grants, without the incompatible subscription-wide --all option.'
+        }
+        return ConvertTo-Json -InputObject @($refreshGrants) -Depth 100
+    }
     if($args[0] -eq 'account'){return @{id=$subscription;tenantId=$tenant}|ConvertTo-Json}
     if($args[0] -eq 'acr' -and $args[1] -eq 'show'){return @{loginServer=$registry}|ConvertTo-Json}
     if($args[0] -eq 'acr'){return @{digest=$image.Split('@')[1]}|ConvertTo-Json}

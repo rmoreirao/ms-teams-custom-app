@@ -101,7 +101,7 @@ Use a private static-asset origin where supported. Serve immutable assets throug
 | Delivery workload | `app-delivery` Container App | Outbox publication, authorized fan-out, and connection-control work |
 | Control workload | `app-control` Container App/job | Subscription renewal, approved lifecycle events, hydration, reconciliation, expiry, and regional ownership checks |
 | Durable application data | Cosmos DB for NoSQL account and containers | Recent content, control/entitlement state, operation journal, outbox, and coverage metadata |
-| Hot state | Azure Managed Redis | Bounded read views, session/token-cache acceleration, authorization leases, and budget coordination |
+| Hot state | Azure Managed Redis | Bounded read views, session/token-cache acceleration and authorization leases; no Graph rate admission gate |
 | Durable messaging | Service Bus Premium | Notification inbox, delivery work, repair work, and control work with separate failure handling |
 | Client connectivity | Web PubSub Premium_P2 | Public client connection endpoint, private backend access where supported, reliable protocol, geo-replication |
 | Credentials | Key Vault, managed identities | Application credentials, decryption material, signing/key-ring references, and rotation |
@@ -138,7 +138,7 @@ Use an approved NAT/firewall design for stable egress and SNAT headroom. Keep Gr
 
 Use one active application/write region and one warm recovery region as selected in [ADR 0004](adr/0004-managed-azure-services-and-regional-recovery.md). Both regions use the same environment-specific application identities where they perform the same role; creating a region does not create more Graph quota.
 
-Replicate the required Cosmos state and explicitly select queue-data recovery. Keep regional caches rebuildable. Coordinate the Graph budget and write-owner epoch before recovery dispatch begins.
+Replicate the required Cosmos state and explicitly select queue-data recovery. Keep regional caches rebuildable. Fence the write-owner epoch before recovery dispatch begins; do not replay unresolved sends.
 
 Size the surviving Web PubSub replica and application region for the full accepted load. Connection unit counts, subscription quotas, and autoscale timing remain defined by the [TDD connection-capacity section](technical-design.md#63-connection-capacity-and-regional-quotas).
 
@@ -148,7 +148,7 @@ Size the surviving Web PubSub replica and application region for the full accept
 | Callback receiver | Acceptance latency and incoming collections | Keep acceptance small; never hydrate Graph inline |
 | Projector | Queue age, processing time, lock renewals, database RU | Do not scale past storage or decryption capacity |
 | Delivery | Delivery age, connected-recipient fan-out, Web PubSub load | Coalesce change hints; respect backend service request capacity |
-| Hydration/reconciliation | Coverage age and repair backlog | Graph permits, not queue depth alone, determine outbound rate |
+| Hydration/reconciliation | Coverage age and repair backlog | Backend responses determine throttling; preserve bounded worker resources and response-driven backoff |
 | Subscription controller | Renewal deadline and control backlog | Reserved control capacity; do not share a saturated repair queue |
 
 ## 3. Entra and security architecture
@@ -341,13 +341,13 @@ The control worker invokes the same projection engine after bounded hydration/re
 | Read service | Current access, bounded available/pending pages and minimum-revision handling | Execute an unbounded Graph scan or bypass authority on cache miss |
 | Send service | Command validation, idempotency scope, dispatch state, known confirmation | Report local acceptance as sent or replay uncertain commands |
 | Projection engine | Conditional merge, normalization, tombstones, app revisions, outbox creation | Treat opaque Graph ETags as sortable versions |
-| Graph adapter | Typed endpoint capabilities, auth mode, permits, deadlines, attempt telemetry | Expose a generic arbitrary-URL proxy or silently switch to app-only sending |
-| Budget coordinator | App/tenant/resource/user permits, shared cooldowns, bounded reservations | Multiply capacity by replica or region count |
+| Graph adapter | Typed endpoint capabilities, auth mode, deadlines, reactive retries, attempt telemetry | Expose a generic arbitrary-URL proxy or silently switch to app-only sending |
+| Retry helper | Independent bounded waits after backend failure, Retry-After and jittered fallback | Proactive quotas, shared cooldowns or unsafe write replay |
 | Inbox consumer | Lock/renewal, processing outcome, completion/dead-letter handling | Complete work before the required durable transaction succeeds |
 | Outbox dispatcher | At-least-once publication and recoverable publish state | Claim a transaction spans Cosmos and Service Bus |
 | Delivery service | Current recipient/group policy, hint coalescing, connection control | Broadcast historical/blocked bodies to every conversation member |
 | Subscription controller | Scope inventory, renewal, certificate IDs, callback readiness | Create a subscription per browser |
-| Hydration/repair controller | Coverage, priorities, bounded pages, repair state | Bypass the shared Graph budget because a queue is long |
+| Hydration/repair controller | Coverage, bounded pages, repair state, response-driven retry backoff | Bypass authorization, backend Retry-After or recovery deadlines because a queue is long |
 
 Ports separate business logic from Azure/Graph SDKs: `EntitlementStore`, `SessionStore`, `ProjectionRepository`, `OperationJournal`, `GraphTransport`, `GraphTokenProvider`, `BudgetStore`, `NotificationInbox`, `DeliveryOutbox`, and `RealtimeGateway`.
 
@@ -359,11 +359,11 @@ Validate an opaque Graph `nextLink` against the approved HTTPS authority/resourc
 
 Reads, Graph commands, notification processing, and repair need separate bounded concurrency pools. A slow Graph operation must not exhaust API execution capacity for local reads.
 
-The budget store must coordinate all applicable scopes. Use supported atomic operations and deliberate Redis cluster key placement; a script cannot atomically update arbitrary keys in different hash slots. Reserve conservatively, release only proven unused capacity, and fail closed when permit state is uncertain.
+Graph rate admission is not implemented in Redis. Dispatch initial calls immediately; wait independently only after an actual backend failure. Retain atomic operation ownership and epoch fencing in the operation store, which are correctness controls rather than throughput quotas.
 
 Use conditional operation transitions to ensure one local dispatch owner per operation. An expired dispatch lease after a crash is not evidence that Graph never received the POST.
 
-The application-global/tenant/resource budgets use the actual Graph client identity, not the Azure workload identity label. Separate legitimate permission identities are measured separately without treating them as an approved quota-avoidance strategy.
+Graph applies its own applicable app/tenant/resource limits. Measure real responses from the actual Graph client identity; separate legitimate permission identities are not an approved quota-avoidance strategy.
 
 ## 5. Data architecture and contracts
 
@@ -403,7 +403,7 @@ Use valid, canonical document identifiers derived from resource identity. Preser
 | State / transition | Rule |
 | --- | --- |
 | New to pending | Validate actor/resource/window and conditionally create one operation record |
-| Pending to dispatching | Fresh authorization, current write owner, Graph permit, and successful conditional claim |
+| Pending to dispatching | Fresh authorization, current write owner, remaining operation deadline and successful conditional claim |
 | Dispatching to confirmed | Definitive Graph creation result; retain the Graph ID |
 | Pending/dispatching to rejected | Definitive non-commit evidence only |
 | Dispatching to unknown | Commitment cannot be proved after timeout, disconnect, crash, or state recovery |
@@ -427,7 +427,7 @@ A reader behind the requested revision returns explicit `503 projection_behind`,
 | Recent message view | Tenant/conversation/schema/revision | Shared payload is filtered by user history/policy before response |
 | Entitlement lease | Tenant/principal/resource/policy epoch | Expiry is bounded by verified source evidence; not renewed on cache reads |
 | Session/token-cache reference | Tenant/principal/application/session | Protected backend storage; cache loss requires supported refresh or sign-in |
-| Graph permit state | Actual client identity plus applicable limit scopes | Coordinated scopes and cooldown; unknown state cannot grant unlimited capacity |
+| Graph retry evidence | Original operation owner | Deadline, actual attempts/status, next retry time and throttle count; no durable message body |
 | Hydration single-flight | Tenant/resource/epoch/parent/page | Conditional Control lease and durable queue; accepted work does not prove completion or healthy coverage |
 
 The durable outbox carries a versioned internal event, for example:
@@ -628,7 +628,7 @@ sequenceDiagram
     else Authorized view is genuinely cold
         A->>Q: Durably submit body-free approved context
         Q->>R: Deliver and conditionally claim context
-        R->>G: Bounded source pages under shared permits
+        R->>G: Bounded source pages with reactive retries
         G-->>R: Source messages and continuation
         R->>D: Existing version-aware merge and outbox
         A->>D: Bounded authorized reread within five seconds
@@ -642,9 +642,9 @@ A Redis miss falls back to Cosmos, not Graph. Partial pages can submit optional 
 
 ### 6.3 F03: Send a message with known confirmation
 
-**Description:** This flow handles a user sending a message and receiving a definitive Graph creation response. The send API records the operation before dispatch, obtains shared Graph capacity, and verifies current authority and the delegated token before posting. A successful response supplies the Graph message ID, which is linked to the operation, projection, and outbox. The browser receives the known confirmation and projection status; repeating the same operation returns its recorded state without sending another message.
+**Description:** This flow handles a user sending a message and receiving a definitive Graph creation response. The send API records the operation before immediate dispatch and verifies current authority and the delegated token before posting. Only explicit Graph 429 rejections permit bounded automatic retries under the same owner; ambiguous writes are never replayed. A successful response supplies the Graph message ID, which is linked to the operation, projection, and outbox. The browser receives the known confirmation and projection status; repeating the same operation returns its recorded state without creating a new owner.
 
-**Components:** browser, send API, operation/projection store, shared budget, Graph. **Preconditions:** valid command window, eligible user/conversation, delegated token, current write owner.
+**Components:** browser, send API, operation/projection store, per-operation reactive retry helper, Graph. **Preconditions:** valid command window, eligible user/conversation, delegated token, current write owner.
 
 ```mermaid
 ---
@@ -659,7 +659,6 @@ sequenceDiagram
     participant B as Browser
     participant A as Send API
     participant D as Cosmos
-    participant L as Graph budget
     participant G as Graph
 
     B->>A: Submit operation ID, window and body
@@ -669,8 +668,6 @@ sequenceDiagram
     alt Existing operation
         A-->>B: Return recorded state without dispatch
     else Newly created operation
-        A->>L: Reserve applicable Graph permits
-        L-->>A: Bounded dispatch permit
         A->>A: Confirm live authority and delegated token
         A->>D: Claim dispatch with owner epoch and ETag
         A->>G: POST message with delegated token
@@ -685,7 +682,7 @@ The projection engine preserves a newer edit/tombstone if a notification already
 
 If the local post-confirmation transaction fails, never repeat the Graph POST. Return the known Graph ID and explicit projection-pending state when possible, alert, and repair the durable dispatch record. If the response is also lost, the caller may still see an unknown outcome.
 
-**Failure/telemetry:** a denied permit or definitive rejection is explicit; same-key replays return existing state. Measure complete submission-to-confirmation and separately track local confirmation persistence, projection, and delivery.
+**Failure/telemetry:** pre-dispatch denial, actual Graph throttling, retry exhaustion and uncertainty are explicit; same-key replays return existing state. Measure initial Graph responses separately from retries, final outcomes, local persistence, projection and delivery.
 
 ### 6.4 F04: Uncertain send and safe repeat submission
 
@@ -823,9 +820,9 @@ Cache keys include the projection revision; a new revision cannot select an old 
 
 ### 6.7 F07: Bootstrap, renewal, and gap reconciliation
 
-**Description:** This flow establishes and maintains synchronization for an approved resource scope, starting at bootstrap and continuing through subscription renewal and gap repair. The controller creates the subscription and buffers incoming changes while workers hydrate the bounded working set under the shared Graph budget. Snapshot pages and notifications use the same version-aware merge rules, and readiness reflects demonstrated coverage rather than simply finishing a scan. Renewals preserve change delivery, while failures or incomplete coverage trigger bounded reconciliation.
+**Description:** This flow establishes and maintains synchronization for an approved resource scope, starting at bootstrap and continuing through subscription renewal and gap repair. The controller creates the subscription and buffers incoming changes while workers hydrate the bounded working set with response-driven Graph retries. Snapshot pages and notifications use the same version-aware merge rules, and readiness reflects demonstrated coverage rather than simply finishing a scan. Renewals preserve change delivery, while failures or incomplete coverage trigger bounded reconciliation.
 
-**Components:** subscription controller, Graph, callback receiver, queue, hydration worker, Cosmos. **Preconditions:** approved scope/permissions, working callbacks, retained keys, and reserved Graph budget.
+**Components:** subscription controller, Graph, callback receiver, queue, hydration worker, Cosmos. **Preconditions:** approved scope/permissions, working callbacks, retained keys and bounded response-driven recovery.
 
 ```mermaid
 ---
@@ -851,7 +848,7 @@ sequenceDiagram
     G->>H: Subsequent changes
     H->>Q: Buffer validated changes durably
     C->>R: Start bounded working-set hydration
-    R->>G: Fetch permitted pages under shared budget
+    R->>G: Fetch approved pages; back off only on backend failure
     G-->>R: Pages and opaque next links
     R->>D: Apply snapshot with version/tombstone checks
     Q->>R: Apply buffered changes through same engine
@@ -958,7 +955,7 @@ On invalid/expired cursor or lost reliable delivery state, reset through the rea
 
 ### 6.10 F10: Regional failover
 
-**Description:** This flow transfers serving responsibility to the recovery region when the active region must be replaced. Recovery control first fences the old write owner and verifies recovered state and ownership, then restores authorization, operation journals, and shared budget controls before routing traffic to ready capabilities. Unresolved sends remain unknown, and clients reconnect while bounded reconciliation resumes. Capabilities whose fencing, authority, or state readiness cannot be proved remain unavailable rather than accepting unsafe reads or duplicate writes.
+**Description:** This flow transfers serving responsibility to the recovery region when the active region must be replaced. Recovery control first fences the old write owner and verifies recovered state and ownership, then restores authorization, operation journals, and bounded retry controls before routing traffic to ready capabilities. Unresolved sends remain unknown, and clients reconnect while bounded reconciliation resumes. Capabilities whose fencing, authority, or state readiness cannot be proved remain unavailable rather than accepting unsafe reads or duplicate writes.
 
 **Components:** recovery coordinator, old write owner, durable control/data state, recovery region, Front Door. **Preconditions:** a tested fencing mechanism and accepted state-recovery evidence.
 
@@ -983,12 +980,12 @@ sequenceDiagram
     alt Fencing or authority cannot be proved
         C->>N: Keep affected reads/writes closed
     else Required state and ownership established
-        C->>N: Restore authorization, journals and budget controls
+        C->>N: Restore authorization, journals and bounded retry policy
         N->>N: Classify unresolved dispatches as unknown
         N->>N: Verify callback, queue and read readiness
         C->>E: Route only accepted capabilities
         E-->>N: New application traffic
-        N->>N: Reconnect and reconcile within existing Graph budget
+        N->>N: Reconnect and reconcile with backend-driven backoff
     end
 ```
 
@@ -1004,12 +1001,12 @@ Read readiness, write readiness, and synchronization readiness are separate. Edg
 
 | Condition | Interactive behavior | Durable/background behavior |
 | --- | --- | --- |
-| Graph `429` | Explicit retry/capacity state; include waiting in the operation deadline | Shared cooldown and bounded rescheduling of safe operations |
+| Graph `429` | Explicit retry state; include waiting in the operation deadline | Independent Retry-After/backoff and bounded retries of definite rejections |
 | Graph latency/`503` | Keep permitted recent reads independent; no false confirmation | Read retry within budget; command replay only with proven safety |
 | POST commitment uncertain | Preserve original operation and show unknown | Investigate exact evidence; never infer non-commit from timeout alone |
 | Token interaction required | Reauthenticate before another eligible dispatch | Do not borrow background app-only permission |
 | Redis read-view failure | Bounded Cosmos read with current authorization | Controlled refill; no Graph storm |
-| Redis policy/budget uncertainty | Deny/temporarily unavailable for affected capability | Recover authority/coordination before issuing permits |
+| Redis session/policy uncertainty | Deny/temporarily unavailable for affected capability | Recover session/authority proof; no Graph permit state exists |
 | Cosmos apply failure | Explicit coverage/projection status | Keep inbox work; retry with concurrency checks; no early completion |
 | Cache stale after commit | Select revision-keyed content; enforce minimum revision or explicit replica lag | Old entries expire; no synchronous invalidation dependency |
 | Outbox publication crash | No duplicate Graph send | Republish stable event; tolerate duplicate delivery |
@@ -1023,7 +1020,7 @@ Read readiness, write readiness, and synchronization readiness are separate. Edg
 
 Configure operation deadlines from the [TDD targets](technical-design.md#4-slis-and-proposed-slos). Reserve time for authorization, token acquisition, permit waiting, Graph, persistence, and response; do not assign every stage the full end-to-end deadline.
 
-Graph retry middleware and application retry policy must form one controlled policy. Safe reads may retry under the shared budget. Commands require explicit evidence-based retry rules; changing the correlation header does not make a POST idempotent.
+Graph retry middleware and application retry policy must form one controlled policy, without stacked retry loops. Safe reads may retry transient failures. Commands retry only explicit Graph 429 rejections, with at most three retries within two minutes by default; Retry-After is honored and ambiguous writes are never replayed. Changing the correlation header does not make a POST idempotent.
 
 Queue lock renewal, dispatch claims, authorization leases, subscription expiry, session expiry, and command windows are different clocks. Record each explicitly. Expired leases are reasons to reassess, not proofs that an external side effect did not happen.
 
@@ -1071,7 +1068,7 @@ The locally implemented contract is detailed in [live runtime and rollout](live-
 | Policy | Entitlement evidence source, freshness leases, history/DLP rules, lifecycle propagation bounds |
 | Workload | Page/response bounds, retained window, payload limits, queue/processing concurrency |
 | Command safety | Window expiry, journal retention, current writer epoch, deadline and retry rules |
-| Graph budgets | Actual identity/operation scopes, headroom, cooldown behavior, reserved control capacity |
+| Graph recovery | Initial responses, retries, backend-required waits, deadline/retry exhaustion and final outcomes |
 | Data and delivery | Container/queue endpoints, read barriers, cache/schema versions, Web PubSub hub and admission plan |
 | Recovery | Replication settings, failover ownership, state-readiness checks, capability routing and stop conditions |
 
@@ -1090,7 +1087,7 @@ Rotate confidential-client credentials, notification keys, and signing material 
 | Journey/control | Instrumentation |
 | --- | --- |
 | Read | Browser interaction/render, session/guard timing, cache result, Cosmos RU/latency, coverage and revision |
-| Send | Operation/window ID scope, claim/permit/token timings, every Graph attempt, known/unknown outcome, local persistence |
+| Send | Operation/window ID scope, claim/token/retry timings, every Graph attempt, known/unknown outcome, local persistence |
 | Notification | Receipt/acknowledgment, validated scope, certificate version, queue age, apply/no-op/repair decision |
 | Delivery | Outbox age, durable publication, eligibility decision, hint/coalescing rate, client fetch/render |
 | Identity lifecycle | Source event age, durable deny, lease invalidation, denied API actions, connection closure |

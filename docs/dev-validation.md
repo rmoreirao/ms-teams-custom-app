@@ -1,11 +1,54 @@
 # Dev functional validation report
 
-## Combined service rollout (2026-10-22)
+## Direct Graph concurrency and reactive retries (2026-10-22)
 
-**Deployed and admitted; final migration acceptance/cleanup remains pending.**
+**Deployed and validated within the agreed release scope. Real Graph send
+capacity was not measured.**
+ACR `dt14`, digest
+`sha256:6c1918ec94775aee5e0d40b7c06f70d8c6394e743923bd2d4e898918439fc388`,
+runs on all five existing Api/Receiver/Projector/Delivery/Control workloads.
+The release verified each exact healthy revision and preserved configuration,
+identities, grants, networking, scale, admission and approved user/resource scope.
+This was an image-only release, not a new platform or identity deployment.
+
+Initial sends now start without browser pacing or application-created send
+budgets. Each Graph operation independently uses the bounded reactive policy:
+three additional retries, a 120-second total deadline and 20-second attempts
+by default. Message writes retry only explicit Graph `429` responses, honoring
+`Retry-After`; ambiguous writes are never automatically replayed. Safe reads
+also handle the selected transient failures described in the runtime guide.
+
+| Evidence | Result / boundary |
+| --- | --- |
+| Five-role release and public smoke | Exact immutable image and healthy ready revisions verified; readiness, anonymous API denial and canonical Entra redirect passed |
+| Served frontend | Public entry bundle is byte-identical to the verified local production build; immediate-concurrency controls and initial Graph-response counters are present |
+| Installed-Edge anonymous check | Development sign-in screen rendered with the normal Microsoft sign-in link; no credential entry or fabricated session |
+| Read-only Api `ProjectionCheck` | Passed for three actors, twelve snapshots, three excluded-pair denials and six existing direct-chat opens; source writes were zero |
+| Read-only Control inspections | All five remote rich subscriptions matched resource, callbacks and client state, with expected current memberships; the follow-up observed all five resources coverage-ready |
+| Observed background recovery | The first inspection recorded a recent `graph_429` repair failure and one reauthorization coverage gap; the follow-up showed that failure cleared and coverage restored. Runnable reconciliation/thread work remained; this is not a continuous source-health or retry-timing certification |
+| Local regressions before release | 299 backend passes with one explicit real-Cosmos opt-in skip, 106 frontend passes, production build/type-check and five installed-Edge concurrency scenarios passed, including 30 submissions before confirmation |
+| Final controlled recheck | 19 backend burst/retry tests and 26 frontend batch/queue tests passed after deployment |
+| Real two-user, 60-message Teams burst | Separately scoped and not run: explicit approval for the real message writes and normal authenticated users were unavailable. Controlled two-user dispatch tests do not establish actual Graph send capacity |
+
+The diagnostics used one-off execution-template overrides on the existing manual
+job, with already attached role identities and automatic job retries disabled.
+Each execution succeeded and the persistent job definition was verified unchanged.
+No Graph message was sent, source data reset, access granted, commit created or
+Git push performed. Exact revisions, body-free proofs and resolved settings remain
+private outside the repository. Earlier migration, signed-in journey and
+continuous recovery acceptance gates are not closed by this release.
+
+The scoped queue-access preflight was also corrected for Azure CLI compatibility:
+it retains the exact queue scope and inherited assignments without the
+incompatible subscription-wide `--all` option. The mocked service-release
+regressions passed with a guard for that invocation.
+
+## Prior combined service rollout (2026-10-22)
+
+**Historical dt13 baseline; migration acceptance/cleanup remained pending.**
 ACR `dt13`, digest
 `sha256:e8bb2357c55871fa16193892ed01b3e862710abccb793400c5df0ff2a216a57b`,
-now runs on the five existing isolated Api/Receiver/Projector/Delivery/Control
+then ran on the five existing isolated Api/Receiver/Projector/Delivery/Control
 workloads with exact `readConsistency: "Session"`, synchronization and admission
 enabled. The matching bundled frontend is deployed. The three users and five
 source resources, account policy, network, scale, identities and Graph grants

@@ -14,9 +14,9 @@ The reference busy-period all-chat send demand exceeds the published 20-RPS app/
 
 ## Decision
 
-Centralize outbound Graph policy in an adapter with shared budgets, bounded concurrency, priorities, request coalescing, deadlines, and coordinated retry behavior. Budget hydration, reconciliation, control operations, writes, and retries explicitly.
+**Implementation amendment:** use a small reusable retry helper, not proactive Redis quotas or a distributed scheduler. Initial user sends and background calls dispatch immediately, without fixed global/tenant/conversation/user spacing or gradual concurrency ramp-up. Graph's actual responses determine throttling. Background workers remain bounded by resource-safety concurrency; approved scope, request validation and authorization remain mandatory.
 
-Verify bucket sharing and size steady-state traffic below ceilings. Honor `Retry-After`; do not stack independent SDK/application retry loops. Pause affected dispatch on limiter uncertainty rather than fail open.
+Each operation independently honors `Retry-After` (delta or date), falling back to exponential backoff with jitter. Default recovery is at most three retries after the initial attempt within a two-minute total operation deadline, with a twenty-second per-attempt timeout. Settings are configurable. Never truncate a backend-required wait to fit the deadline; stop explicitly instead. Do not stack SDK, server and browser retry loops. Record initial attempts/responses separately from retries and final outcomes.
 
 Use application operation IDs, payload fingerprints, durable dispatch state, and a result/outbox transaction to coalesce repeat submissions. Graph `client-request-id` is a tracing identifier, not a promise of idempotent message creation.
 
@@ -24,13 +24,15 @@ Expose pending, confirmed, rejected, and unknown commitment state, with projecti
 
 Do not blindly retry a possibly committed POST or replay one after regional state loss. Reconcile where possible and preserve unresolved uncertainty. The baseline has no indefinite durable send queue.
 
+An explicit Graph `429` is the narrow automatic message-POST retry exception: the rejected attempt did not create a message. Retain the original operation ID and conditional owner, revalidate authorization/epoch before retrying, and keep bodies out of persisted retry evidence. Timeouts, lost responses, `408`, `5xx` and malformed creation confirmations remain uncertain, not retry invitations. Safe background GETs can retry transient failures within the same bounded policy; subscription writes retry only explicit `429`, preserving ambiguous-creation correlation.
+
 Use JSON batching only for suitable independent operations in one authorization context. Count each subrequest, inspect its status, and handle safe retries individually.
 
 ## Alternatives considered
 
 | Alternative | Reason not selected |
 | --- | --- |
-| Per-replica rate limits | Aggregate demand can exceed tenant/resource ceilings |
+| Fixed browser/Redis rate limits | Prevent requested bursts reaching Graph and substitute application estimates for actual backend throttling |
 | More registrations or regions as a quota multiplier | Not an approved capacity strategy and may evade intended limits |
 | Unlimited retries or immediate retry on `429` | Amplifies load, waiting, and throttling |
 | Automatic retry of any failed POST | Can create duplicate user messages after an uncertain commit |

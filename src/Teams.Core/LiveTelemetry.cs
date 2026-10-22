@@ -8,6 +8,10 @@ public static class LiveTelemetry
     public const string MeterName = "TeamsReference.Live";
     private static readonly Meter Meter = new(MeterName, "1.0.0");
     public static readonly Counter<long> GraphAttempts = Meter.CreateCounter<long>("teamsref_graph_attempts");
+    public static readonly Counter<long> GraphResponses = Meter.CreateCounter<long>("teamsref_graph_responses");
+    public static readonly Counter<long> GraphRetries = Meter.CreateCounter<long>("teamsref_graph_retries");
+    public static readonly Counter<long> GraphRetryExhausted = Meter.CreateCounter<long>("teamsref_graph_retry_exhausted");
+    public static readonly Histogram<double> GraphRetryWait = Meter.CreateHistogram<double>("teamsref_graph_retry_wait_ms", "ms");
     public static readonly Counter<long> GraphDeferred = Meter.CreateCounter<long>("teamsref_graph_deferred");
     public static readonly Counter<long> AcceptedNotifications = Meter.CreateCounter<long>("teamsref_notification_accepted");
     public static readonly Counter<long> FilteredNotifications = Meter.CreateCounter<long>("teamsref_notification_filtered");

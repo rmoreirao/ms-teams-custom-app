@@ -21,9 +21,14 @@ public sealed class LiveTelemetryTests
             measurements.Add((instrument.Name, tags.ToArray().Select(t => t.Key).ToArray())));
         listener.Start();
         LiveTelemetry.Failure("test");
+        LiveTelemetry.GraphAttempts.Add(1, new("mode", "delegated"), new KeyValuePair<string, object?>("attempt", "initial"));
+        LiveTelemetry.GraphResponses.Add(1, new("mode", "delegated"), new("attempt", "initial"),
+            new KeyValuePair<string, object?>("status", 429));
         using (LiveTelemetry.Measure("test")) { }
         Assert.Contains(measurements, m => m.Name == "teamsref_worker_failures");
         Assert.Contains(measurements, m => m.Name == "teamsref_dependency_duration_ms");
-        Assert.All(measurements.SelectMany(m => m.Keys), key => Assert.Contains(key, new[] { "mode", "component", "operation", "state" }));
+        Assert.Contains(measurements, m => m.Name == "teamsref_graph_responses");
+        Assert.All(measurements.SelectMany(m => m.Keys), key =>
+            Assert.Contains(key, new[] { "mode", "component", "operation", "state", "attempt", "status" }));
     }
 }

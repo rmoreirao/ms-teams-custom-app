@@ -5,9 +5,10 @@ using System.Text.Json;
 namespace Teams.Core;
 
 public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICommandBudget budget,
-    ICommandTokens tokens, TimeProvider clock, IReadRefresh? refresh = null)
+    ICommandTokens tokens, TimeProvider clock, IReadRefresh? refresh = null, GraphRetry? retry = null)
 {
     private DateTimeOffset Now => clock.GetUtcNow();
+    private readonly GraphRetry retries = retry ?? new(clock: clock);
 
     public static Member Authorize(Actor actor, Conversation conversation)
     {
@@ -168,47 +169,99 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
             return View(existing.Value);
         }
         tokens.Validate(actor, id, $"command:{conversation.Epoch}", command.Window);
-        if (command.ParentId is not null)
-        {
-            var member = Authorize(actor, conversation);
-            var parentMessage = await store.CurrentMessageAsync(actor.TenantId, id, command.ParentId, null, ct);
-            if (conversation.Kind != "channel" || parentMessage is null || parentMessage.Deleted ||
-                parentMessage.CreatedAt < member.HistoryFrom || parentMessage.CreatedAt < Now.AddDays(-7))
-                throw new AppError(400, "invalid_parent", "The reply's parent is not available.");
-        }
+        await ValidateParentAsync(actor, conversation, command.ParentId, ct);
         var operation = new SendOperation(command.OperationId, actor.TenantId, id, actor.Id, fingerprint,
-            "", command.ParentId, OperationState.Pending, Now, Epoch: conversation.Epoch);
+            "", command.ParentId, OperationState.Pending, Now, Epoch: conversation.Epoch, Deadline: retries.Deadline());
         if (!await store.CreateOperationAsync(operation, ct))
             return await SendAsync(actor, id, command, ct);
         var stored = await store.GetOperationAsync(actor.TenantId, id, operation.Id, ct)
             ?? throw new AppError(503, "operation_unavailable", "Operation evidence is temporarily unavailable.");
-        try { await budget.AcquireAsync(actor, conversation, ct); }
-        catch (AppError ex) when (ex.Status == 429)
+        var remaining = operation.Deadline!.Value - Now;
+        using var deadline = new CancellationTokenSource(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero, clock);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
+        for (;;)
         {
-            await store.SaveOperationAsync(stored with { Value = stored.Value with { State = OperationState.Rejected, Error = ex.Message } }, ct);
-            return View((await store.GetOperationAsync(actor.TenantId, id, operation.Id, ct))?.Value
-                ?? throw new AppError(503, "operation_unavailable", "Operation evidence is temporarily unavailable."));
+            if (stored.Value.State != OperationState.Pending) return View(stored.Value);
+            try
+            {
+                linked.Token.ThrowIfCancellationRequested();
+                conversation = (await GetAuthorizedAsync(actor, id, linked.Token)).Value;
+                await store.GetMemberAsync(actor, id, true, linked.Token);
+                if (conversation.Epoch != stored.Value.Epoch)
+                    throw new AppError(503, "writer_fenced", "Conversation ownership changed before dispatch.");
+                await ValidateParentAsync(actor, conversation, command.ParentId, linked.Token);
+                await budget.AcquireAsync(actor, conversation, linked.Token);
+                if (Now >= stored.Value.Deadline)
+                    throw new OperationCanceledException("The send deadline expired before dispatch.");
+            }
+            catch (Exception ex) when (ex is AppError or OperationCanceledException)
+            {
+                return await ApplyResultAsync(actor, id, operation.Id,
+                    new(OperationState.Rejected, null, ex is AppError ? ex.Message :
+                        "The send stopped before another Graph attempt. No new message was posted."), CancellationToken.None);
+            }
+            operation = stored.Value with
+            {
+                State = OperationState.Dispatching, Attempts = stored.Value.Attempts + 1,
+                AttemptUntil = new[] { Now.AddSeconds(retries.Options.AttemptTimeoutSeconds), stored.Value.Deadline!.Value }.Min(),
+                RetryAt = null
+            };
+            try
+            {
+                if (!await store.SaveOperationAsync(stored with { Value = operation }, linked.Token))
+                    return View((await store.GetOperationAsync(actor.TenantId, id, operation.Id, CancellationToken.None))!.Value);
+            }
+            catch (Exception ex) when (ex is AppError or OperationCanceledException)
+            {
+                return await ApplyResultAsync(actor, id, operation.Id,
+                    new(OperationState.Rejected, null, ex is AppError ? ex.Message :
+                        "The send stopped before Graph dispatch. No new message was posted."),
+                    CancellationToken.None, attempts: stored.Value.Attempts);
+            }
+            WriteResult result;
+            try { result = await graph.SendAsync(actor, conversation, operation with { Body = command.Body }, linked.Token); }
+            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException)
+            {
+                result = new(OperationState.Unknown, null, "Commitment could not be established. Do not resend.");
+            }
+            if (result.Status != 429)
+                return await ApplyResultAsync(actor, id, operation.Id, result, CancellationToken.None);
+
+            var delay = retries.Delay(operation.Attempts, result.RetryAfter);
+            if (linked.IsCancellationRequested || !retries.CanRetry(operation.Attempts, delay, operation.Deadline!.Value))
+            {
+                LiveTelemetry.GraphRetryExhausted.Add(1, new KeyValuePair<string, object?>("mode", "delegated"));
+                return await ApplyResultAsync(actor, id, operation.Id, result with
+                { Error = "Graph throttled this send. The retry limit or operation deadline was reached; no message was created." },
+                    CancellationToken.None);
+            }
+            stored = await store.GetOperationAsync(actor.TenantId, id, operation.Id, CancellationToken.None)
+                ?? throw new AppError(503, "operation_unavailable", "Operation evidence is temporarily unavailable.");
+            if (stored.Value.State != OperationState.Dispatching)
+                return await ApplyResultAsync(actor, id, operation.Id, result with
+                { Error = "Graph throttled this send, but the dispatch claim expired before a retry. No message was created." },
+                    CancellationToken.None);
+            var waiting = stored.Value with
+            {
+                State = OperationState.Pending, RetryAt = Now + delay, AttemptUntil = null,
+                Throttles = stored.Value.Throttles + 1, FirstStatus = stored.Value.FirstStatus ?? 429
+            };
+            if (!await store.SaveOperationAsync(stored with { Value = waiting }, CancellationToken.None))
+                return await ApplyResultAsync(actor, id, operation.Id, result with
+                { Error = "Graph throttled this send, but the dispatch claim changed before a retry. No message was created." },
+                    CancellationToken.None);
+            stored = await store.GetOperationAsync(actor.TenantId, id, operation.Id, CancellationToken.None)
+                ?? throw new AppError(503, "operation_unavailable", "Operation evidence is temporarily unavailable.");
+            LiveTelemetry.GraphRetries.Add(1, new KeyValuePair<string, object?>("mode", "delegated"));
+            LiveTelemetry.GraphRetryWait.Record(delay.TotalMilliseconds, new KeyValuePair<string, object?>("mode", "delegated"));
+            try { await retries.WaitAsync(delay, linked.Token); }
+            catch (OperationCanceledException)
+            {
+                return await ApplyResultAsync(actor, id, operation.Id,
+                    new(OperationState.Rejected, null, "The send stopped while waiting after Graph throttled it. No message was created."),
+                    CancellationToken.None);
+            }
         }
-        conversation = (await GetAuthorizedAsync(actor, id, ct)).Value;
-        await store.GetMemberAsync(actor, id, true, ct);
-        operation = stored.Value with { State = OperationState.Dispatching };
-        if (!await store.SaveOperationAsync(stored with { Value = operation }, ct))
-            return View((await store.GetOperationAsync(actor.TenantId, id, operation.Id, ct))!.Value);
-        WriteResult result;
-        try
-        {
-            result = await graph.SendAsync(actor, conversation, operation with { Body = command.Body }, ct);
-        }
-        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException)
-        {
-            // Once dispatch began, transport failure says nothing about whether Graph committed.
-            result = new(OperationState.Unknown, null, "Commitment could not be established. Do not resend.");
-        }
-        var outcome = await ApplyResultAsync(actor, conversation.Id, operation.Id, result, CancellationToken.None);
-        LiveTelemetry.WriteOutcomes.Add(1, new KeyValuePair<string, object?>("state", result.State.ToString()));
-        if (result.RetryAfter is { } delay && budget is IGraphThrottle throttle)
-            await throttle.CooldownAsync(actor, delay, CancellationToken.None);
-        return outcome;
     }
 
     public async Task<OperationView> StatusAsync(Actor actor, string conversationId, string operationId, CancellationToken ct)
@@ -217,19 +270,21 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
         var operation = await store.GetOperationAsync(actor.TenantId, conversationId, operationId, ct);
         if (operation is null || operation.Value.ActorId != actor.Id)
             throw new AppError(404, "access_denied", "Operation is not available.");
-        if (operation.Value.State == OperationState.Pending && Now - operation.Value.CreatedAt > TimeSpan.FromSeconds(35))
+        if (operation.Value.State == OperationState.Pending &&
+            Now > (operation.Value.Deadline ?? operation.Value.CreatedAt.AddSeconds(35)))
         {
             await store.SaveOperationAsync(operation with
             {
                 Value = operation.Value with
                 {
                     State = OperationState.Rejected,
-                    Error = "This operation expired before dispatch. No message was created."
+                    Error = "This operation expired before dispatch. No message was created.", RetryAt = null
                 }
             }, ct);
             operation = await store.GetOperationAsync(actor.TenantId, conversationId, operationId, ct) ?? operation;
         }
-        if (operation.Value.State == OperationState.Dispatching && Now - operation.Value.CreatedAt > TimeSpan.FromSeconds(35))
+        if (operation.Value.State == OperationState.Dispatching &&
+            Now > (operation.Value.AttemptUntil ?? operation.Value.CreatedAt.AddSeconds(35)))
         {
             await store.SaveOperationAsync(operation with
             {
@@ -250,31 +305,59 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
         return View(operation.Value);
     }
 
-    private async Task<OperationView> ApplyResultAsync(Actor actor, string id, string operationId, WriteResult result, CancellationToken ct)
+    private async Task ValidateParentAsync(Actor actor, Conversation conversation, string? parentId, CancellationToken ct)
     {
-        for (var attempt = 0; attempt < 8; attempt++)
-        {
-            var conversation = await store.GetAsync(actor.TenantId, id, ct)
-                ?? throw new AppError(503, "projection_unavailable", "Conversation state is unavailable.");
-            var operation = await store.GetOperationAsync(actor.TenantId, id, operationId, ct)
-                ?? throw new AppError(503, "operation_unavailable", "Operation evidence is unavailable.");
-            var updated = operation.Value with
-            {
-                State = result.State,
-                GraphMessageId = result.Message?.Id,
-                Error = result.Error,
-                Body = ""
-            };
-            var projection = result.Message is null || operation.Value.Epoch != conversation.Value.Epoch
-                ? conversation.Value : Projection.Apply(conversation.Value, result.Message, Now);
-            if (await store.CommitAsync(conversation with { Value = projection }, operation with { Value = updated }, ct))
-                return View(updated);
-        }
-        throw new AppError(503, "confirmation_persistence_unavailable",
-            "Confirmation could not be recorded. Check the original operation; do not resend.");
+        if (parentId is null) return;
+        var member = Authorize(actor, conversation);
+        var parent = await store.CurrentMessageAsync(actor.TenantId, conversation.Id, parentId, null, ct);
+        if (conversation.Kind != "channel" || parent is null || parent.Deleted ||
+            parent.CreatedAt < member.HistoryFrom || parent.CreatedAt < Now.AddDays(-7))
+            throw new AppError(400, "invalid_parent", "The reply's parent is not available.");
     }
 
-    private static OperationView View(SendOperation op) => new(op.Id, op.State, op.GraphMessageId, op.Error);
+    private async Task<OperationView> ApplyResultAsync(Actor actor, string id, string operationId, WriteResult result,
+        CancellationToken ct, int? attempts = null)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(retries.Options.AttemptTimeoutSeconds), clock);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
+        try
+        {
+            for (;;)
+            {
+                var conversation = await store.GetAsync(actor.TenantId, id, linked.Token)
+                    ?? throw new AppError(503, "projection_unavailable", "Conversation state is unavailable.");
+                var operation = await store.GetOperationAsync(actor.TenantId, id, operationId, linked.Token)
+                    ?? throw new AppError(503, "operation_unavailable", "Operation evidence is unavailable.");
+                if (operation.Value.State == OperationState.Confirmed) return View(operation.Value);
+                var updated = operation.Value with
+                {
+                    State = result.State,
+                    GraphMessageId = result.Message?.Id,
+                    Error = result.Error,
+                    Body = "", RetryAt = null, AttemptUntil = null,
+                    Attempts = attempts ?? Math.Max(0, operation.Value.Attempts - (result.Dispatched ? 0 : 1)),
+                    FirstStatus = operation.Value.FirstStatus ?? result.Status,
+                    Throttles = operation.Value.Throttles + (result.Status == 429 ? 1 : 0)
+                };
+                var projection = result.Message is null || operation.Value.Epoch != conversation.Value.Epoch
+                    ? conversation.Value : Projection.Apply(conversation.Value, result.Message, Now);
+                if (await store.CommitAsync(conversation with { Value = projection }, operation with { Value = updated }, linked.Token))
+                {
+                    LiveTelemetry.WriteOutcomes.Add(1, new KeyValuePair<string, object?>("state", result.State.ToString()));
+                    return View(updated);
+                }
+                await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(1, 11)), clock, linked.Token);
+            }
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new AppError(503, "confirmation_persistence_unavailable",
+                "Confirmation could not be recorded. Check the original operation; do not resend.");
+        }
+    }
+
+    private static OperationView View(SendOperation op) => new(op.Id, op.State, op.GraphMessageId, op.Error,
+        op.Attempts, op.Throttles, op.FirstStatus, op.RetryAt);
     private sealed record PageBoundary(DateTimeOffset At, string Id);
 }
 

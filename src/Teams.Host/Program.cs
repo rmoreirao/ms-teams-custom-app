@@ -64,7 +64,7 @@ public static class TeamsApplication
         if (role == "Api")
         {
             builder.Services.AddScoped<Messaging>();
-            builder.Services.AddHttpClient<GraphTransport>(c => c.Timeout = TimeSpan.FromSeconds(20))
+            builder.Services.AddHttpClient<GraphTransport>(c => c.Timeout = Timeout.InfiniteTimeSpan)
                 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
             builder.Services.AddScoped<IGraphTransport>(sp => sp.GetRequiredService<GraphTransport>());
             builder.Services.AddScoped<IGraphAccessTokenSource, DelegatedGraphTokens>();
@@ -140,6 +140,8 @@ public static class TeamsApplication
 
         configureServices?.Invoke(builder.Services);
         var app = builder.Build();
+        if (liveOptions.GraphIntervalMilliseconds is not null || liveOptions.DataIntervalMilliseconds is not null)
+            app.Logger.LogWarning("Legacy Graph interval settings are ignored. Remove them and configure Live:GraphRetry instead; requests are no longer paced.");
         var forwarded = new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedFor };
         foreach (var cidr in config.GetSection("App:TrustedProxyNetworks").Get<string[]>() ?? [])
             forwarded.KnownIPNetworks.Add(System.Net.IPNetwork.Parse(cidr));

@@ -355,7 +355,7 @@ Infrastructure as code must express regional availability, quotas, zone settings
 
 Healthy source coverage is not a display prerequisite. Existing history stays available while repair runs, accepting that missed edits/deletions can remain visible until reconciliation or seven-day content expiry. A truly cold initial/thread/older page submits body-free durable work for Control, waits within five seconds for an authorized Cosmos reread, then returns usable content or typed `202` pending. Known-empty requires real initialization evidence, not an empty query. Browser recovery is bounded to 120 seconds. Redis miss/failure alone does not trigger Graph, and a Cosmos/security-store outage cannot bypass the projection guard.
 
-Control coalesces contexts across replicas and uses shared Graph permits, conditional progress and the existing merge/outbox path. Each job is bounded to three 50-item source pages plus an optional parent lookup and 45 seconds. Regular notification intake, verification and reconciliation remain responsible for full source health. Revision-keyed cache entries need no synchronous invalidation; the change feed dispatches only committed outbox work and does not establish source completeness.
+Control coalesces contexts across replicas and uses independent reactive Graph retries, conditional progress and the existing merge/outbox path. Initial calls are unpaced; only actual backend responses trigger retry waits. Each job is bounded to three 50-item source pages plus an optional parent lookup and 45 seconds. Regular notification intake, verification and reconciliation remain responsible for full source health. Revision-keyed cache entries need no synchronous invalidation; the change feed dispatches only committed outbox work and does not establish source completeness.
 
 Use conversation-scoped documents and efficient membership/inbox indexes. Bound the first page and response size. Popular conversations need appropriate cache handling to avoid a hot Cosmos partition.
 
@@ -607,7 +607,7 @@ The selected engineering direction is to complete the event-driven bounded proje
 | 1. Prerequisites | Approve the applicable ADR 0007/G0 privacy profile, then confirm tenant licensing, consent, resource scope, message policy, regions, retention, and Azure quotas |
 | 2. Vertical slice | One authorized read, delegated send, rich notification, durable projection update, and client delivery |
 | 3. Correctness | Explicit write states, transactional outbox, replay/tombstones, authorization invalidation, renewal, and bounded repair |
-| 4. Capacity controls | Shared Graph budgets, cache coalescing, bounded queries, warm capacity, and end-to-end telemetry |
+| 4. Capacity controls | Reactive Graph retries, cache coalescing, bounded queries, warm capacity, and end-to-end telemetry; no proactive Graph rate quotas |
 | 5. Validation | Execute separate capacity, real Graph, mobile, correctness, and recovery tracks |
 | 6. Deployment review | Record gate evidence, unresolved risks, accepted SLOs, cost envelope, and operational ownership |
 
@@ -648,7 +648,7 @@ ADRs 0001-0006 describe the reference pattern; ADR 0007 is **Proposed** and does
 | [0002](adr/0002-permission-separation-and-copied-data-authorization.md) | Separate permission responsibilities and authorize copied data |
 | [0003](adr/0003-rich-notifications-and-durable-synchronization.md) | Use rich notifications with durable, repairable synchronization |
 | [0004](adr/0004-managed-azure-services-and-regional-recovery.md) | Use managed Azure compute, connection infrastructure, and conditional regional recovery |
-| [0005](adr/0005-graph-budgets-and-explicit-write-outcomes.md) | Enforce Graph budgets and explicit write outcomes |
+| [0005](adr/0005-graph-budgets-and-explicit-write-outcomes.md) | Reactive Graph retries and explicit write outcomes |
 | [0006](adr/0006-slo-driven-capacity-and-feasibility-validation.md) | Validate SLOs, Azure capacity, and real Graph feasibility separately |
 | [0007](adr/0007-message-content-processing-and-storage-boundary.md) | Propose an explicit processing/storage boundary and privacy-approval prerequisite before enabling the real-data path |
 

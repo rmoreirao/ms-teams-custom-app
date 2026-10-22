@@ -31,8 +31,9 @@ public sealed class LiveOptions
     public long WriterEpoch { get; set; }
     public bool AdmissionEnabled { get; set; }
     public bool SynchronizationEnabled { get; set; }
-    public int GraphIntervalMilliseconds { get; set; } = 100;
-    public int DataIntervalMilliseconds { get; set; } = 250;
+    public int? GraphIntervalMilliseconds { get; set; }
+    public int? DataIntervalMilliseconds { get; set; }
+    public GraphRetryOptions GraphRetry { get; set; } = new();
     public int QueueConcurrency { get; set; } = 8;
     public ApprovedResource[] Resources { get; set; } = [];
     public ApprovedDirectChat[] DirectChats { get; set; } = [];
@@ -76,13 +77,14 @@ public sealed class LiveOptions
                 uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0 ||
                 uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries) is not ["keys", _, _])
                 throw new InvalidOperationException("Notification keys must use explicit versioned Key Vault key references.");
-        if (GraphIntervalMilliseconds < 100 || DataIntervalMilliseconds < GraphIntervalMilliseconds * 2 ||
-            QueueConcurrency is < 1 or > 64 || Resources.Length is < 1 or > 10000 ||
+        if (GraphRetry is null) throw new InvalidOperationException("Live GraphRetry settings cannot be null.");
+        GraphRetry.Validate();
+        if (QueueConcurrency is < 1 or > 64 || Resources.Length is < 1 or > 10000 ||
             Resources.Select(r => r.Id).Distinct().Count() != Resources.Length ||
             Resources.Select(r => r.Path).Distinct().Count() != Resources.Length ||
             Resources.Any(r => !System.Text.RegularExpressions.Regex.IsMatch(r.Id ?? "",
                 "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant)))
-            throw new InvalidOperationException("Live resource registry, concurrency or conservative Graph budgets are invalid.");
+            throw new InvalidOperationException("Live resource registry or worker concurrency is invalid.");
         if (SubscriptionScopes.Length is < 1 or > 100 || SubscriptionScopes.Select(s => s.Id).Distinct().Count() != SubscriptionScopes.Length ||
             SubscriptionScopes.Any(s => string.IsNullOrWhiteSpace(s.Id) ||
                 (s.Path is not ("chats/getAllMessages" or "teams/getAllMessages") && !Resources.Any(r => r.Path == s.Path))) ||

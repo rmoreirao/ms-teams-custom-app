@@ -64,7 +64,7 @@ resource failures 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = {
   location: location
   properties: {
     displayName: 'Live Teams worker failures'
-    description: 'Body-free application worker-failure counter; excludes normal shared-budget deferrals.'
+    description: 'Body-free application worker-failure counter; excludes isolated Graph throttle recovery.'
     severity: 1
     enabled: true
     evaluationFrequency: 'PT1M'
@@ -87,7 +87,7 @@ resource refreshFailures 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = {
   location: location
   properties: {
     displayName: 'Sustained Teams read refresh failures or aged work'
-    description: 'Work age, not last source message time. Isolated shared-budget deferrals are not failures. Verify action-group routing separately.'
+    description: 'Work age, not last source message time. Isolated Graph throttling is not a failure. Verify action-group routing separately.'
     severity: 2
     enabled: true
     evaluationFrequency: 'PT1M'

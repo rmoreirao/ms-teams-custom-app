@@ -16,11 +16,15 @@ public sealed record Conversation(string Id, string TenantId, string Title, stri
 public enum OperationState { Pending, Dispatching, Confirmed, Rejected, Unknown }
 public sealed record SendOperation(string Id, string TenantId, string ConversationId, string ActorId,
     string Fingerprint, string Body, string? ParentId, OperationState State, DateTimeOffset CreatedAt,
-    string? GraphMessageId = null, string? Error = null, long Epoch = 0);
+    string? GraphMessageId = null, string? Error = null, long Epoch = 0,
+    DateTimeOffset? Deadline = null, DateTimeOffset? AttemptUntil = null, DateTimeOffset? RetryAt = null,
+    int Attempts = 0, int Throttles = 0, int? FirstStatus = null);
 public sealed record Versioned<T>(T Value, string Version);
 public sealed record SendCommand(string OperationId, string Window, string Body, string? ParentId);
-public sealed record WriteResult(OperationState State, Message? Message, string? Error = null, TimeSpan? RetryAfter = null);
-public sealed record OperationView(string Id, OperationState State, string? MessageId, string? Error);
+public sealed record WriteResult(OperationState State, Message? Message, string? Error = null,
+    TimeSpan? RetryAfter = null, int? Status = null, bool Dispatched = true);
+public sealed record OperationView(string Id, OperationState State, string? MessageId, string? Error,
+    int Attempts = 0, int Throttles = 0, int? FirstStatus = null, DateTimeOffset? RetryAt = null);
 public sealed record ConversationView(string Id, string Title, string Kind, string? Team, long Revision, bool IsDirect = false);
 public sealed record ReadAccess(DateTimeOffset HistoryFrom, DateTimeOffset ValidUntil, long Epoch)
 {
@@ -72,10 +76,6 @@ public interface IGraphTransport
 public interface ICommandBudget
 {
     Task AcquireAsync(Actor actor, Conversation conversation, CancellationToken ct);
-}
-public interface IGraphThrottle
-{
-    Task CooldownAsync(Actor actor, TimeSpan delay, CancellationToken ct);
 }
 public interface IRealtime
 {

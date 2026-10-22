@@ -71,25 +71,23 @@ public sealed class LiveGraphTests
     {
         var calls = 0;
         var client = new GraphBackground(new HttpClient(new Handler(_ => { calls++; return new(HttpStatusCode.OK); })),
-            new Credential(), new Budget());
+            new Credential());
         await Assert.ThrowsAsync<InvalidOperationException>(() => client.PostAsync("chats/chat/messages", new { body = "Forbidden" }, default));
         Assert.Equal(0, calls);
     }
     [Fact]
-    public async Task ThrottledGraphAttemptSetsSharedCooldownWithoutAutomaticRetry()
+    public async Task ThrottledGraphAttemptHonorsRetryBudgetWithoutSharedCooldown()
     {
         var calls = 0;
-        var budget = new Budget();
         var client = new GraphBackground(new HttpClient(new Handler(_ =>
         {
             calls++;
             var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
-            response.Headers.RetryAfter = new(TimeSpan.FromSeconds(17));
+            response.Headers.RetryAfter = new(TimeSpan.Zero);
             return response;
-        })), new Credential(), budget);
+        })), new Credential());
         Assert.Equal(429, (await Assert.ThrowsAsync<AppError>(() => client.GetAsync(Resource.Path, default))).Status);
-        Assert.Equal(1, calls);
-        Assert.Equal(TimeSpan.FromSeconds(17), budget.Cooldown);
+        Assert.Equal(4, calls);
     }
     [Theory]
     [InlineData("1.0", "appid")]
@@ -477,12 +475,6 @@ public sealed class LiveGraphTests
             new("synthetic", DateTimeOffset.UtcNow.AddHours(1));
         public override ValueTask<AccessToken> GetTokenAsync(TokenRequestContext requestContext, CancellationToken cancellationToken) =>
             ValueTask.FromResult(GetToken(requestContext, cancellationToken));
-    }
-    private sealed class Budget : IGraphCallBudget
-    {
-        public TimeSpan? Cooldown { get; private set; }
-        public Task AcquireAsync(string lane, string resource, CancellationToken ct) => Task.CompletedTask;
-        public Task CooldownAsync(TimeSpan duration, CancellationToken ct) { Cooldown = duration; return Task.CompletedTask; }
     }
     private sealed class Handler(Func<HttpRequestMessage, HttpResponseMessage> response) : HttpMessageHandler
     {

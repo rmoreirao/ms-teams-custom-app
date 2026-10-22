@@ -35,6 +35,7 @@ public static class AzureRuntime
 {
     public static void AddAzureRuntime(this IServiceCollection services, IConfiguration config, LiveOptions options, string tenant, string role)
     {
+        services.AddSingleton(sp => new GraphRetry(options.GraphRetry, sp.GetRequiredService<TimeProvider>()));
         TokenCredential credential = options.EntitlementProvider == "Graph"
             ? new ManagedIdentityCredential(ManagedIdentityId.FromUserAssignedClientId(config["AzureClientId"]!))
             : new DefaultAzureCredential(new DefaultAzureCredentialOptions { ManagedIdentityClientId = config["AzureClientId"] });
@@ -63,9 +64,7 @@ public static class AzureRuntime
                         $"data-protection:live:{tenant}:{config["AzureAd:ClientId"]}:v1"));
                 protection.ProtectKeysWithAzureKeyVault(new Uri(config["Azure:ProtectionKey"] ?? throw new InvalidOperationException("Azure:ProtectionKey is required.")), credential);
             }
-            services.AddSingleton<ICommandBudget>(sp => new LiveCommandBudget(
-                new RedisBudget(sp.GetRequiredService<IConnectionMultiplexer>(), config["AzureAd:ClientId"]
-                    ?? throw new InvalidOperationException("AzureAd:ClientId is required.")), options));
+            services.AddSingleton<ICommandBudget>(new LiveCommandBudget(options));
         }
         else services.AddDistributedMemoryCache();
         services.AddSingleton(_ => new CosmosClient(config["Azure:CosmosEndpoint"], credential, new CosmosClientOptions

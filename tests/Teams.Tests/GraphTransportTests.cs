@@ -36,13 +36,14 @@ public sealed class GraphTransportTests
         Assert.Equal(OperationState.Unknown, (await graph.SendAsync(new("tenant", "alex", "Alex"), Conversation(), Operation(), default)).State);
     }
     [Fact]
-    public async Task ThrottlingCarriesAnExplicitCooldownWithoutRetrying()
+    public async Task ThrottlingReportsTheBackendStatusWithoutInventingACooldownOrRetrying()
     {
         var handler = new Handler(HttpStatusCode.TooManyRequests, "{}");
         var graph = new GraphTransport(new HttpClient(handler), new Tokens());
         var result = await graph.SendAsync(new("tenant", "alex", "Alex"), Conversation(), Operation(), default);
         Assert.Equal(OperationState.Rejected, result.State);
-        Assert.Equal(TimeSpan.FromSeconds(30), result.RetryAfter);
+        Assert.Null(result.RetryAfter);
+        Assert.Equal(429, result.Status);
         Assert.Equal(1, handler.Calls);
     }
     [Fact]
@@ -54,6 +55,7 @@ public sealed class GraphTransportTests
         canceled.Cancel();
         var result = await graph.SendAsync(new("tenant", "alex", "Alex"), Conversation(), Operation(), canceled.Token);
         Assert.Equal(OperationState.Rejected, result.State);
+        Assert.False(result.Dispatched);
         Assert.Equal(0, handler.Calls);
     }
     private static Conversation Conversation() => new("chat", "tenant", "Test", "chat", null, [], [], [], GraphChatId: "approved-chat");

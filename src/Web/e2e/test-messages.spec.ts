@@ -18,13 +18,16 @@ for (const viewport of [
     await trigger.click();
     const dialog = page.getByRole("dialog", { name: "Send test messages" });
     await expect(dialog.getByRole("spinbutton", { name: "Number of messages" })).toHaveValue("30");
+    await expect(dialog.getByRole("spinbutton", { name: "Concurrent messages" })).toHaveValue("30");
     await expect(dialog.getByRole("textbox", { name: "Test Message" })).toHaveValue("Test message");
-    await expect(dialog.getByRole("spinbutton")).toBeFocused();
+    await expect(dialog.getByRole("spinbutton", { name: "Number of messages" })).toBeFocused();
     await page.screenshot({ path: testInfo.outputPath(`${viewport.name}-popup.png`) });
     const bounds = await dialog.boundingBox();
     expect(bounds).not.toBeNull();
     expect(bounds!.x).toBeGreaterThanOrEqual(0);
     expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
+    await page.keyboard.press("Tab");
+    await expect(dialog.getByRole("spinbutton", { name: "Concurrent messages" })).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(dialog.getByRole("textbox", { name: "Test Message" })).toBeFocused();
     await page.keyboard.press("Escape");
@@ -33,7 +36,7 @@ for (const viewport of [
     expect(live.state.sendRequests).toHaveLength(0);
 
     await trigger.click();
-    await dialog.getByRole("spinbutton").fill("3");
+    await dialog.getByRole("spinbutton", { name: "Number of messages" }).fill("3");
     await dialog.getByRole("textbox", { name: "Test Message" }).fill("Custom test");
     await dialog.getByRole("button", { name: "Send messages", exact: true }).click();
     await expect(dialog.getByRole("status")).toContainText("3 of 3 attempted. 3 confirmed");
@@ -94,14 +97,48 @@ test("manual sends remain independent while confirmations arrive out of order", 
 });
 
 test("stopping a test batch cancels only remaining numbered sends", async ({ page, live }) => {
+  let release!: () => void;
+  const response = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/api/conversations/chat-handover/messages", async route => {
+    if (route.request().method() === "POST") await response;
+    await route.fallback();
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open chat: Sam Rivera", exact: true }).click();
+  await page.getByRole("button", { name: "Send test messages", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("spinbutton", { name: "Concurrent messages" }).fill("1");
+  await dialog.getByRole("button", { name: "Send messages", exact: true }).click();
+  await expect(dialog.getByRole("status")).toContainText("1 of 30 attempted.");
+  await dialog.getByRole("button", { name: "Stop sending" }).click();
+  release();
+  await expect(dialog.getByRole("status")).toContainText("Batch stopped.");
+  await expect(dialog.getByRole("status")).toContainText("29 messages were not attempted.");
+  expect(live.state.sendRequests).toHaveLength(1);
+});
+
+test("the default batch submits all thirty messages before any confirmation", async ({ page }) => {
+  const requests: { finish: () => Promise<void> }[] = [];
+  await page.route("**/api/conversations/chat-handover/messages", async route => {
+    if (route.request().method() !== "POST") return route.fallback();
+    const command = route.request().postDataJSON();
+    let release!: () => void;
+    const response = new Promise<void>(resolve => { release = resolve; });
+    requests.push({ finish: async () => {
+      await route.fulfill({ status: 201, json: { id: command.operationId, state: "confirmed",
+        messageId: command.operationId, error: null, attempts: 1, throttles: 0, firstStatus: 201 } });
+      release();
+    } });
+    await response;
+  });
   await page.goto("/");
   await page.getByRole("button", { name: "Open chat: Sam Rivera", exact: true }).click();
   await page.getByRole("button", { name: "Send test messages", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: "Send messages", exact: true }).click();
-  await expect(dialog.getByRole("status")).toContainText("1 of 30 attempted.");
-  await dialog.getByRole("button", { name: "Stop sending" }).click();
-  await expect(dialog.getByRole("status")).toContainText("Batch stopped.");
-  await expect(dialog.getByRole("status")).toContainText("29 messages were not attempted.");
-  expect(live.state.sendRequests).toHaveLength(1);
+  await expect.poll(() => requests.length).toBe(30);
+  await expect(dialog.getByRole("status")).toContainText("30 of 30 attempted. 0 confirmed");
+  await Promise.all(requests.map(request => request.finish()));
+  await expect(dialog.getByRole("status")).toContainText("30 of 30 attempted. 30 confirmed");
+  await expect(dialog.getByRole("status")).toContainText("Reported initial Graph responses: 30 accepted, 0 throttled.");
 });

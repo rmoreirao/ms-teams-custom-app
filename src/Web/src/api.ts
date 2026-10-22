@@ -10,7 +10,8 @@ export const isPendingRead = (value: unknown): value is PendingRead =>
 export interface ChangePage { changes: { revision: number; messageId: string; parentId: string | null }[]; revision: number; resetRequired: boolean; messages?: Message[]; historyFrom?: string; window?: string; access?: ReadAccess }
 export interface RealtimeHint { conversationId: string; revision: number }
 export type DeliveryState = "pending" | "dispatching" | "confirmed" | "rejected" | "unknown";
-export interface Operation { id: string; state: DeliveryState; messageId: string | null; error: string | null }
+export interface Operation { id: string; state: DeliveryState; messageId: string | null; error: string | null;
+  attempts?: number; throttles?: number; firstStatus?: number | null; retryAt?: string | null }
 export interface SendCommand { operationId: string; window: string; body: string; parentId: string | null }
 export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string, public access?: ReadAccess) { super(message); }
@@ -85,5 +86,11 @@ function isOperation(value: unknown): value is Operation {
     ["pending", "dispatching", "confirmed", "rejected", "unknown"].includes(value.state) &&
     "messageId" in value && (value.messageId === null || typeof value.messageId === "string") &&
     (value.state !== "confirmed" || typeof value.messageId === "string" && value.messageId.length > 0) &&
-    "error" in value && (value.error === null || typeof value.error === "string");
+    "error" in value && (value.error === null || typeof value.error === "string") &&
+    (!("attempts" in value) || Number.isSafeInteger(value.attempts) && Number(value.attempts) >= 0) &&
+    (!("throttles" in value) || Number.isSafeInteger(value.throttles) && Number(value.throttles) >= 0) &&
+    (!("firstStatus" in value) || value.firstStatus === null ||
+      Number.isInteger(value.firstStatus) && Number(value.firstStatus) >= 100 && Number(value.firstStatus) <= 599) &&
+    (!("retryAt" in value) || value.retryAt === null ||
+      typeof value.retryAt === "string" && Number.isFinite(Date.parse(value.retryAt)));
 }

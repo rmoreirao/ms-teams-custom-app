@@ -24,6 +24,13 @@
         "approvalReference": "<recorded-G0-and-resource-approval>",
         "readConsistency": "Session",
         "writerEpoch": 1,
+        "graphRetry": {
+          "maxRetries": 3,
+          "operationTimeoutSeconds": 120,
+          "attemptTimeoutSeconds": 20,
+          "baseDelayMilliseconds": 1000,
+          "maxDelayMilliseconds": 30000
+        },
         "notificationCertificateId": "<active-certificate-id>",
         "notificationCertificate": "<base64-DER-public-certificate>",
         "notificationKeys": { "<active-certificate-id>": "https://<vault>.vault.azure.net/keys/graph-notification/<key-version>" },

@@ -174,7 +174,7 @@ public sealed class MessagingTests
         Assert.Equal(OperationState.Pending, (await messaging.SendAsync(Alex, "chat-handover", command, default)).State);
         if (expire)
         {
-            fixture.Clock.Advance(TimeSpan.FromSeconds(36));
+            fixture.Clock.Advance(TimeSpan.FromSeconds(121));
             Assert.Equal(OperationState.Rejected, (await messaging.StatusAsync(Alex, "chat-handover", command.OperationId, default)).State);
         }
         budget.Release.SetResult();

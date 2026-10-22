@@ -32,6 +32,9 @@ export function Delivery({ item, onCheck }: { item: Pending; onCheck: () => void
   const uncertain = item.operation.state === "unknown" || item.operation.state === "dispatching";
   return <div className="delivery">
     <MessageStatus state={item.operation.state} />
+    {item.operation.state === "pending" && item.operation.retryAt && <span className="delivery-details">
+      Waiting to retry after Graph throttled this send. Do not resend.
+    </span>}
     {(item.operation.error || uncertain || item.responded && item.operation.state === "pending") && <div className="delivery-details">
       {item.operation.state === "unknown" && <span>Outcome unknown - do not resend</span>}
       {item.operation.error && <span>{item.operation.error}</span>}

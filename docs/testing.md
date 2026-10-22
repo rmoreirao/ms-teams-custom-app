@@ -40,9 +40,9 @@ Windows tests use installed Edge; Linux/CI uses the configured Playwright Chromi
 | --- | --- |
 | Authentication and API contract | Entra-only UI; anonymous API denial; no local login/scenario routes or legacy capability fields |
 | Scope/history/offboarding | Only current source-authorized conversations/messages; hidden parents and revoked identities remain inaccessible |
-| Sending | Optimistic nonblocking composer; independently confirmed status icons; paced starts without waiting for earlier responses; one operation ID/dispatch, explicit confirmed/rejected/unknown outcomes, actor-bound status and CSRF |
+| Sending | Optimistic nonblocking composer; immediate parallel starts; one owner per operation, bounded retries only after explicit Graph 429, confirmed/rejected/unknown outcomes, actor-bound status and CSRF |
 | Unknown or expired claims | No automatic resend, no fake receipt resolution, no inferred non-commit from a lost response |
-| Throttling | Shared budgets/cooldown; rejection before dispatch when no capacity |
+| Throttling | No Redis permit gate or artificial pacing; actual Graph 429, Retry-After delta/date and independent bounded backoff; initial responses remain separate from retries and final outcomes |
 | Paged history | Stable equal-timestamp ordering, no skipped/duplicate pages, preserved loaded history on deltas |
 | Source events | Signed/encrypted intake, durable notification, projection/outbox, authorized body-free delivery and catch-up |
 | Missing coverage | Existing authorized history remains usable; known-empty succeeds; genuinely cold views require durable refresh and typed pending rather than fabricated emptiness |
@@ -51,7 +51,7 @@ Windows tests use installed Edge; Linux/CI uses the configured Playwright Chromi
 | Direct chats | Existing approved exact-pair mapping only; stale/changed membership denied; no creation/send on selection |
 | Service-authenticated policy | No retained-user context in normal Control; explicit app-only resource/policy scopes; current direct app assignment, enabled/member account state, history and exact pairs; unsupported/missing source evidence denied |
 | Isolated service release | Five distinct workloads/identities; API cannot attach Control; reviewed read-only authority access; draft/extra compact privileges refused; no-write plan/WhatIf, exact full rollout, partial-failure preservation and idempotent reapply |
-| Personal-chat test messages | Header action beside Change person in verified one-to-one chats only; popup defaults to 30 and editable text "Test message"; exact numbered bodies, distinct operations, paced overlapping requests, preserved drafts, explicit outcome counts, continuation without retries, and cancellation of remaining sends |
+| Personal-chat test messages | Verified one-to-one header action; default count/concurrency 30, editable text and exact numbered bodies; immediate overlapping requests, preserved drafts, initial throttle/retry/final counts and cancellation only before submission |
 | Realtime/reconnect | Web PubSub and targeted changes; no 30-second catalog polling or SSE fallback |
 | UX and safety | Desktop/mobile focus/navigation, drafts in memory, offline send disabled, no business browser storage, sanitized rich content, virtualization |
 | Release | All selected targets preflighted before mutation; five-role queue properties/exact scoped grants checked read-only; image-only preservation; exact readiness; explicit partial-rollout errors |

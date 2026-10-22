@@ -261,7 +261,7 @@ public sealed class ReadRefreshWorker(ServiceBusClient client, ReadRefreshHandle
             {
                 if (error is not AppError { Status: 429 })
                     logger.LogError("Read refresh delivery failed: {ErrorType}; work is not acknowledged as hydrated.", error.GetType().Name);
-                else logger.LogInformation("Read refresh is deferred by the shared Graph budget.");
+                else logger.LogInformation("Read refresh is deferred after Graph throttling exhausted its retry budget.");
                 if (error is JsonException or AppError { Status: 400 or 403 or 404 } or AppError { Code: "writer_fenced" } ||
                     args.Message.DeliveryCount >= 5)
                     await args.DeadLetterMessageAsync(args.Message, "read_refresh_failed", error.GetType().Name, args.CancellationToken);
