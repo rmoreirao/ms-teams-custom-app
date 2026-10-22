@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Azure.Identity;
+using Azure.Core;
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.WebPubSub;
 using Microsoft.AspNetCore.DataProtection;
@@ -25,6 +26,7 @@ public static class LiveHostConfiguration
                 ?? throw new InvalidOperationException("Live configuration is empty.")
             : config.GetSection("Live").Get<LiveOptions>() ?? new();
         options.Validate(tenant, false, false, role);
+        options.ValidateIdentityBindings(config["AzureAd:ClientId"], config["AzureClientId"], role);
         return (tenant, role, options);
     }
 }
@@ -33,7 +35,9 @@ public static class AzureRuntime
 {
     public static void AddAzureRuntime(this IServiceCollection services, IConfiguration config, LiveOptions options, string tenant, string role)
     {
-        var credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions { ManagedIdentityClientId = config["AzureClientId"] });
+        TokenCredential credential = options.EntitlementProvider == "Graph"
+            ? new ManagedIdentityCredential(ManagedIdentityId.FromUserAssignedClientId(config["AzureClientId"]!))
+            : new DefaultAzureCredential(new DefaultAzureCredentialOptions { ManagedIdentityClientId = config["AzureClientId"] });
         var protection = services.AddDataProtection().SetApplicationName("TeamsReference.Live.v1");
         if (role == "Api" || options.Hosts("Control", role))
         {
@@ -68,20 +72,20 @@ public static class AzureRuntime
         {
             ConnectionMode = ConnectionMode.Gateway,
             SerializerOptions = new CosmosSerializationOptions { PropertyNamingPolicy = CosmosPropertyNamingPolicy.CamelCase },
-            ConsistencyLevel = options.ReadConsistency == "SessionPrimary" ? ConsistencyLevel.Session : ConsistencyLevel.Strong,
+            ConsistencyLevel = ConsistencyLevel.Session,
             RequestTimeout = TimeSpan.FromSeconds(10),
             MaxRetryAttemptsOnRateLimitedRequests = 2,
             MaxRetryWaitTimeOnRateLimitedRequests = TimeSpan.FromSeconds(5)
         }));
         services.AddHostedService<LiveStorageValidation>();
         services.AddSingleton<IPartitionDocuments>(sp => new CosmosPartitionDocuments(
-            sp.GetRequiredService<CosmosClient>().GetContainer("teams", "live-state"), options.ReadConsistency == "SessionPrimary"));
+            sp.GetRequiredService<CosmosClient>().GetContainer("teams", "live-state")));
         services.AddKeyedSingleton<IPartitionDocuments>("control", (sp, _) => new CosmosPartitionDocuments(
-            sp.GetRequiredService<CosmosClient>().GetContainer("teams", "live-control"), options.ReadConsistency == "SessionPrimary"));
+            sp.GetRequiredService<CosmosClient>().GetContainer("teams", "live-control")));
         if (role == "Api") services.AddSingleton<IRecentMessageCache, RedisRecentMessages>();
         services.AddSingleton<ILiveStateStore>(sp => new LiveStateStore(sp.GetRequiredService<IPartitionDocuments>(),
             sp.GetRequiredService<TimeProvider>(), new CosmosPartitionDocuments(
-                sp.GetRequiredService<CosmosClient>().GetContainer("teams", "live-authority"), options.ReadConsistency == "SessionPrimary"),
+                sp.GetRequiredService<CosmosClient>().GetContainer("teams", "live-authority")),
             sp.GetService<IRecentMessageCache>(), options.Resources.Select(r => r.Id).ToHashSet(StringComparer.Ordinal),
             options.Resources.ToDictionary(r => r.Id, StringComparer.Ordinal)));
         services.AddSingleton<IStateStore>(sp => sp.GetRequiredService<ILiveStateStore>());

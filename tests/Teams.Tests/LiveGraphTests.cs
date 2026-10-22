@@ -288,10 +288,9 @@ public sealed class LiveGraphTests
             clock.GetUtcNow().AddMinutes(-1), "cert", true, "", DateTimeOffset.MinValue), null, default);
         await control.SaveLifecycleAsync(scope.Id, new("reauthorizationRequired", clock.GetUtcNow()), null, default);
         var creates = 0;
-        var graph = new FakeGraph { Post = (path, _) =>
+        var graph = new FakeGraph { Patch = (_, _) => throw new AppError(404, "graph_404", "The original subscription is gone."),
+            Post = (path, _) =>
         {
-            if (path.EndsWith("/reauthorize", StringComparison.Ordinal))
-                throw new AppError(404, "graph_404", "The original subscription is gone.");
             Assert.Equal("subscriptions", path);
             creates++;
             return JsonSerializer.SerializeToElement(new { id = "replacement", expirationDateTime = clock.GetUtcNow().AddMinutes(50) });
@@ -305,7 +304,36 @@ public sealed class LiveGraphTests
         Assert.Equal(scope.Path, (await control.FindSubscriptionAsync("replacement", default))!.Resource);
         await controller.StepAsync(scope, default);
         Assert.Equal(1, creates);
-        Assert.Equal(2, graph.Posts);
+        Assert.Equal(1, graph.Posts);
+        Assert.Equal(1, graph.Patches);
+    }
+    [Theory]
+    [InlineData(10)]
+    [InlineData(40)]
+    public async Task ReauthorizationAndRenewalUseOnePatchWithoutAConcurrentPost(int remainingMinutes)
+    {
+        var clock = new Clock();
+        var options = Options();
+        var scope = options.SubscriptionScopes[0];
+        var control = new LiveControlStore(new MemoryPartitionDocuments(), clock, Tenant);
+        await control.SaveSubscriptionAsync(new(scope.Id, scope.Path, "state", "original",
+            clock.GetUtcNow().AddMinutes(remainingMinutes), "cert", true, "", DateTimeOffset.MinValue), null, default);
+        await control.SaveLifecycleAsync(scope.Id, new("reauthorizationRequired", clock.GetUtcNow()), null, default);
+        var graph = new FakeGraph { Patch = (path, body) =>
+        {
+            Assert.Equal("subscriptions/original", path);
+            Assert.Equal(clock.GetUtcNow().AddMinutes(50),
+                JsonSerializer.SerializeToElement(body).GetProperty("expirationDateTime").GetDateTimeOffset());
+            return JsonSerializer.SerializeToElement(new { id = "original", expirationDateTime = clock.GetUtcNow().AddMinutes(50) });
+        } };
+        var controller = new SubscriptionController(graph, control, options, clock);
+        await controller.StepAsync(scope, default);
+        await controller.StepAsync(scope, default);
+        Assert.Equal(0, graph.Posts);
+        Assert.Equal(1, graph.Patches);
+        Assert.True((await control.LifecycleAsync(scope.Id, default))!.Value.Handled);
+        Assert.Equal(clock.GetUtcNow().AddMinutes(50), (await control.SubscriptionAsync(scope.Id, default))!.Value.Expires);
+        Assert.Equal(scope.Path, (await control.FindSubscriptionAsync("original", default))!.Resource);
     }
     [Theory]
     [InlineData(403)]
@@ -320,9 +348,9 @@ public sealed class LiveGraphTests
         await control.SaveSubscriptionAsync(new(scope.Id, scope.Path, "old-state", "original",
             clock.GetUtcNow().AddMinutes(-1), "cert", true, "", DateTimeOffset.MinValue), null, default);
         await control.SaveLifecycleAsync(scope.Id, new("reauthorizationRequired", clock.GetUtcNow()), null, default);
-        var graph = new FakeGraph { Post = (path, _) =>
+        var graph = new FakeGraph { Patch = (path, _) =>
         {
-            Assert.EndsWith("/reauthorize", path);
+            Assert.Equal("subscriptions/original", path);
             throw new AppError(status, $"graph_{status}", "Reauthorization was not confirmed.");
         } };
         var error = await Assert.ThrowsAsync<AppError>(() =>
@@ -330,7 +358,8 @@ public sealed class LiveGraphTests
         Assert.Equal(status, error.Status);
         Assert.Equal("original", (await control.SubscriptionAsync(scope.Id, default))!.Value.GraphId);
         Assert.False((await control.LifecycleAsync(scope.Id, default))!.Value.Handled);
-        Assert.Equal(1, graph.Posts);
+        Assert.Equal(0, graph.Posts);
+        Assert.Equal(1, graph.Patches);
     }
     [Fact]
     public async Task LostReplacementResponseRecoversTheSameIntentWithoutAnotherCreate()
@@ -342,10 +371,10 @@ public sealed class LiveGraphTests
         await control.SaveSubscriptionAsync(new(scope.Id, scope.Path, "old-state", "expired",
             clock.GetUtcNow().AddMinutes(-1), "cert", true, "", DateTimeOffset.MinValue), null, default);
         await control.SaveLifecycleAsync(scope.Id, new("reauthorizationRequired", clock.GetUtcNow()), null, default);
-        var graph = new FakeGraph { Post = (path, _) =>
+        var graph = new FakeGraph { Patch = (_, _) => throw new AppError(404, "graph_404", "The original subscription is gone."),
+            Post = (path, _) =>
         {
-            if (path.EndsWith("/reauthorize", StringComparison.Ordinal))
-                throw new AppError(404, "graph_404", "The original subscription is gone.");
+            Assert.Equal("subscriptions", path);
             throw new HttpRequestException("The replacement response was lost.");
         } };
         var controller = new SubscriptionController(graph, control, options, clock);
@@ -361,7 +390,8 @@ public sealed class LiveGraphTests
         } } });
         await controller.StepAsync(scope, default);
         Assert.Equal("replacement", (await control.SubscriptionAsync(scope.Id, default))!.Value.GraphId);
-        Assert.Equal(2, graph.Posts);
+        Assert.Equal(1, graph.Posts);
+        Assert.Equal(1, graph.Patches);
     }
     [Fact]
     public async Task RepairUsesPointVerificationToDiscoverMissedDeletion()
@@ -463,10 +493,12 @@ public sealed class LiveGraphTests
     {
         public Func<string, JsonElement> Get { get; set; } = _ => throw new InvalidOperationException("Unexpected GET");
         public Func<string, object, JsonElement> Post { get; set; } = (_, _) => throw new InvalidOperationException("Unexpected POST");
+        public Func<string, object, JsonElement> Patch { get; set; } = (_, _) => throw new InvalidOperationException("Unexpected PATCH");
         public int Posts { get; private set; }
+        public int Patches { get; private set; }
         public Task<JsonElement> GetAsync(string path, CancellationToken ct) => Task.FromResult(Get(path));
         public Task<JsonElement> PostAsync(string path, object body, CancellationToken ct) { Posts++; return Task.FromResult(Post(path, body)); }
-        public Task<JsonElement> PatchAsync(string path, object body, CancellationToken ct) => throw new InvalidOperationException("Unexpected PATCH");
+        public Task<JsonElement> PatchAsync(string path, object body, CancellationToken ct) { Patches++; return Task.FromResult(Patch(path, body)); }
     }
     private sealed class Clock : TimeProvider
     {

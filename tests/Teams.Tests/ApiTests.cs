@@ -86,6 +86,56 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
         Assert.False(result.TryGetProperty("simulated", out _));
     }
     [Fact]
+    public async Task RevisionLagIsExplicitAndIncludesOnlyVerifiedRetentionAuthority()
+    {
+        using var client = factory.Client();
+        var snapshot = await client.GetFromJsonAsync<MessagePage>("/api/conversations/chat-handover/messages");
+        foreach (var path in new[]
+        {
+            "/api/conversations/chat-handover/messages?minimumRevision=900000",
+            "/api/conversations/chat-handover/changes?after=900000",
+            "/api/conversations/chat-handover/changes?after=0&minimumRevision=900000"
+        })
+        {
+            var response = await client.GetAsync(path);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+            var error = await response.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal("projection_behind", error.GetProperty("code").GetString());
+            var access = error.GetProperty("access");
+            Assert.Equal(snapshot!.Access!.ValidUntil, access.GetProperty("validUntil").GetDateTimeOffset());
+            Assert.Equal(1, access.GetProperty("epoch").GetInt64());
+            Assert.False(error.TryGetProperty("resetRequired", out _));
+        }
+        Assert.Equal(HttpStatusCode.BadRequest,
+            (await client.GetAsync("/api/conversations/chat-handover/messages?minimumRevision=-1")).StatusCode);
+    }
+
+    [Fact]
+    public async Task ColdReadHasADistinct202ContractAndTheNextAuthorizedReadReturnsHydratedContent()
+    {
+        using var isolated = new Factory();
+        isolated.Refresh = new AcceptedRefresh();
+        var source = isolated.Fixture;
+        source.Clock.Advance(TimeSpan.FromSeconds(1));
+        var now = source.Clock.GetUtcNow();
+        await source.Store.SetCoverageAsync(new(Factory.Tenant, "chat-handover", false, null, null, "cold-test"), default);
+        await source.Store.SetEntitlementAsync(new(Factory.Tenant, "chat-handover", Factory.Actor, "Alex", now,
+            now, now.AddMinutes(5), "late-history", true, true, 1), default);
+        using var client = isolated.Client();
+        var response = await client.GetAsync("/api/conversations/chat-handover/messages");
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Equal(TimeSpan.FromSeconds(1), response.Headers.RetryAfter!.Delta);
+        var pending = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("pending", pending.GetProperty("state").GetString());
+        Assert.Equal(1000, pending.GetProperty("retryAfterMs").GetInt32());
+        foreach (var name in new[] { "messages", "window", "refresh", "code" }) Assert.False(pending.TryGetProperty(name, out _));
+        await source.Store.ApplyAsync(Factory.Tenant, "chat-handover",
+            new("hydrated", Factory.Actor, "Alex", "Hydrated context", now, now), default);
+        var available = await client.GetAsync("/api/conversations/chat-handover/messages");
+        Assert.Equal(HttpStatusCode.OK, available.StatusCode);
+        Assert.Equal("Hydrated context", Assert.Single((await available.Content.ReadFromJsonAsync<MessagePage>())!.Messages).Body);
+    }
+    [Fact]
     public async Task InlineScriptHashesMatchBrowserNormalizedHtml()
     {
         using var client = factory.Client(false);
@@ -141,6 +191,8 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
         public const string Tenant = "11111111-1111-1111-1111-111111111111";
         public const string Actor = "33333333-3333-3333-3333-333333333333";
         private readonly LiveFixture fixture = new(Tenant, Actor);
+        public LiveFixture Fixture => fixture;
+        public IReadRefresh? Refresh { get; set; }
         private WebApplication? application;
         public HttpClient Client(bool signedIn = true)
         {
@@ -157,6 +209,7 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
             using var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
             var options = new LiveOptions
             {
+                ReadConsistency = "Session",
                 ApprovalReference = "test-only-fixture",
                 SyncClientId = "22222222-2222-2222-2222-222222222222",
                 ControlIdentityClientId = "44444444-4444-4444-4444-444444444444",
@@ -214,6 +267,8 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
                 services.AddSingleton<IRealtime, LocalRealtime>();
                 services.AddSingleton<IGraphTransport>(new GraphResultStub(fixture.Clock));
                 services.AddSingleton<ICommandBudget>(new MemoryBudget(fixture.Clock));
+                services.RemoveAll<IReadRefresh>();
+                if (Refresh is not null) services.AddSingleton(Refresh);
                 services.AddAuthentication(o =>
                 {
                     o.DefaultAuthenticateScheme = "Test";
@@ -254,5 +309,9 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
                 foreach (var value in values) cookies.SetCookies(uri, value);
             return response;
         }
+    }
+    private sealed class AcceptedRefresh : IReadRefresh
+    {
+        public Task RequestAsync(ReadRefreshRequest request, bool required, CancellationToken ct) => Task.CompletedTask;
     }
 }

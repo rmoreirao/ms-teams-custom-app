@@ -12,10 +12,10 @@ if ($path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { throw 'Res
 $settings = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
 $live = $settings.liveConfig
 if ($Image.Split('/')[0] -ne $settings.registryServer) { throw 'Use the existing approved private registry.' }
-if ($settings.schemaVersion -ne 1 -or $live.authorityMode -ne 'DelegatedSynthetic' -or $live.readConsistency -ne 'SessionPrimary' -or
+if ($settings.schemaVersion -ne 1 -or $live.authorityMode -ne 'DelegatedSynthetic' -or $live.readConsistency -cne 'Session' -or
     @($live.syntheticActorIds).Count -ne 3 -or @($live.syntheticActorIds | Sort-Object -Unique).Count -ne 3 -or
     @($live.resources).Count -lt 2 -or @($live.resources).Count -gt 5 -or -not $live.approvalReference) {
-    throw 'Use the explicit three-user/two-to-five-resource synthetic SessionPrimary profile.'
+    throw 'Use the explicit three-user/two-to-five-resource synthetic Session profile.'
 }
 $subscription = $settings.subscriptionId
 $group = $settings.resourceGroup

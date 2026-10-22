@@ -1,8 +1,14 @@
 # Live runtime configuration and rollout
 
-**Status: the bounded three-user Azure Live profile is deployed and verified end to end; independent production activation and acceptance remain gated.** Real storage/crypto, signed notification-to-browser delivery and delegated chat/reply confirmation passed; see [current validation](dev-validation.md). No production app-only message grants or business-content processing were activated. The single-region `SessionPrimary` profile does not require a Strong-consistency account. The earlier [GraphPilot basic mode](graph-pilot.md) passed real delegated Teams journeys but is no longer the current hosted transport.
+**Status: the combined Session/availability-first release is deployed to the five Development roles; final migration acceptance/cleanup and independent production activation remain gated.** Real storage/crypto, signed notification-to-browser delivery and delegated chat/reply confirmation have historical evidence; see [current validation](dev-validation.md). The new release's signed-in read/hydration and unattended/recovery acceptance remain distinct from that earlier evidence. No production business-content processing was activated. The earlier [GraphPilot basic mode](graph-pilot.md) passed real delegated Teams journeys but is no longer the current hosted transport.
 
-**Current source is Live-only.** Simulator and legacy GraphPilot modes, persona sign-in, fixture seeding and pilot polling have been removed. Development is the only environment; `DelegatedSynthetic` still means restricted real-Teams authority. The removal itself has not deployed a new image. Use [image-only Development releases](dev-guide.md#github-actions) for routine updates; preserve this configuration and the existing two apps.
+**Current source is Live-only.** Simulator and legacy GraphPilot modes, persona sign-in, fixture seeding and pilot polling have been removed. Development is the only environment. On 2026-10-21 its approved cloud migration deployed five isolated workloads with application-authenticated Control and Graph-backed policy. The three test users are not background credentials. `DelegatedSynthetic` is retained only as guarded pre-acceptance migration compatibility. Use [five-role image-only Development releases](dev-guide.md#github-actions) for routine updates; preserve the reviewed existing platform.
+
+The 2026-10-22 combined rollout added only the approved refresh queue and its
+exact Api Sender/Control Receiver grants, paired the new image with explicit
+Session settings and completed/cleaned the isolated real-Cosmos check.
+Operational alert configuration/routing is explicitly deferred to future work;
+logs and diagnostics remain. See [deployment evidence and pending acceptance](dev-validation.md#combined-service-rollout-2026-10-22).
 
 Follow the [implementation status](live-integration-plan.md#execution-status) and [Entra rebuild runbook](entra-configuration.md). G0, a trustworthy policy authority, licensed/approved resources, actual Graph endpoint support/budgets, capacity, and recovery evidence still gate release.
 
@@ -10,25 +16,154 @@ Follow the [implementation status](live-integration-plan.md#execution-status) an
 
 | Role | Entry points and responsibilities | Required data access |
 | --- | --- | --- |
-| `Api` | Cookie/OIDC BFF, guarded projected reads, paged catalog, delegated sends, operation status, authenticated PubSub admission | Projection read/write for commands; authority read; Redis session/cache/permits; session-protection key; PubSub |
+| `Api` | Cookie/OIDC BFF, guarded projected reads, durable cold-view requests, paged catalog, delegated sends, operation status, authenticated PubSub admission | Projection read/write for commands; authority read; read-refresh queue send; Redis session/cache/permits; session-protection key; PubSub |
 | `Receiver` | `/callbacks/graph/notifications` and `/callbacks/graph/lifecycle`; validation challenge, signed rich-token/client-state checks and encrypted durable acceptance | Control-state read; notification queue send; no message/authority writes, private decryption key or Graph credentials |
 | `Projector` | Lock-renewing Service Bus consumption, authenticated decryption, conditional merge/tombstones, repair scheduling and bounded dead-letter retention | Projection/control read/write, queue send/receive, notification-key decrypt; no authority writes or Graph credentials |
 | `Delivery` | Cosmos change-feed outbox dispatch, broker-driven leased fan-out pages, coalesced body-free hints and current-recipient authorization | Projection/checkpoint and change-feed lease read/write; authority read; delivery queue send/receive; PubSub |
-| `Control` | Leased subscription ownership/renewal, bootstrap/hydration, bounded verification/repair and authoritative policy refresh | Projection/control/authority read/write; shared Graph permits; sync federation; approved policy-service access; PubSub revocation |
+| `Control` | Leased subscription ownership/renewal, bounded read-refresh consumption, bootstrap/hydration, verification/repair and authoritative policy refresh | Projection/control/authority read/write; read-refresh queue receive only; shared Graph permits; sync federation; approved policy-service access; PubSub revocation |
 
 Use independent instances of the same image, or the explicitly bounded compact topology below. `All`, fixture roles, local credentials, memory persistence and retired mode selections are rejected. Fake dependencies exist only in automated tests and are not a runtime fallback.
 
-`infra\live.bicep` creates five distinct user-assigned identities, three state containers (`live-state`, `live-authority`, `live-control`), a separate `/id`-partitioned `live-leases` container, `graph-notifications` and `graph-delivery` queues, private Front Door origins/WAF and role-specific workloads/access. It targets an **existing dedicated private platform**; it does not create or resize its Cosmos account, VNet/private endpoints, Service Bus namespace, Redis, PubSub or Key Vault. The dev serverless/session-consistency platform is not a production sizing template.
+`infra\live.bicep` creates five distinct user-assigned identities, three state containers (`live-state`, `live-authority`, `live-control`), a separate `/id`-partitioned `live-leases` container, `graph-notifications`, `graph-delivery` and `graph-read-refresh` queues, private Front Door origins/WAF and role-specific workloads/access. It targets an **existing dedicated private platform**; it does not create or resize its Cosmos account, VNet/private endpoints, Service Bus namespace, Redis, PubSub or Key Vault. The dev serverless/session-consistency platform is not a production sizing template.
 
-The live Cosmos client uses the selected `readConsistency` profile. `Strong` preserves the original account-level guarantee. `SessionPrimary` uses Session SDK clients plus primary-replica point reads through the read-only `readCurrentV1` procedure on all three live data containers. This supports the existing single-region serverless/Session account type without an account replacement or consistency upgrade. Both startup and deployment validate the actual account topology; SessionPrimary refuses multiple readable/writable regions. Neither profile silently changes the Cosmos account. See [ADR 0009](adr/0009-live-projection-runtime-boundaries.md).
+The live Cosmos client requires explicit `readConsistency: "Session"` and uses native Session SDK reads for ordinary content. Missing settings and the old `Strong`/`SessionPrimary` profile names are rejected without aliases. Startup and deployment validate one readable/writable region and a Session or Strong account policy; they never change the account or require a consistency upgrade. See [ADR 0012](adr/0012-session-content-reads-and-revision-convergence.md).
 
-The template deploys the canonical procedure before workloads and, under the explicit RBAC provisioning switch, adds a custom reader role with `executeStoredProcedure` but no item-write actions. The API's authority access remains unable to create/replace/delete items. Because execution permissions are container-scoped, do not add mutating procedures to these reader-accessible containers. SessionPrimary never falls back to stale ordinary reads if the procedure, permissions or response evidence is unavailable.
+The template retains the canonical `readCurrentV1` procedure on the three data containers and, under the explicit RBAC provisioning switch, a custom reader role with `executeStoredProcedure` but no item-write actions. The API's authority access remains unable to create/replace/delete items. Because execution permissions are container-scoped, do not add mutating procedures to reader-accessible containers. A critical current read never falls back to an ordinary read if the procedure, permissions or response evidence is unavailable.
 
-The primary response establishes the SDK's partition-bound session barrier before normal bounded queries. Authorization, revocations, source leases, operation evidence and revision/epoch metadata use that point-read path; large message queries remain SDK queries. This is not a claim that independent clients share a session automatically. Stored-procedure RU/latency overhead and real-service behavior still require measurement; the profile does not provide multi-region Session recovery or a capacity certification.
+`IPartitionDocuments.ReadAsync` is an ordinary SDK point read; `ReadCurrentAsync` explicitly requests the procedure. Content display and delta hydration use ordinary reads/queries. Grants, revocations, exact-pair authority, parent eligibility, operation/epoch evidence, merge/tombstone decisions, delivery and subscription/repair controls remain current. Conversation metadata remains current because it also gates security epochs and source coverage; its SDK partition barrier benefits later content queries without a procedure call for each message. Independent clients do not share tokens automatically. RU/latency improvement requires measurement; this is not multi-region recovery or capacity certification.
 
 Messages are separate documents, not aggregates or per-recipient copies. Projection, change-journal and outbox updates share a conversation partition; authority and control are separate containers. Data-plane roles prevent the API/projector/delivery identities from rewriting authoritative access. Catalog updates across partitions are recoverable and never replace a fresh source-membership check.
 
+## Availability-first reads and hydration
+
+[ADR 0013](adr/0013-availability-first-reads-and-bounded-hydration.md) separates
+content availability from source health. Healthy coverage is no longer required
+to display stored, authorized history. There is no source-content age deadline
+that hides it during repair; a missed edit/deletion may remain visible until
+reconciliation or seven-day content expiry. Current authority, revocation,
+history, mapping, parent eligibility and epochs remain strict.
+
+Redis is a revision-keyed message cache. A miss/failure falls back to Cosmos.
+Available or genuinely known-empty views return `200`; partial pages keep a
+continuation and can request optional refresh. An empty uninitialized query
+requires durable work and a bounded authorized reread, not a false empty result.
+After a five-second total server budget, an accepted cold request can return:
+
+```json
+{ "state": "pending", "retryAfterMs": 1000, "access": null }
+```
+
+That is HTTP `202` with `Retry-After: 1`. A verified eligible view can include
+`access`; an unknown parent cannot supply fresh retention permission. The browser
+automatically retries cold/older-page loading within 120 seconds, retains
+previously loaded authorized history/drafts during operational failures, renews
+access proactively and clears content when authority expires or fails. A queue
+submission failure is `read_refresh_unavailable`, not accepted pending work.
+Cosmos/security-store failure never authorizes a Graph-only response.
+
+`graph-read-refresh` contains only approved tenant/conversation/epoch/parent/page
+context and request time. Control derives Graph paths from the registry and uses
+its existing credentials/shared permits. Context leases coalesce replicas; original
+redelivery waits for lease/backoff instead of being falsely acknowledged. Each
+job has a 45-second execution budget, at most three 50-item source pages plus an
+optional parent GET, and at most two concurrent handlers. Progress persists after
+each page. Chat paging is creation-descending; channels do not assume that order.
+Equal-timestamp older-page hydration uses the same ascending message-ID tie-break
+as the projected query, so it continues past the requested cursor instead of
+returning pending after a page entirely before that cursor.
+Hydration uses existing version/tombstone merge, journal/outbox and body-free hints.
+Source page absence does not imply deletion.
+
+Matching-epoch body-free `read-view` initialization/continuation markers have no
+TTL; they are not evidence of current source health. Real legacy completed
+coverage is preserved with its original verification timestamp before invalidation.
+Marker progress does not increment material revision or clear global repair gaps.
+Regular verification and reconciliation remain necessary.
+
+### Release prerequisites
+
+The source adds a queue in the existing namespace, not new Graph permissions,
+identities, sizing or account/network settings. Provisioning and grants require
+separate approval:
+
+- `graph-read-refresh`: five-minute TTL, expiry dead-lettering, one-minute lock,
+  five deliveries and one-minute duplicate detection.
+- API identity: **Azure Service Bus Data Sender at this exact queue**.
+- Control identity: **Azure Service Bus Data Receiver at this exact queue**;
+  retries renew locks/wait/abandon and require no sender grant.
+
+`infra\service-dev-access.bicep` provisions this dependency only under its explicit
+access switch. `infra\service-dev.bicep` remains workloads-only.
+`Deploy-ServiceDev.ps1` checks queue properties and exact queue-scoped grants
+read-only before image mutation; it does not create/repair them or normalize
+private inventory. Compact templates grant both operations to their API principal
+because it also hosts Control; compact release scripts do not have the five-role
+ARM dependency preflight. Synchronization-enabled API/Control startup validates
+data-plane access in either topology without submitting/consuming work.
+
+Build a new coordinated image, including the matching frontend for the new read
+`202` contract, and use a fresh browser load for acceptance. The earlier prepared
+Session-only image does not contain it. If combining with the Session migration,
+approve the queue/grants as an additional dependency and retain matching previous
+image/settings pairs. Offline evidence does not approve or establish deployment.
+
+### Support and recovery
+
+1. Separate authority/storage failure from source health. Verify current grants,
+   epoch/mapping and parent eligibility; never extend leases to keep content visible.
+2. Inspect body-free refresh request/coalescing/failure/progress counters,
+   `teamsref_read_refresh_age_ms`, all three queue backlogs/DLQs and
+   `teamsref_repair_stalled`. Use work/checkpoint age, not the age of the last chat
+   message. Normal Graph-budget/rate deferral is distinct from blocked/authentication
+   failure; stalled-repair observation uses a longer threshold for ordinary deferral.
+3. Check queue existence/scoped access, the Control receiver and existing Graph
+   identity/permits. Inspect repair/subscription progress with the existing guarded
+   diagnostics. Available stale history does not make an unhealthy source pass
+   `ProjectionCheck`.
+4. Refresh poison, expired, fenced and fifth-failure work is explicitly dead-lettered.
+   There is **no automatic refresh-DLQ replay**. Inspect its body-free cause, correct
+   the approved dependency, then use a fresh authorized request or separately
+   reviewed recovery. Do not replay arbitrary source URLs, reset projection/authority
+   state or resend messages. An expired refresh continuation has no separate automatic
+   restart machine; broader reconciliation remains available.
+5. Enable/verify the monitoring module and its approved action group before claiming
+   routed support. Compiled alerts or an empty action-group list prove no notification
+   destination. Retained UI availability and source-freshness acceptance remain
+   separate observations.
+
 ## Configuration
+
+### Service-authenticated Development
+
+The normal service path selects `authorityMode=Policy`, `entitlementProvider=Graph`, one hosted role per process and five distinct `roleIdentityClientIds`. It uses the existing sync registration through federation from Control's managed identity. The API keeps its separate Web registration and current-user delegated sends; no interactive principal or password is used for background access. Graph-profile workloads select managed identity explicitly rather than falling back to a developer's CLI identity.
+
+`GraphPolicy` contains the reviewed policy approval reference, Web service-principal object ID, admitted user IDs, allowed direct app-role IDs, existing resource history floors and explicit send-enabled resources. Draft/pending references and legacy synthetic actor/owner/history settings are rejected. This provider models a bounded membership/direct-admission/account-state/history policy; approval must establish that the selected test resources do not require additional unimplemented visibility/DLP/moderation policy. It is not a claim of general enterprise Teams policy equivalence. Normal Graph delegated sends remain the final source enforcement for each user write.
+
+The provider independently reads the Web enterprise application's assignment requirement/enabled state, direct user assignments, admitted users' enabled/member state, chat membership and history boundaries, exact one-to-one pairs, and supported standard-channel/team conditions. Removed/disabled/unassigned users receive inactive grants; unsupported conditions are denied. Missing, mismatched or unproven source evidence fails explicitly. Private/shared/archived/moderated or cross-tenant cases outside this contract are not silently enabled. Group members require an established source history boundary; one-to-one history is bounded by the verified chat creation and configured cutoff.
+
+Shared identity evidence and resource decisions are cached only within their original evidence window. Returned leases are capped by the oldest source snapshot; reading cached evidence cannot renew it. Reusing unchanged proof avoids redundant authority/catalog writes while still repairing a previously interrupted catalog update. The API continues to recheck revocation, fresh grants, history and source-pair evidence.
+
+Application Graph access is restricted in code to approved resource contexts and configured policy fact paths. The seven sync application read roles below were explicitly approved and applied in the confirmed dedicated test tenant. They are actual tenant-wide grants; the application allowlist does not reduce their Entra scope. They are never assigned to Web:
+
+| Approved sync permission | Required operation |
+| --- | --- |
+| `Chat.Read.All` | Existing chat metadata, membership, messages and per-chat subscriptions |
+| `ChannelMessage.Read.All` | Existing channel posts/replies and per-channel subscriptions |
+| `Channel.ReadBasic.All` | Supported channel metadata/type |
+| `Team.ReadBasic.All` | Approved team metadata/archive state |
+| `TeamMember.Read.All` | Standard-channel parent-team membership |
+| `User.Read.All` | Only admitted users' identity, enabled state and member/guest classification |
+| `Application.Read.All` | Only the configured Web service principal and its direct admission assignments |
+
+The background wrapper cannot post messages. It permits only approved encrypted subscription definitions and operations on subscription IDs registered for that resource. Canonical pagination/scope/budget matching and the P1 repair/backoff protections are preserved. Capacity is awaited only before dispatch under a bounded deadline; Graph POSTs are never automatically retried after dispatch.
+
+Normal service `/api/session` reports `backgroundAuthentication=application`, `entitlementProvider=Graph`, and `scopedValidation=false`. Test users still authenticate for interactive use and delegated sends; `ENTRA_AUTH_PROFILE=service` pins this contract without requesting background read or chat-creation scopes. The Control-only `Inspect` diagnostic reports metadata without using user contexts; Api cannot invoke service diagnostics or acquire the sync application's identity.
+
+The Api-only `ProjectionCheck` diagnostic is a separate, read-only data-plane acceptance check. It uses Api's own managed identity to read every approved user's current catalog and bounded snapshots, verify history limits, deny the nonmember of each direct pair, and open only the verified existing contacts. Its proof contains counts, not message bodies or session tokens. It sends no Graph messages and does not mint cookies or claim browser/OIDC/delegated-send acceptance. Both service diagnostics run only as explicitly selected process operations, not public API endpoints.
+
+The Api-only `SessionCheck` storage probe is a separate opt-in write/cleanup operation, not part of read-only smoke. It uses two independent Gateway clients under the same role-bound managed identity and accepts only a named `session-primary-validation-*` container. It verifies the actual account topology, bounded Session content convergence, current revocation and epoch fencing, then deletes only its tracked synthetic documents. No Teams messages are sent. The isolated container's existing procedure and explicit scoped data permission are prerequisites; any temporary grant and tracked cleanup require approval and must not remain as excess Api access afterward.
+
+This service path is deployed. Five sync-owned rich subscriptions were confirmed with exact resource, callback, lifecycle, encryption and client-state bindings. The old combined Control writer was fenced before activation, the existing epoch/resource histories were preserved, and excess compact-role Cosmos/ARM privileges were retired. No source data or uncertain-operation journals were reset. Fresh coverage and the expected memberships for all five resources were established before admission was enabled. Admitted public smoke passed. Subscription renewal, a fresh authenticated journey and the observation beyond the former eight-hour session bound remain explicit acceptance checks, not consequences of ARM success or offline tests. Keep the guarded legacy source until those checks are accepted; its removal is a post-cutover step.
 
 ### Bounded existing-platform Azure validation
 
@@ -36,7 +171,7 @@ Messages are separate documents, not aggregates or per-recipient copies. Project
 
 Background Graph access uses the existing delegated consent and protected server-side token cache. Retained original user principals are bound to tenant, actor and session, and cannot outlive their original cookie expiry or eight hours. They contain neither passwords nor raw Graph tokens. A fresh sign-in is required when those contexts expire; the profile does not invent an unattended production credential. Live token/session caches have a distinct namespace from GraphPilot.
 
-The profile uses `SessionPrimary` on the existing single-region serverless account. `infra\synthetic-live.bicep` supplies separate projection, authority, control and lease containers, read-only procedures, scoped data/queue permissions, encrypted notifications and the versioned notification key. The existing account, service tiers, two Container Apps and their CPU/memory/replica caps remain unchanged. Compact API/control hosting necessarily shares authority-write access; the separate production identity boundaries above still apply to `Policy` deployments.
+New configuration for this compatibility topology also requires `Session` on the existing single-region serverless account. `infra\synthetic-live.bicep` supplies separate projection, authority, control and lease containers, read-only procedures, scoped data/queue permissions, encrypted notifications and the versioned notification key. The existing account, service tiers, two Container Apps and their CPU/memory/replica caps remain unchanged. Compact API/control hosting necessarily shares authority-write access; the separate production identity boundaries above still apply to `Policy` deployments.
 
 Keep resolved settings, Azure snapshots, operation results and post-authentication evidence outside the repository. The operational sequence is:
 
@@ -57,11 +192,23 @@ Graph lifecycle envelopes observed in Azure can omit `tenantId`. They still requ
 
 An unhandled reauthorization signal whose original subscription is confirmed missing (`404`) is reconciled as removal: rotate its client state and checkpoint a replacement under the same approved scope. Other reauthorization failures remain pending rather than triggering a replacement. If a replacement response is lost, exact-correlation recovery resolves that original creation intent without another POST.
 
+Control handles a lifecycle reauthorization challenge and renewal with one `PATCH /subscriptions/{id}` operation, including when renewal would otherwise not yet be due. It does not issue `/reauthorize` and then a renewal PATCH in the same maintenance pass: Graph warns that those operations within ten minutes can cause subscription state inconsistencies. The lifecycle signal is acknowledged only after confirmed renewal is checkpointed; a definitive `404` retains fresh-correlated replacement and uncertain-create recovery semantics.
+
 Source membership leases do not establish production DLP equivalence, an Entra offboarding propagation bound, arbitrary resource onboarding, 200,000-user capacity or regional recovery. Those remain distinct acceptance work.
 
-Coverage renewal starts with two minutes remaining on the existing lease. Subscription/authority refresh and repair run in independent loops, so a long Graph verification cannot block access-lease or subscription maintenance. Repair work runs concurrently across resources but serially within each resource, with at most twenty checkpointed hydration/verification steps shared across that resource's jobs per pass. A new root renewal waits for all pending thread repairs to finish, rather than repeatedly restarting the root before coverage can be committed. Every Graph attempt still uses the existing shared capacity permits; a deferral retains the last successful checkpoint. Completed verification can recover a failed coverage write on the next pass without waiting for a new message or rescanning the resource. That recovery keeps the original verification time and five-minute deadline, remains bounded by the subscription expiry, and cannot reuse expired or superseded proof or bypass pending reply repairs.
+Coverage renewal starts just inside four minutes remaining on the existing five-minute lease. Subscription/authority refresh and repair run in independent loops, so a long Graph verification cannot block access-lease or subscription maintenance. Repair work runs concurrently across resources but serially within each resource, with at most twenty checkpointed hydration/verification steps shared across that resource's jobs per pass. A new root renewal waits for all pending thread repairs to finish, rather than repeatedly restarting the root before coverage can be committed. Every Graph attempt still uses the existing shared capacity permits; a deferral retains the last successful checkpoint. Completed verification can recover a failed coverage write on the next pass without waiting for a new message or rescanning the resource. That recovery keeps the original verification time and five-minute deadline, remains bounded by the subscription expiry, and cannot reuse expired or superseded proof or bypass pending reply repairs.
 
-Known preparing responses trigger only bounded, conversation-specific safe-read retries (eight backoff delays over two minutes, then explicit retry remains available). They retain the announced minimum revision, clear stale content and cancel on view teardown. They do not introduce a new periodic catalog poll or resend messages.
+Graph pagination compares canonical resource identities across continuation validation, delegated scope enforcement and Graph budget keys. Raw/escaped Teams identifiers and supported OData key syntax identify the same approved resource; identifier case, encoded separators, HTTPS authority/version and exact thread boundaries remain enforced. The original continuation query is opaque and is never decoded or rebuilt.
+
+Repair checkpoints remain backward compatible. Pending work is runnable, deferred with a bounded exponential backoff (two to sixty seconds plus up to one second of jitter), or blocked after an invalid continuation/scope. **Blocked work remains pending and prevents coverage restoration**; it is not silently completed or replaced by ordinary scheduling. Pending-job enumeration advances through bounded pages so blocked jobs do not permanently hide later runnable work. Failures retain their code, attempt count and next eligible time without advancing verification evidence. Successful progress resets retry eligibility while retaining the last failure and recovery metadata.
+
+A superseded generation restarts from the approved resource/thread boundary before using its old cursor. A Graph-rejected continuation (`400`/`410`) can trigger one generation-bound restart from that boundary, protected by the checkpoint ETag; a repeated rejection is blocked. Invalid authorities or different resources are never followed. Recovery does not reset conversation data, extend old coverage evidence, change subscriptions/permissions, or replay message sends.
+
+A continuous unavailable-subscription interval fences coverage once per controller instance, rather than advancing the repair generation on every maintenance pass. This preserves repair backoff while a delegated account requires sign-in. A verified available subscription closes that interval; a subsequent distinct gap fences the resource again. Failed invalidation writes remain retryable, and restarting a controller conservatively fences an ongoing gap again.
+
+`Inspect` reports coverage expiry/generation, unresolved repair states, last progress, failure/backoff and recovery metadata without bodies or raw URLs/tokens. An unreadable remote subscription is reported separately from a confirmed missing subscription. Structured control warnings identify the logical resource and stage; duplicate stage/resource/code warnings are aggregated over one-minute intervals. Routine Microsoft Identity/MSAL and HTTP-client information logs are filtered to Warning while application warnings/errors remain available. The existing log-ingestion spending cap is unchanged; an exhausted workspace resumes ingestion at its scheduled reset, not merely because a quieter image is released.
+
+Typed cold pending and retryable operational failures use bounded, conversation-specific safe-read retries (eight backoff delays with a fixed two-minute budget, then explicit retry remains available). Replica-lag delays have bounded jitter. Hints do not restart the budget. Operational/source-coverage failure alone does not clear a valid authorized view; authority expiry, revocation, epoch changes or unverifiable critical security reads do. Access renewal cannot fabricate fresh evidence. Retries cancel on view teardown and never introduce a periodic catalog poll or resend messages.
 
 ### Independent production roles
 
@@ -72,7 +219,7 @@ Start from `infra\parameters\live.parameters.example.json`, stored privately aft
 | Setting | Rule |
 | --- | --- |
 | `approvalReference` | Recorded deployment-specific data/resource approval; not a substitute for that approval |
-| `readConsistency` | `Strong` (backward-compatible default) or `SessionPrimary` (single-region Session/Strong account, primary-read procedure and execute permissions required). The example selects SessionPrimary; no account setting is changed. |
+| `readConsistency` | Required exact value `Session`; missing/legacy names rejected. One readable/writable region, Session/Strong account policy, and the procedure/permissions for critical current reads are required. No account setting is changed. |
 | `writerEpoch` | Positive command-ownership epoch matching persisted conversation and policy evidence; changing it requires a fenced migration |
 | `resources` | Unique URL-safe logical IDs (1-128 letters/digits/`_`/`.`/`-`), kind/title and actual chat/team/channel IDs. Reads are restricted to this allowlist and user authority. A logical ID cannot silently be retargeted to a different Graph conversation; use a new ID or an explicit fenced migration. |
 | `directChats` | Optional approved existing one-to-one mappings: `resourceId`, `firstActorId`, `secondActorId`. The resource must be an approved chat, with unique resource/pair mappings, valid distinct GUIDs and at most 100 contacts per actor. Default empty; no directory grant or Graph chat creation is enabled. |
@@ -146,12 +293,58 @@ Evidence leases cannot exceed five minutes, move backwards, or be extended using
 
 The same authority version cannot be reused with a changed lease, policy or access decision at the same verification timestamp. Revocation closes existing PubSub connections; every subsequent read/send rechecks authority. Content-specific DLP/visibility rules that cannot be represented by this resource/history contract require an explicit contract extension, not a claim of equivalence.
 
+## Session configuration migration
+
+Source changes alone do not authorize Azure changes. The approved Development
+migration is recorded in [deployment evidence](dev-validation.md#combined-service-rollout-2026-10-22);
+other targets still need their own review. Settings using `Strong` or
+`SessionPrimary` are incompatible with the new binary.
+Routine image-only release scripts intentionally refuse them rather than rewriting
+configuration or silently weakening a setting that claims Strong reads.
+
+1. Capture each affected workload's exact image, ready revision, private settings
+   and admission/synchronization state. Retain the previous image/configuration
+   pair for rollback. Verify existing read-only procedures and role permissions;
+   Session consistency alone requires no account upgrade or new grants. Combining
+   it with availability-first recovery requires the separately approved queue and
+   exact sender/receiver grants in [release prerequisites](#release-prerequisites).
+2. Review a private configuration diff changing only `readConsistency` to
+   `Session`, together with the intended image. Update the service-target inventory
+   consistently. New generators require an explicitly migrated source inventory;
+   they do not normalize legacy values silently.
+   Rebuild/review the combined source image; an earlier Session-only image is not
+   the availability-first release package.
+3. Under separately approved admission/writer-fencing safeguards, use the existing
+   configuration-capable deployment path (`infra\service-dev.bicep` for five service
+   workloads), not an ordinary image-only release. Inspect what-if and preserve
+   identities, resources, histories, writer epoch, subscriptions, queues, secrets,
+   sizing and all unrelated settings. Coordinate roles and diagnostic jobs; do not
+   leave an incompatible image/configuration combination active.
+4. Before reopening admission, verify exact revisions, startup storage/queue
+   validation, current authority, exact remote subscriptions and operational
+   progress. Do not turn unhealthy global coverage into a blanket authorized-read
+   gate. Verify strict source health, bounded snapshot/delta recovery and the
+   signed-in read path separately before claiming migration acceptance; available
+   history alone does not pass `ProjectionCheck` or reconciliation acceptance.
+   Use the separate synthetic Cosmos check only with approval for its tracked
+   writes/cleanup; no real Teams sends are required for that storage check.
+5. Compare procedure calls for ordinary content, total RU/latency and catch-up
+   retries with the baseline. Subsequent image-only releases require that all
+   targets already satisfy the Session configuration contract.
+
+Rollback restores the prior image **and its matching settings**, using the same
+approval/fencing safeguards. It must not reset data, journal/outbox state, replay
+an uncertain Graph POST, or remove the procedures/permissions needed by either
+version. Keep historical validation-container names and previous release evidence.
+Legacy identity/runtime/grant cleanup from the service-authentication migration is
+separate work, not permission granted by this consistency cleanup.
+
 ## Staged deployment and rebuild
 
 Directory mutations and billable provisioning require approval. These examples document the commands; do not execute them against a tenant merely to validate local code.
 
 1. Resolve G0, target platform/network/retention requirements, licences/resources, policy authority, budgets, credentials and recovery constraints. Prepare the private live parameter/profile files.
-2. Run `Deploy-Live.ps1` in default what-if mode against the selected **existing private platform** and explicit read profile. For the single-region Session account, select `readConsistency=SessionPrimary`. Only after approval, use `-Apply -ProvisionRbac` to establish role identities, containers, read-only procedures, queue and edge without workload traffic.
+2. Run `Deploy-Live.ps1` in default what-if mode against the selected **existing private platform** with explicit `readConsistency=Session`. Only after approval, use `-Apply -ProvisionRbac` to establish role identities, containers, read-only procedures, queue and edge without workload traffic.
 3. Use its private `identityBindings`/`publicOrigin` outputs to complete the Entra profile: web FIC trusts the API **principal** ID; sync FIC trusts Control's **principal** ID; runtime selects identities by their **client** IDs. Set the web redirect/logout and PubSub callback assignment from actual outputs. Run `Sync-Identity.ps1` Plan/approved Apply/Verify.
 4. Deploy the immutable image with `-DeployWorkloads`, leaving synchronization and admission off. Approve private-origin connectivity and validate DNS, role-specific data access, WAF/large callback handling and actual token exchange.
 5. After approval, enable synchronization with `-DeployWorkloads -EnableSynchronization`; establish subscriptions, decrypt a real approved notification, finish coverage/bootstrap/repair, and verify the policy feed.
@@ -171,13 +364,13 @@ $arguments = @{
 
 The wrapper always sets workload/RBAC/synchronization/admission flags explicitly; parameter-file values cannot silently enable them. `-WhatIf` does not write resources or the private output file. Routine releases must repeat the intended enabled switches and **must not invoke dev seed/reset scripts**. Remote workflow execution, image push and directory mutation are separate actions.
 
-`/health/live` is process health. `/health/ready` is bounded role/onboarding readiness, not a scan/certification of every resource or production SLO; each content read enforces its own coverage/freshness. Readiness alone never approves user admission.
+`/health/live` is process health. `/health/ready` is bounded role/onboarding/dependency readiness, not a scan/certification of every resource or production SLO. Reads enforce current access/retention without treating coverage as a display deadline; release diagnostics separately require healthy synchronization. Readiness alone never approves user admission.
 
 For same-tenant rebuilds, reuse verified owned registrations/grants, but reconcile actual principal IDs, trust, callbacks, runtime allowlists and RBAC. A changed named FIC requires the explicit `-ApproveTrustRotation` path and is rechecked immediately before mutation; unlisted FICs and permission removal still require separate review. For new tenants, recreate tenant-local objects/consent/installations/licensing and resource mappings. Preserve authority, operation, subscription, change-feed lease, delivery-progress and key-version evidence separately from messages; rehydration does not prove that an unknown POST failed.
 
 ## Correctness, retention and current limits
 
-Recent reads use Redis revision-keyed pages or bounded Cosmos queries; there is no Graph cache-miss fallback. The shared page is filtered by current history authority. Cache loss is logged and falls back only to Cosmos. Changes are journaled with projection updates; an expired/oversized catch-up gap requires a new authorized snapshot.
+Recent reads use Redis revision-keyed pages or bounded Cosmos queries. A Redis miss/failure falls back only to Cosmos; a genuinely cold authorized Cosmos view can request bounded Control-owned Teams hydration as described above. The shared page is filtered by current history authority, including restrictions observed while loading it. Changes are journaled with projection updates; an expired/oversized catch-up gap requires a new authorized snapshot.
 
 The catalog is fetched in bounded authorized pages, with a protected continuation header and explicit **Load more conversations** control. Current text filtering searches the loaded catalog pages; it is not a server-side full-history search index. New envelope and storage records carry schema version 1; unsupported versions fail explicitly.
 
@@ -185,9 +378,11 @@ The catalog is fetched in bounded authorized pages, with a protected continuatio
 
 The browser consumes `{conversationId, revision}` hints from Web PubSub, coalesces bursts for 100 ms and updates only the affected open conversation/thread. Known-conversation hints do not reload the catalog. A previously unknown conversation prompts an authorized catalog refresh. A jittered 4-6-minute reconciliation and foreground/reconnect reconciliation recover missed hints. There is no pilot polling transport, SSE application mode or automatic push-to-poll fallback.
 
-`GET /api/conversations/{id}/changes?after=<revision>` returns authorized message upserts/tombstones, reply context, the current history cutoff and a renewed command window. The additive `messages`, `historyFrom` and `window` fields accompany the original revision/reset contract. Gaps, missing legacy reply context, more than 100 journal entries or more than 256 KiB of serialized message upserts require a fresh snapshot, never truncated success. Hidden-parent replies are excluded. The client preserves loaded history on normal deltas, filters tightened history, closes deleted/inaccessible threads and rebuilds all previously loaded pages on a required reset. Snapshot reads use the announced minimum revision. Authorization/coverage failures clear content rather than leave an apparently current view.
+`GET /api/conversations/{id}/changes?after=<revision>&minimumRevision=<target>` returns authorized upserts/tombstones, reply context, the current history cutoff and a renewed command window. Thread requests include `parent` so its current eligibility is checked even during lag. Successful reads and `503 projection_behind` errors carry `access: { historyFrom, validUntil, epoch }`; the deadline is capped by the original authority lease, not coverage. A reader behind `after` or the target is not a journal reset. Changed documents older than their journal entries also report lag rather than claim catch-up.
 
-Session metadata distinguishes `canStartDirectChats` from `canCreateDirectChats`. With approved `directChats` mappings, `Live` supports `/api/people` and `/api/chats/direct` using current policy evidence for both participants, source-verified exact-pair/type authority and the existing projected resource. It exposes names, not inferred email addresses or an organization-wide directory. Selection sends no message and performs no Graph call. A stale authority produces an explicit error; a revoked recipient disappears without expiring the caller's valid session. An uncovered chat reports preparing instead of opening a false empty composer.
+Genuine journal gaps/expiry, more than 100 entries or more than 256 KiB of upserts require an authorized snapshot. Hidden-parent replies are excluded. The browser never regresses its loaded revision, retains loaded pages on normal deltas, and rebuilds the loaded page count on a real reset. During lag or other operational failures, a still-valid same-epoch view can remain after current history/retention filtering; it expires locally at the verified deadline. Authorization/security failures clear it, and network failure does not renew access. Snapshot and older-page reads enforce the revision floor. Sending outcomes and unsent drafts are not replica progress.
+
+Session metadata distinguishes `canStartDirectChats` from `canCreateDirectChats`. With approved `directChats` mappings, `Live` supports `/api/people` and `/api/chats/direct` using current policy evidence for both participants, source-verified exact-pair/type authority and the existing projected resource. It exposes names, not inferred email addresses or an organization-wide directory. Selection sends no message and performs no Graph call. A stale authority produces an explicit error; a revoked recipient disappears without expiring the caller's valid session. Unhealthy coverage does not block opening an approved chat; the subsequent message read distinguishes available, known-empty and cold pending content.
 
 For example, after independently approving and verifying the actual Teams chat type/exact pair and its policy/subscription mapping:
 

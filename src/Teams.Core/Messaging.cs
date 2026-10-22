@@ -5,7 +5,7 @@ using System.Text.Json;
 namespace Teams.Core;
 
 public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICommandBudget budget,
-    ICommandTokens tokens, TimeProvider clock)
+    ICommandTokens tokens, TimeProvider clock, IReadRefresh? refresh = null)
 {
     private DateTimeOffset Now => clock.GetUtcNow();
 
@@ -38,30 +38,109 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
     public async Task<MessagePage> ReadAsync(Actor actor, string id, string? cursor, string? parent,
         long minimumRevision, CancellationToken ct)
     {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), clock);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
+        MessagePage? pending = null;
+        var accepted = false;
+        try
+        {
+            pending = await ReadPageAsync(actor, id, cursor, parent, minimumRevision, linked.Token);
+            if (pending.Refresh is null) return pending;
+            if (!pending.Pending)
+            {
+                if (refresh is not null) await refresh.RequestAsync(pending.Refresh, false, linked.Token);
+                return pending with { Refresh = null };
+            }
+            if (refresh is null)
+                throw new AppError(503, "read_refresh_unavailable", "History could not be loaded. Refresh is currently unavailable.");
+            await refresh.RequestAsync(pending.Refresh, true, linked.Token);
+            accepted = true;
+            foreach (var delay in new[] { 0, 100, 300, 800, 1600 })
+            {
+                if (delay > 0) await Task.Delay(TimeSpan.FromMilliseconds(delay), clock, linked.Token);
+                var page = await ReadPageAsync(actor, id, cursor, parent, minimumRevision, linked.Token);
+                if (!page.Pending) return page with { Refresh = null };
+                pending = page;
+            }
+            return pending;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && deadline.IsCancellationRequested && pending is { Pending: false })
+        {
+            return pending with { Refresh = null };
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && deadline.IsCancellationRequested && accepted && pending is not null)
+        {
+            return pending;
+        }
+    }
+
+    private async Task<MessagePage> ReadPageAsync(Actor actor, string id, string? cursor, string? parent,
+        long minimumRevision, CancellationToken ct)
+    {
+        if (minimumRevision < 0)
+            throw new AppError(400, "invalid_revision", "Revision cannot be negative.");
         var conversation = (await GetAuthorizedAsync(actor, id, ct)).Value;
-        if (!conversation.CoverageReady || conversation.Revision < minimumRevision)
-            throw new AppError(503, "projection_preparing", "Recent content is being synchronized. Try again.");
         var member = Authorize(actor, conversation);
         var boundary = cursor is null ? null
             : JsonSerializer.Deserialize<PageBoundary>(tokens.Validate(actor, id, $"page:{conversation.Epoch}:{parent}", cursor));
-        var parentMessage = parent is null ? null : await store.MessageAsync(actor.TenantId, id, parent, null, ct);
-        if (parent is not null && (parentMessage is null || parentMessage.Deleted ||
-            parentMessage.CreatedAt < member.HistoryFrom || parentMessage.CreatedAt < Now.AddDays(-7)))
+        var access = ReadAccess.Create(member, conversation, Now);
+        if (parent is not null && conversation.Kind != "channel")
             throw new AppError(404, "access_denied", "Thread is not available.");
-        var messages = await store.MessagesAsync(actor, id, parent, member.HistoryFrom, boundary?.At, boundary?.Id, ct);
-        var nextCursor = messages.Count > 20 ? tokens.Issue(actor, id, $"page:{conversation.Epoch}:{parent}",
-            JsonSerializer.Serialize(new PageBoundary(messages[19].CreatedAt, messages[19].Id)), TimeSpan.FromMinutes(15)) : null;
+        var observed = await store.ReadViewAsync(actor.TenantId, id, parent, ct);
+        var view = observed?.Value.Epoch == conversation.Epoch ? observed.Value : null;
+        var parentMessage = parent is null ? null : await store.CurrentMessageAsync(actor.TenantId, id, parent, null, ct);
+        if (parentMessage is not null && (parentMessage.Deleted || parentMessage.CreatedAt < access.HistoryFrom) ||
+            parent is not null && parentMessage is null && view?.ParentMissing == true)
+            throw new AppError(404, "access_denied", "Thread is not available.");
+        if (conversation.Revision < minimumRevision)
+            throw new AppError(503, "projection_behind", "The reader has not reached the requested revision. Synchronizing recent context.",
+                parent is not null && parentMessage is null ? null : access);
+        var request = new ReadRefreshRequest(actor.TenantId, id, conversation.Epoch, parent, boundary?.At, boundary?.Id, Now);
+        MessagePage Pending() => new([], null, conversation.Revision, "",
+            Access: parent is not null && parentMessage is null ? null : access, Refresh: request, Pending: true);
+        if (parent is not null && parentMessage is null) return Pending();
+        var loaded = await store.MessagesAsync(actor, id, parent, member.HistoryFrom, boundary?.At, boundary?.Id, ct);
+        var current = (await GetAuthorizedAsync(actor, id, ct)).Value;
+        if (current.Epoch != conversation.Epoch)
+            throw new AppError(503, "writer_fenced", "Conversation ownership changed during the read.");
+        access = ReadAccess.Create(Authorize(actor, current), current, Now);
+        if (parent is not null)
+        {
+            parentMessage = await store.CurrentMessageAsync(actor.TenantId, id, parent, null, ct);
+            if (parentMessage is null || parentMessage.Deleted || parentMessage.CreatedAt < access.HistoryFrom)
+                throw new AppError(404, "access_denied", "Thread is not available.");
+        }
+        var messages = loaded.Where(message => message.CreatedAt >= access.HistoryFrom).ToArray();
+        var coverage = view is null ? await store.ReadCoverageAsync(actor.TenantId, id, ct) : null;
+        var complete = view is { Complete: true, ParentMissing: false } || current.CoverageReady ||
+            coverage is { Ready: true, VerifiedAt: not null } ||
+            boundary?.At < access.HistoryFrom ||
+            conversation.Kind == "chat" && view?.OldestAt < access.HistoryFrom;
+        if (messages.Length == 0 && !complete) return Pending();
+        var last = messages.Take(20).LastOrDefault();
+        var nextCursor = last is not null && (messages.Length > 20 || !complete) ? tokens.Issue(actor, id, $"page:{conversation.Epoch}:{parent}",
+            JsonSerializer.Serialize(new PageBoundary(last.CreatedAt, last.Id)), TimeSpan.FromMinutes(15)) : null;
         return new(messages.Take(20).OrderBy(m => m.CreatedAt).ToArray(), nextCursor, conversation.Revision,
             tokens.Issue(actor, id, $"command:{conversation.Epoch}", Guid.NewGuid().ToString("N"), TimeSpan.FromMinutes(5)),
-            parentMessage);
+            parentMessage, access, complete ? null : request);
     }
 
-    public async Task<ChangePage> ChangesAsync(Actor actor, string id, long after, CancellationToken ct)
+    public async Task<ChangePage> ChangesAsync(Actor actor, string id, long after, CancellationToken ct,
+        string? parent = null, long minimumRevision = 0)
     {
-        if (after < 0) throw new AppError(400, "invalid_revision", "Revision cannot be negative.");
+        if (after < 0 || minimumRevision < 0) throw new AppError(400, "invalid_revision", "Revision cannot be negative.");
         var conversation = (await GetAuthorizedAsync(actor, id, ct)).Value;
         var member = Authorize(actor, conversation);
         var cutoff = member.HistoryFrom > Now.AddDays(-7) ? member.HistoryFrom : Now.AddDays(-7);
+        if (parent is not null)
+        {
+            var root = await store.CurrentMessageAsync(actor.TenantId, id, parent, null, ct);
+            if (root is null || root.Deleted || root.CreatedAt < cutoff)
+                throw new AppError(404, "access_denied", "Thread is not available.");
+        }
+        var access = ReadAccess.Create(member, conversation, Now);
+        if (conversation.Revision < minimumRevision)
+            throw new AppError(503, "projection_behind", "The reader has not reached the requested revision. Synchronizing recent context.", access);
         var page = await store.ChangesAsync(actor, id, after, ct);
         return page with
         {
@@ -92,7 +171,7 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
         if (command.ParentId is not null)
         {
             var member = Authorize(actor, conversation);
-            var parentMessage = await store.MessageAsync(actor.TenantId, id, command.ParentId, null, ct);
+            var parentMessage = await store.CurrentMessageAsync(actor.TenantId, id, command.ParentId, null, ct);
             if (conversation.Kind != "channel" || parentMessage is null || parentMessage.Deleted ||
                 parentMessage.CreatedAt < member.HistoryFrom || parentMessage.CreatedAt < Now.AddDays(-7))
                 throw new AppError(400, "invalid_parent", "The reply's parent is not available.");

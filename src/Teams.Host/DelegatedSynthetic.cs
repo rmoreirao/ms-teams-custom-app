@@ -104,9 +104,10 @@ public sealed class DelegatedSyntheticGraph(IHttpClientFactory clients, IService
         deadline.CancelAfter(TimeSpan.FromSeconds(25));
         ct = deadline.Token;
         var uri = GraphUrls.Validate(path);
-        var control = uri.AbsolutePath == "/v1.0/subscriptions" || uri.AbsolutePath.StartsWith("/v1.0/subscriptions/", StringComparison.Ordinal);
+        var canonical = GraphUrls.ResourcePath(uri);
+        var control = canonical == "subscriptions" || canonical.StartsWith("subscriptions/", StringComparison.Ordinal);
         var root = resource.Path[..resource.Path.LastIndexOf("/messages", StringComparison.Ordinal)];
-        if (control && method == HttpMethod.Post && uri.AbsolutePath == "/v1.0/subscriptions")
+        if (control && method == HttpMethod.Post && canonical == "subscriptions")
         {
             var definition = JsonSerializer.SerializeToElement(body);
             if (GraphMessages.NormalizeResource(definition.GetProperty("resource").GetString() ?? "") != resource.Path ||
@@ -115,16 +116,16 @@ public sealed class DelegatedSyntheticGraph(IHttpClientFactory clients, IService
                 !definition.GetProperty("includeResourceData").GetBoolean())
                 throw new AppError(403, "synthetic_scope_denied", "Subscription creation left the approved resource or callback.");
         }
-        else if (control && uri.AbsolutePath != "/v1.0/subscriptions")
+        else if (control && canonical != "subscriptions")
         {
-            var parts = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            var subscription = parts.Length >= 3 ? await controlStore.FindSubscriptionAsync(Uri.UnescapeDataString(parts[2]), ct) : null;
+            var parts = canonical.Split('/');
+            var subscription = parts.Length >= 2 ? await controlStore.FindSubscriptionAsync(Uri.UnescapeDataString(parts[1]), ct) : null;
             if (subscription?.Resource != resource.Path)
                 throw new AppError(403, "synthetic_scope_denied", "The subscription is not registered for this test resource.");
         }
         if (!control && (method != HttpMethod.Get ||
-            !(uri.AbsolutePath == $"/v1.0/{root}" || uri.AbsolutePath == $"/v1.0/{root}/members" ||
-              uri.AbsolutePath == $"/v1.0/{resource.Path}" || uri.AbsolutePath.StartsWith($"/v1.0/{resource.Path}/", StringComparison.Ordinal))))
+            !(canonical == root || canonical == $"{root}/members" ||
+              canonical == resource.Path || canonical.StartsWith(resource.Path + "/", StringComparison.Ordinal))))
             throw new AppError(403, "synthetic_scope_denied", "The requested Graph path is outside the approved test resource.");
         string token;
         try

@@ -42,7 +42,7 @@ $source = if ($ScopePath) {
     }
     ($envs | Where-Object name -eq 'Live__Configuration').value | ConvertFrom-Json
 }
-if ($source.authorityMode -ne 'DelegatedSynthetic' -or $source.readConsistency -ne 'SessionPrimary' -or
+if ($source.authorityMode -ne 'DelegatedSynthetic' -or $source.readConsistency -cne 'Session' -or
     -not $source.approvalReference -or $source.writerEpoch -lt 1 -or
     @($source.syntheticActorIds).Count -ne 3 -or @($source.syntheticActorIds | Sort-Object -Unique).Count -ne 3 -or
     @($source.resources).Count -ne 5 -or @($source.directChats).Count -ne 3) {

@@ -85,12 +85,14 @@ export async function installLiveFixture(page: Page) {
     const [, id, action, operationId] = match;
     const revision = state.conversations.find(item => item.id === id)!.revision;
     const messages = state.messages.get(id) ?? [];
+    const access = { historyFrom: state.historyFrom ?? new Date(Date.now() - 7 * 86400_000).toISOString(),
+      validUntil: new Date(Date.now() + 300_000).toISOString(), epoch: 1 };
     if (action === "operations") {
       const operation = state.operations.get(operationId);
       return operation ? route.fulfill({ json: operation }) : failure(404, "not_found", "Operation not found.");
     }
     if (action === "changes") return route.fulfill({ json: {
-      changes: [], revision, resetRequired: false, messages, historyFrom: state.historyFrom, window: "test-command-window",
+      changes: [], revision, resetRequired: false, messages, historyFrom: state.historyFrom, window: "test-command-window", access,
     } });
     if (request.method() === "GET") {
       const parent = url.searchParams.get("parent");
@@ -99,7 +101,7 @@ export async function installLiveFixture(page: Page) {
       const end = Number(url.searchParams.get("cursor") ?? matching.length);
       return route.fulfill({ json: {
         messages: matching.slice(Math.max(0, end - 20), end), cursor: end > 20 ? String(end - 20) : null,
-        revision, window: "test-command-window", parentMessage: parent ? messages.find(item => item.id === parent) : null,
+        revision, window: "test-command-window", parentMessage: parent ? messages.find(item => item.id === parent) : null, access,
       } });
     }
     const body = request.postDataJSON();

@@ -17,6 +17,7 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
     private static string PrincipalPartition(string tenant, string actor) => $"{tenant}|p|{Key(actor)}";
     private static string MessageKey(string id, string? parent) => Key(JsonSerializer.Serialize(new[] { parent, id }));
     private static string MessageId(string id, string? parent) => $"message:{MessageKey(id, parent)}";
+    private static string ReadViewId(string? parent) => $"read-view:{Key(JsonSerializer.Serialize(parent))}";
     private static T Decode<T>(PartitionDocument value)
     {
         if (value.SchemaVersion != 1) throw new InvalidOperationException("Unsupported live document schema; migration is required.");
@@ -30,7 +31,7 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
     public async Task<Versioned<Conversation>?> GetAsync(string tenant, string id, CancellationToken ct)
     {
         if (approvedResources is not null && !approvedResources.Contains(id)) return null;
-        var value = await documents.ReadAsync(Partition(tenant, id), "conversation", ct);
+        var value = await documents.ReadCurrentAsync(Partition(tenant, id), "conversation", ct);
         if (value is null) return null;
         var conversation = Decode<Conversation>(value.Value);
         if (resourceRegistry is not null &&
@@ -75,7 +76,7 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
     }
     private async Task<Entitlement> GrantAsync(Actor actor, string conversation, CancellationToken ct)
     {
-        var value = await Authority.ReadAsync(Partition(actor.TenantId, conversation), $"member:{Key(actor.Id)}", ct);
+        var value = await Authority.ReadCurrentAsync(Partition(actor.TenantId, conversation), $"member:{Key(actor.Id)}", ct);
         var grant = value is null ? null : Decode<Entitlement>(value.Value);
         if (grant is null || !grant.Active) throw new AppError(404, "access_denied", "Conversation is not available.");
         if (grant.TenantId != actor.TenantId || grant.ActorId != actor.Id || grant.ConversationId != conversation ||
@@ -93,7 +94,7 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
         var metadata = await GetAsync(actor.TenantId, conversation, ct);
         if (metadata is null || grant.Epoch != metadata.Value.Epoch)
             throw new AppError(503, "authorization_stale", "Policy and conversation epochs do not match.");
-        return new(grant.ActorId, grant.Name, grant.HistoryFrom);
+        return new(grant.ActorId, grant.Name, grant.HistoryFrom, FreshUntil: grant.FreshUntil);
     }
     public async Task SetEntitlementAsync(Entitlement grant, CancellationToken ct)
     {
@@ -102,7 +103,8 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
             throw new InvalidOperationException("Invalid authority lease; cache access cannot renew source evidence.");
         var pk = Partition(grant.TenantId, grant.ConversationId);
         var memberId = $"member:{Key(grant.ActorId)}";
-        var current = await Authority.ReadAsync(pk, memberId, ct);
+        var current = await Authority.ReadCurrentAsync(pk, memberId, ct);
+        var same = false;
         if (current is not null)
         {
             var previous = Decode<Entitlement>(current.Value);
@@ -112,12 +114,14 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
                 throw new InvalidOperationException("Conflicting policy versions require fresh authoritative evidence.");
             if (grant.VerifiedAt == previous.VerifiedAt && grant != previous)
                 throw new InvalidOperationException("The same source evidence cannot renew or change a policy lease.");
+            same = grant == previous;
         }
-        if (!await Authority.WriteAsync([new(Wrap(memberId, pk, "member", grant.TenantId, grant.ConversationId, grant,
+        if (!same && !await Authority.WriteAsync([new(Wrap(memberId, pk, "member", grant.TenantId, grant.ConversationId, grant,
             actor: grant.ActorId), current?.Version)], ct)) throw new AppError(409, "authority_conflict", "Policy changed concurrently.");
         var catalogPk = PrincipalPartition(grant.TenantId, grant.ActorId);
         var id = $"catalog:{Key(grant.ConversationId)}";
-        var catalog = await Authority.ReadAsync(catalogPk, id, ct);
+        var catalog = await Authority.ReadCurrentAsync(catalogPk, id, ct);
+        if (catalog is not null && Decode<Entitlement>(catalog.Value) == grant) return;
         if (!await Authority.WriteAsync([new(Wrap(id, catalogPk, "catalog", grant.TenantId, grant.ConversationId, grant,
             actor: grant.ActorId), catalog?.Version)], ct))
             throw new AppError(409, "catalog_conflict", "Catalog update must be retried from authority.");
@@ -131,7 +135,7 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
             throw new InvalidOperationException("One-to-one discovery requires bounded authoritative exact-pair evidence.");
         evidence = evidence with { MemberIds = evidence.MemberIds.Order(StringComparer.Ordinal).ToArray() };
         var pk = Partition(evidence.TenantId, evidence.ResourceId);
-        var previous = await Authority.ReadAsync(pk, "direct-chat-authority", ct);
+        var previous = await Authority.ReadCurrentAsync(pk, "direct-chat-authority", ct);
         if (previous is not null)
         {
             var old = Decode<DirectChatAuthority>(previous.Value);
@@ -139,6 +143,7 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
                 evidence.VerifiedAt == old.VerifiedAt && (evidence.AuthorityVersion != old.AuthorityVersion ||
                     evidence.FreshUntil != old.FreshUntil || !evidence.MemberIds.SequenceEqual(old.MemberIds)))
                 throw new InvalidOperationException("Direct-chat authority cannot be retargeted, renewed or changed using stale evidence.");
+            if (evidence.VerifiedAt == old.VerifiedAt) return;
         }
         if (!await Authority.WriteAsync([new(Wrap("direct-chat-authority", pk, "direct-chat-authority",
             evidence.TenantId, evidence.ResourceId, evidence), previous?.Version)], ct))
@@ -146,7 +151,7 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
     }
     public async Task<DirectChatAuthority?> DirectChatAuthorityAsync(string tenant, string resource, CancellationToken ct)
     {
-        var value = await Authority.ReadAsync(Partition(tenant, resource), "direct-chat-authority", ct);
+        var value = await Authority.ReadCurrentAsync(Partition(tenant, resource), "direct-chat-authority", ct);
         return value is null ? null : Decode<DirectChatAuthority>(value.Value);
     }
     public async Task<IReadOnlyList<Message>> MessagesAsync(Actor actor, string conversation, string? parent,
@@ -155,8 +160,8 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
         var grant = await GetMemberAsync(actor, conversation, false, ct);
         var cutoff = new[] { historyFrom, grant.HistoryFrom, Now.AddDays(-7) }.Max();
         var metadata = await GetAsync(actor.TenantId, conversation, ct);
-        if (metadata is null || !metadata.Value.CoverageReady)
-            throw new AppError(503, "projection_preparing", "Recent coverage is not verified.");
+        if (metadata is null)
+            throw new AppError(404, "access_denied", "Conversation is not available.");
         var key = $"recent:v1:{Key($"{actor.TenantId}:{conversation}:{metadata.Value.Epoch}:{metadata.Value.Revision}:{parent}:{before:O}:{beforeId}")}";
         var cached = cache is null ? null : await cache.ReadAsync(key, ct);
         if (cached is not null) return cached.Where(m => m.CreatedAt >= cutoff).ToArray();
@@ -182,6 +187,11 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
         var value = await documents.ReadAsync(Partition(tenant, conversation), MessageId(id, parent), ct);
         return value is null ? null : Decode<Message>(value.Value);
     }
+    public async Task<Message?> CurrentMessageAsync(string tenant, string conversation, string id, string? parent, CancellationToken ct)
+    {
+        var value = await documents.ReadCurrentAsync(Partition(tenant, conversation), MessageId(id, parent), ct);
+        return value is null ? null : Decode<Message>(value.Value);
+    }
     public async Task<ProjectionScan> ScanAsync(string tenant, string conversation, string? parent, string? cursor, CancellationToken ct)
     {
         var page = await documents.QueryAsync(new(tenant, "message", Partition(tenant, conversation),
@@ -193,9 +203,10 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
         if (after < 0) throw new AppError(400, "invalid_revision", "Revision cannot be negative.");
         var member = await GetMemberAsync(actor, conversation, false, ct);
         var metadata = (await GetAsync(actor.TenantId, conversation, ct))!.Value;
-        if (!metadata.CoverageReady) throw new AppError(503, "projection_preparing", "Recent coverage is not verified.");
         var cutoff = member.HistoryFrom > Now.AddDays(-7) ? member.HistoryFrom : Now.AddDays(-7);
-        if (after > metadata.Revision) return new([], metadata.Revision, true, [], cutoff);
+        var access = ReadAccess.Create(member, metadata, Now);
+        if (after > metadata.Revision)
+            throw new AppError(503, "projection_behind", "The reader has not reached the requested revision. Synchronizing recent context.", access);
         var page = await documents.QueryAsync(new(actor.TenantId, "change", Partition(actor.TenantId, conversation),
             AfterRevision: after), 100, null, ct);
         var records = page.Items.Where(v => v.Value.Revision <= metadata.Revision).OrderBy(v => v.Value.Revision).ToArray();
@@ -207,15 +218,18 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
         List<Message> messages = [];
         var bytes = 0;
         if (!reset)
-            foreach (var change in changes.DistinctBy(c => (c.MessageId, c.ParentId)))
+            foreach (var change in changes.OrderByDescending(c => c.Revision).DistinctBy(c => (c.MessageId, c.ParentId)))
             {
-                var message = await MessageAsync(actor.TenantId, conversation, change.MessageId, change.ParentId, ct);
-                if (message is null) { reset = true; break; }
+                var document = await documents.ReadAsync(Partition(actor.TenantId, conversation),
+                    MessageId(change.MessageId, change.ParentId), ct);
+                if (document is null || document.Value.Revision < change.Revision)
+                    throw new AppError(503, "projection_behind", "The changed content is not yet visible. Synchronizing recent context.", access);
+                var message = Decode<Message>(document.Value);
                 if (message.CreatedAt >= cutoff)
                 {
                     if (message.ParentId is not null)
                     {
-                        var parent = await MessageAsync(actor.TenantId, conversation, message.ParentId, null, ct);
+                        var parent = await CurrentMessageAsync(actor.TenantId, conversation, message.ParentId, null, ct);
                         if (parent is null || parent.Deleted || parent.CreatedAt < cutoff) continue;
                     }
                     bytes += Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(message, Json));
@@ -225,11 +239,11 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
             }
         return new(reset ? [] : changes.Where(change => messages.Any(message =>
             message.Id == change.MessageId && message.ParentId == change.ParentId)).ToArray(),
-            metadata.Revision, reset, reset ? [] : messages, cutoff);
+            metadata.Revision, reset, reset ? [] : messages, cutoff, Access: access);
     }
     public async Task<Versioned<SendOperation>?> GetOperationAsync(string tenant, string conversation, string id, CancellationToken ct)
     {
-        var value = await documents.ReadAsync(Partition(tenant, conversation), $"op:{Key(id)}", ct);
+        var value = await documents.ReadCurrentAsync(Partition(tenant, conversation), $"op:{Key(id)}", ct);
         return value is null ? null : new(Decode<SendOperation>(value.Value), value.Version);
     }
     private PartitionDocument Operation(SendOperation operation) => Wrap($"op:{Key(operation.Id)}",
@@ -243,7 +257,7 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
         if (value.Value.State == OperationState.Dispatching)
         {
             var pk = Partition(value.Value.TenantId, value.Value.ConversationId);
-            var metadata = await documents.ReadAsync(pk, "conversation", ct);
+            var metadata = await documents.ReadCurrentAsync(pk, "conversation", ct);
             if (metadata is null || Decode<Conversation>(metadata.Value).Epoch != value.Value.Epoch)
                 throw new AppError(503, "writer_fenced", "Conversation ownership changed before dispatch.");
             writes.Add(new(metadata.Value, metadata.Version));
@@ -273,11 +287,11 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
         if (incoming is not null && incoming.CreatedAt >= Now.AddDays(-7))
         {
             var id = MessageId(incoming.Id, incoming.ParentId);
-            var previous = await documents.ReadAsync(pk, id, ct);
+            var previous = await documents.ReadCurrentAsync(pk, id, ct);
             var old = previous is null ? null : Decode<Message>(previous.Value);
             if (verifiedAgainst is not null && old?.SourceVersion != verifiedAgainst)
                 throw new AppError(409, "source_changed", "The projection changed during authoritative verification.");
-            var tombstone = await documents.ReadAsync(pk, $"tombstone:{MessageKey(incoming.Id, incoming.ParentId)}", ct);
+            var tombstone = await documents.ReadCurrentAsync(pk, $"tombstone:{MessageKey(incoming.Id, incoming.ParentId)}", ct);
             var same = old is not null && (old.SourceVersion == incoming.SourceVersion ||
                 old with { SourceVersion = incoming.SourceVersion } == incoming);
             var older = old is not null && incoming.ModifiedAt < old.ModifiedAt;
@@ -326,6 +340,31 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
         }
         throw new AppError(503, "projection_conflict", "Projection concurrency limit exceeded.");
     }
+    public async Task<Coverage?> ReadCoverageAsync(string tenant, string conversation, CancellationToken ct)
+    {
+        if (await GetAsync(tenant, conversation, ct) is null) return null;
+        var value = await documents.ReadCurrentAsync(Partition(tenant, conversation), "coverage", ct);
+        var coverage = value is null ? null : Decode<Coverage>(value.Value);
+        if (coverage is not null && (coverage.TenantId != tenant || coverage.ConversationId != conversation))
+            throw new InvalidOperationException("Coverage checkpoint does not match its requested resource.");
+        return coverage;
+    }
+    public async Task<Versioned<ReadViewState>?> ReadViewAsync(string tenant, string conversation, string? parent, CancellationToken ct)
+    {
+        var value = await documents.ReadAsync(Partition(tenant, conversation), ReadViewId(parent), ct);
+        return value is null ? null : new(Decode<ReadViewState>(value.Value), value.Version);
+    }
+    public async Task<bool> SaveReadViewAsync(string tenant, string conversation, string? parent,
+        Versioned<ReadViewState>? previous, ReadViewState next, CancellationToken ct)
+    {
+        var pk = Partition(tenant, conversation);
+        var metadata = await documents.ReadCurrentAsync(pk, "conversation", ct);
+        if (metadata is null || Decode<Conversation>(metadata.Value).Epoch != next.Epoch)
+            throw new AppError(503, "writer_fenced", "Conversation ownership changed during read refresh.");
+        return await documents.WriteAsync([
+            new(Wrap(ReadViewId(parent), pk, "read-view", tenant, conversation, next), previous?.Version),
+            new(metadata.Value, metadata.Version)], ct);
+    }
     public async Task SetCoverageAsync(Coverage coverage, CancellationToken ct)
     {
         var current = await GetAsync(coverage.TenantId, coverage.ConversationId, ct) ?? throw new AppError(404, "resource_unknown", "Resource is not onboarded.");
@@ -334,13 +373,22 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
             coverage.RepairGeneration is not null && coverage.RepairGeneration != current.Value.RepairGeneration))
             throw new AppError(409, "coverage_evidence_invalid", "Coverage evidence is expired or superseded by a newer repair requirement.");
         var pk = Partition(coverage.TenantId, coverage.ConversationId);
-        var checkpoint = await documents.ReadAsync(pk, "coverage", ct);
-        if (!await documents.WriteAsync([
+        var checkpoint = await documents.ReadCurrentAsync(pk, "coverage", ct);
+        List<DocumentWrite> writes = [
             new(Wrap("coverage", pk, "coverage", coverage.TenantId, coverage.ConversationId, coverage), checkpoint?.Version),
             new(Wrap("conversation", pk, "conversation", coverage.TenantId, coverage.ConversationId,
                 current.Value with { CoverageReady = coverage.Ready, CoverageUntil = coverage.Ready ?
                     coverage.FreshUntil ?? coverage.VerifiedAt?.AddMinutes(5) : null,
-                    RepairGeneration = current.Value.RepairGeneration + (coverage.Ready ? 0 : 1) }), current.Version)], ct))
+                    RepairGeneration = current.Value.RepairGeneration + (coverage.Ready ? 0 : 1) }), current.Version)];
+        var historical = checkpoint is null ? null : Decode<Coverage>(checkpoint.Value);
+        if (!coverage.Ready && historical is { Ready: true, VerifiedAt: { } verified })
+        {
+            var view = await ReadViewAsync(coverage.TenantId, coverage.ConversationId, null, ct);
+            if (view?.Value.Epoch != current.Value.Epoch || !view.Value.Complete)
+                writes.Add(new(Wrap(ReadViewId(null), pk, "read-view", coverage.TenantId, coverage.ConversationId,
+                    new ReadViewState(current.Value.Epoch, true, null, verified)), view?.Version));
+        }
+        if (!await documents.WriteAsync(writes, ct))
             throw new AppError(409, "coverage_conflict", "Coverage changed concurrently.");
     }
     public async Task<EntitlementPage> RecipientsAsync(string tenant, string conversation, string? cursor, CancellationToken ct)
@@ -356,7 +404,7 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
     }
     public async Task CompleteOutboxAsync(OutboxChange change, CancellationToken ct)
     {
-        var value = await documents.ReadAsync(Partition(change.TenantId, change.ConversationId), $"outbox:{change.Id}", ct);
+        var value = await documents.ReadCurrentAsync(Partition(change.TenantId, change.ConversationId), $"outbox:{change.Id}", ct);
         if (value is not null && value.Value.Pending &&
             !await documents.WriteAsync([new(value.Value with { Pending = false }, value.Version)], ct))
             throw new AppError(409, "outbox_conflict", "Outbox publication checkpoint changed concurrently.");
@@ -364,12 +412,12 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
     public async Task<Versioned<DeliveryProgress>> DeliveryAsync(OutboxChange change, CancellationToken ct)
     {
         var pk = Partition(change.TenantId, change.ConversationId);
-        var outbox = await documents.ReadAsync(pk, $"outbox:{change.Id}", ct)
+        var outbox = await documents.ReadCurrentAsync(pk, $"outbox:{change.Id}", ct)
             ?? throw new AppError(410, "outbox_expired", "Delivery intent is missing or expired; inspect recovery evidence.");
         if (Decode<OutboxChange>(outbox.Value) != change)
             throw new AppError(400, "delivery_identity_mismatch", "Delivery work does not match its durable intent.");
         if (!outbox.Value.Pending) return new(new(0, null, "", DateTimeOffset.MinValue, true), "");
-        var progress = await documents.ReadAsync(pk, $"delivery:{change.Id}", ct);
+        var progress = await documents.ReadCurrentAsync(pk, $"delivery:{change.Id}", ct);
         return progress is null ? new(new(0, null, "", DateTimeOffset.MinValue, false), "") :
             new(Decode<DeliveryProgress>(progress.Value), progress.Version);
     }
@@ -379,7 +427,7 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
         if (next.Page < previous.Value.Page || next.Page > previous.Value.Page + 1 || previous.Value.Complete)
             throw new InvalidOperationException("Delivery progress cannot rewind or skip a page.");
         var pk = Partition(change.TenantId, change.ConversationId);
-        var outbox = await documents.ReadAsync(pk, $"outbox:{change.Id}", ct);
+        var outbox = await documents.ReadCurrentAsync(pk, $"outbox:{change.Id}", ct);
         if (outbox is null || !outbox.Value.Pending) return false;
         if (Decode<OutboxChange>(outbox.Value) != change)
             throw new AppError(400, "delivery_identity_mismatch", "Delivery intent changed.");
@@ -388,7 +436,7 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
             change.ConversationId, next, ttl), previous.Version.Length == 0 ? null : previous.Version)];
         if (next.Complete)
         {
-            var metadata = await documents.ReadAsync(pk, "conversation", ct)
+            var metadata = await documents.ReadCurrentAsync(pk, "conversation", ct)
                 ?? throw new AppError(503, "delivery_resource_missing", "Delivery metadata is missing.");
             var conversation = Decode<Conversation>(metadata.Value);
             if (next.TargetRevision < change.Revision || next.TargetRevision > conversation.Revision)
@@ -401,13 +449,13 @@ public sealed class LiveStateStore(IPartitionDocuments documents, TimeProvider c
     }
     public async Task<bool> IsBlockedAsync(string tenant, string actor, CancellationToken ct)
     {
-        var value = await Authority.ReadAsync(PrincipalPartition(tenant, actor), "revocation", ct);
+        var value = await Authority.ReadCurrentAsync(PrincipalPartition(tenant, actor), "revocation", ct);
         return value is not null && Decode<bool>(value.Value);
     }
     public async Task SetBlockedAsync(string tenant, string actor, bool blocked, CancellationToken ct)
     {
         var pk = PrincipalPartition(tenant, actor);
-        var current = await Authority.ReadAsync(pk, "revocation", ct);
+        var current = await Authority.ReadCurrentAsync(pk, "revocation", ct);
         if (!await Authority.WriteAsync([new(Wrap("revocation", pk, "revocation", tenant, "", blocked), current?.Version)], ct))
             throw new AppError(409, "revocation_conflict", "Revocation changed concurrently.");
     }

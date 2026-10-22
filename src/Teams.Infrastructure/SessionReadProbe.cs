@@ -3,18 +3,22 @@ using Teams.Core;
 
 namespace Teams.Infrastructure;
 
-public sealed record SessionPrimaryProof(bool ProjectionVisible, bool RevocationVisible, bool EpochFenced, int CleanedDocuments);
+public sealed record SessionReadProof(bool ProjectionVisible, bool RevocationVisible, bool EpochFenced, int CleanedDocuments);
 
-public static class SessionPrimaryProbe
+public static class SessionReadProbe
 {
-    public static async Task<SessionPrimaryProof> RunAsync(CosmosClient first, CosmosClient second, string containerName, CancellationToken ct)
+    public static void ValidateContainerName(string containerName)
     {
         if (!System.Text.RegularExpressions.Regex.IsMatch(containerName, "^session-primary-validation-[a-z0-9-]{1,64}$"))
             throw new InvalidOperationException("Use an explicitly selected isolated synthetic validation container.");
+    }
+    public static async Task<SessionReadProof> RunAsync(CosmosClient first, CosmosClient second, string containerName, CancellationToken ct)
+    {
+        ValidateContainerName(containerName);
         var container = first.GetContainer("teams", containerName);
-        var tracked = new Tracked(new CosmosPartitionDocuments(container, true));
+        var tracked = new Tracked(new CosmosPartitionDocuments(container));
         var writer = new LiveStateStore(tracked, TimeProvider.System);
-        var reader = new LiveStateStore(new CosmosPartitionDocuments(second.GetContainer("teams", containerName), true), TimeProvider.System);
+        var reader = new LiveStateStore(new CosmosPartitionDocuments(second.GetContainer("teams", containerName)), TimeProvider.System);
         var tenant = $"synthetic-session-validation-{Guid.NewGuid():N}";
         var actor = new Actor(tenant, "synthetic-actor", "Synthetic actor");
         const string resource = "synthetic-conversation";
@@ -34,9 +38,13 @@ public static class SessionPrimaryProbe
             await reader.IsBlockedAsync(tenant, actor.Id, ct);
             await writer.ApplyAsync(tenant, resource, new("synthetic-message", actor.Id, actor.Name,
                 "Synthetic Cosmos validation, not Teams content.", now, now), ct);
-            var metadata = (await reader.GetAsync(tenant, resource, ct))!;
-            var messages = await reader.MessagesAsync(actor, resource, null, now.AddDays(-1), null, null, ct);
-            visible = metadata.Value.Revision == 1 && messages.Any(message => message.Id == "synthetic-message");
+            for (var attempt = 0; attempt < 20 && !visible; attempt++)
+            {
+                var metadata = (await reader.GetAsync(tenant, resource, ct))!;
+                var messages = await reader.MessagesAsync(actor, resource, null, now.AddDays(-1), null, null, ct);
+                visible = metadata.Value.Revision == 1 && messages.Any(message => message.Id == "synthetic-message");
+                if (!visible) await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
+            }
             var operation = new SendOperation(Guid.NewGuid().ToString(), tenant, resource, actor.Id, "synthetic-fingerprint",
                 "", null, OperationState.Pending, DateTimeOffset.UtcNow, Epoch: 1);
             if (!await writer.CreateOperationAsync(operation, ct)) throw new InvalidOperationException("Synthetic operation collided.");
@@ -54,7 +62,7 @@ public static class SessionPrimaryProbe
             catch (AppError error) when (error.Status == 404) { denied = true; }
             await writer.SetBlockedAsync(tenant, actor.Id, true, ct);
             revoked = denied && await reader.IsBlockedAsync(tenant, actor.Id, ct);
-            if (!visible || !revoked || !fenced) throw new AppError(503, "session_probe_failed", "The independent-client SessionPrimary check failed.");
+            if (!visible || !revoked || !fenced) throw new AppError(503, "session_probe_failed", "The independent-client Session/current-read check failed.");
         }
         finally
         {
@@ -70,6 +78,7 @@ public static class SessionPrimaryProbe
     {
         public HashSet<(string Pk, string Id)> Created { get; } = [];
         public Task<Versioned<PartitionDocument>?> ReadAsync(string pk, string id, CancellationToken ct) => inner.ReadAsync(pk, id, ct);
+        public Task<Versioned<PartitionDocument>?> ReadCurrentAsync(string pk, string id, CancellationToken ct) => inner.ReadCurrentAsync(pk, id, ct);
         public Task<DocumentPage> QueryAsync(DocumentFilter filter, int limit, string? cursor, CancellationToken ct) =>
             inner.QueryAsync(filter, limit, cursor, ct);
         public async Task<bool> WriteAsync(IReadOnlyList<DocumentWrite> writes, CancellationToken ct)

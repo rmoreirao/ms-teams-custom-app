@@ -378,6 +378,7 @@ function Feed(props: FeedProps) {
     unavailable: props.unavailable, expired: props.authenticationRequired, syncParent: props.syncParent,
   });
   const error = readError || sendError;
+  const showMessages = !error || !!page && preparing && !!readError && !sendError;
   useLayoutEffect(() => {
     if (props.focusComposer) composerRef.current?.focus();
     else titleRef.current?.focus();
@@ -449,7 +450,7 @@ function Feed(props: FeedProps) {
         {loadingMore ? "Loading earlier messages..." : "Load earlier messages"}</button>}
       {!loading && !error && !messages.length && <div className="state"><h2>{parent ? "Start the thread" : "No messages yet"}</h2><p>{parent ? "Add a reply to keep this discussion together."
         : "No messages are available in the recent history you can access."}</p></div>}
-      {(!error || optimistic.length > 0) && <MessageList messages={error ? messages.filter(message => outgoing.has(message.id)) : messages}
+      {(showMessages || optimistic.length > 0) && <MessageList messages={showMessages ? messages : messages.filter(message => outgoing.has(message.id))}
         actorId={session.id} scrollRef={scrollRef} threaded={!parent && conversation.kind === "channel"} onThread={onThread}
         delivery={message => {
           const item = outgoing.get(message.id);

@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { chromium } from "@playwright/test";
-import { credentialKeys, describeEndpoint, generateTotp, isLiveSession, readPageState, readSettings, SignInCheckError, validatePasswordEntry, verifyAuthorization, waitForSession } from "./entra-signin.mjs";
+import { credentialKeys, describeEndpoint, generateTotp, isLiveSession, isServiceSession, readPageState, readSettings, SignInCheckError, validatePasswordEntry, verifyAuthorization, waitForSession } from "./entra-signin.mjs";
 import { validateLiveMetadata, waitForOriginalOperation } from "./teams-validation.mjs";
 import { createHash } from "node:crypto";
 
@@ -18,6 +18,34 @@ const env = {
   TEST_ALEX_PASSWORD: "unit-test-password",
   TEST_ALEX_TOTP_SECRET: seed,
 };
+
+test("service-profile sign-in requests only delegated user-send scopes, never background reads", () => {
+  const settings = readSettings({ ...env, ENTRA_AUTH_PROFILE: "service" });
+  const url = new URL(`https://login.microsoftonline.com/${settings.tenantId}/oauth2/v2.0/authorize`);
+  url.searchParams.set("client_id", settings.clientId);
+  url.searchParams.set("redirect_uri", `${settings.origin}/auth/callback`);
+  url.searchParams.set("scope", "openid profile offline_access ChatMessage.Send ChannelMessage.Send");
+  assert.equal(verifyAuthorization(url.href, settings), url.href);
+  for (const scope of ["Chat.Read", "Chat.Create", "ChannelMessage.Read.All"]) {
+    url.searchParams.set("scope", `openid profile offline_access ChatMessage.Send ChannelMessage.Send ${scope}`);
+    assert.throws(() => verifyAuthorization(url.href, settings), SignInCheckError);
+  }
+});
+
+test("service-profile sessions cannot fall back to retained-user synchronization", async () => {
+  const session = { id: env.ENTRA_EXPECTED_ACTOR_ID, environment: "Development", source: "Microsoft Teams",
+    scopedValidation: false, backgroundAuthentication: "application", entitlementProvider: "Graph",
+    canStartDirectChats: true, canCreateDirectChats: false };
+  assert.equal(isServiceSession(session), true);
+  assert.equal(isServiceSession({ ...session, scopedValidation: true }), false);
+  assert.equal(isServiceSession({ ...session, backgroundAuthentication: "delegated-validation" }), false);
+  assert.equal(isServiceSession({ ...session, entitlementProvider: "External" }), false);
+  const request = { get: async () => ({ status: () => 200, json: async () => session, dispose: async () => {} }) };
+  const settings = { origin: env.REFERENCE_BASE_URL, actorId: session.id, authProfile: "service" };
+  assert.equal((await waitForSession(request, settings)).environment, "Development");
+  request.get = async () => ({ status: () => 200, json: async () => ({ ...session, scopedValidation: true }), dispose: async () => {} });
+  await assert.rejects(() => waitForSession(request, settings), SignInCheckError);
+});
 
 test("verifies the expected session independently of a closed page and rejects invalid sessions", async () => {
   const actorId = env.ENTRA_EXPECTED_ACTOR_ID;

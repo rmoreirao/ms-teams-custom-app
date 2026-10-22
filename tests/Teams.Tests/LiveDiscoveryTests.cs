@@ -132,10 +132,10 @@ public sealed class LiveDiscoveryTests
         Assert.Equal("authorization_stale", (await Assert.ThrowsAsync<AppError>(() => Service.OpenAsync(actor, Sam, default))).Code);
     }
     [Fact]
-    public async Task UncoveredChatCannotPretendToBeAnEmptyReadyComposer()
+    public async Task ApprovedChatCanOpenBeforeContentHydrationWithoutEnablingUnapprovedAdmission()
     {
         await Prepare(false);
-        Assert.Equal("projection_preparing", (await Assert.ThrowsAsync<AppError>(() => Service.OpenAsync(actor, Sam, default))).Code);
+        Assert.Equal("approved-pair", (await Service.OpenAsync(actor, Sam, default)).Id);
         options.AdmissionEnabled = false;
         Assert.Equal("admission_disabled", (await Assert.ThrowsAsync<AppError>(() => Service.PeopleAsync(actor, default))).Code);
     }

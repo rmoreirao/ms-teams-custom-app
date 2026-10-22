@@ -19,7 +19,7 @@ public sealed class SyntheticRuntimeTests
         "55555555-5555-5555-5555-555555555555"
     ];
     private static LiveOptions Options() => new() {
-        AuthorityMode = "DelegatedSynthetic", ReadConsistency = "SessionPrimary",
+        AuthorityMode = "DelegatedSynthetic", ReadConsistency = "Session",
         SyntheticActorIds = Actors.ToArray(), SyntheticNotBefore = DateTimeOffset.UtcNow.AddDays(-1),
         HostedRoles = ["Api","Receiver","Control"]
     };

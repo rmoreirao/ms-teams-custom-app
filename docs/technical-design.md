@@ -348,14 +348,32 @@ Infrastructure as code must express regional availability, quotas, zone settings
 ### 7.1 Recent-read path
 
 1. Authenticate the application session and check revocation/authorization state.
-2. Enforce conversation access, visible history, content policy, and projection coverage.
+2. Enforce current conversation access, visible history, content policy, parent eligibility and epoch.
 3. Read the shared hot view from Redis; use bounded Cosmos queries on a miss.
-4. Return a stable application cursor, authorized content, and coverage/freshness metadata.
+4. Return available authorized content with a stable cursor, revision, command window and authority-bounded access proof.
 5. Render usable content and measure end-to-end latency.
 
-No routine Graph polling or synchronous multi-page scan occurs in this path. Pre-hydrate the working set before opening it to traffic. If the projection has a gap, schedule coalesced, budgeted repair and expose that state explicitly.
+Healthy source coverage is not a display prerequisite. Existing history stays available while repair runs, accepting that missed edits/deletions can remain visible until reconciliation or seven-day content expiry. A truly cold initial/thread/older page submits body-free durable work for Control, waits within five seconds for an authorized Cosmos reread, then returns usable content or typed `202` pending. Known-empty requires real initialization evidence, not an empty query. Browser recovery is bounded to 120 seconds. Redis miss/failure alone does not trigger Graph, and a Cosmos/security-store outage cannot bypass the projection guard.
+
+Control coalesces contexts across replicas and uses shared Graph permits, conditional progress and the existing merge/outbox path. Each job is bounded to three 50-item source pages plus an optional parent lookup and 45 seconds. Regular notification intake, verification and reconciliation remain responsible for full source health. Revision-keyed cache entries need no synchronous invalidation; the change feed dispatches only committed outbox work and does not establish source completeness.
 
 Use conversation-scoped documents and efficient membership/inbox indexes. Bound the first page and response size. Popular conversations need appropriate cache handling to avoid a hot Cosmos partition.
+
+Content uses native Cosmos Session reads; authorization, parent eligibility and
+critical control/write decisions retain explicit current reads. Read consistency,
+transactional atomicity and Teams source freshness are separate guarantees.
+Independent backend clients do not share a Session context automatically.
+
+An API behind a requested revision reports `projection_behind`, not an invalid
+cursor. The browser never regresses its loaded revision and retries within a fixed
+budget. It may preserve loaded content during operational failures only with valid,
+same-epoch history/authority bounds, applying restrictions immediately,
+renewing access before its deadline and clearing at expiry. No network failure
+renews authority. Revocation or an unverifiable critical guard still fails closed;
+source synchronization health is separate from that guard.
+Real journal loss still requires an authorized snapshot. See
+[ADR 0012](adr/0012-session-content-reads-and-revision-convergence.md) and
+[ADR 0013](adr/0013-availability-first-reads-and-bounded-hydration.md).
 
 ### 7.2 Confirmed-write path
 

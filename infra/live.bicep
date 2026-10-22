@@ -19,8 +19,11 @@ param syncClientId string
 param eventsClientId string
 param trustedProxyCidr string
 param insightsConnectionString string = ''
-@description('Reviewed nonsecret LiveOptions configuration; never include credentials, private certificates, or tokens.')
-param liveConfig object
+type LiveConfiguration = {
+  readConsistency: 'Session'
+}
+@description('Reviewed nonsecret Session LiveOptions configuration; never include credentials, private certificates, or tokens.')
+param liveConfig LiveConfiguration
 param deployWorkloads bool = false
 param provisionRbac bool = false
 param enableSynchronization bool = false
@@ -44,8 +47,6 @@ resource database 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2024-05-15
   name: 'teams'
 }
 var containerNames = ['live-state', 'live-authority', 'live-control']
-var readConsistency = contains(liveConfig, 'readConsistency') ? liveConfig.readConsistency : 'Strong'
-var primaryReads = readConsistency == 'SessionPrimary'
 resource containers 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-05-15' = [for name in containerNames: {
   parent: database
   name: name
@@ -66,12 +67,12 @@ resource leases 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2
     partitionKey: { paths: ['/id'], kind: 'Hash' }
   } }
 }
-resource primaryReadProcedures 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/storedProcedures@2024-05-15' = [for (name, index) in containerNames: if (primaryReads) {
+resource primaryReadProcedures 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/storedProcedures@2024-05-15' = [for (name, index) in containerNames: {
   parent: containers[index]
   name: 'readCurrentV1'
   properties: { resource: { id: 'readCurrentV1', body: loadTextContent('cosmos/read-current-v1.js') } }
 }]
-resource primaryReadRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions@2024-05-15' = if (primaryReads && provisionRbac) {
+resource primaryReadRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions@2024-05-15' = if (provisionRbac) {
   parent: cosmos
   name: guid(cosmos.id, base, 'primary-reader-v1')
   properties: {
@@ -90,6 +91,15 @@ resource primaryReadRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitio
   }
 }
 resource bus 'Microsoft.ServiceBus/namespaces@2024-01-01' existing = { name: serviceBusName }
+module readRefresh 'modules/read-refresh.bicep' = {
+  name: 'live-read-refresh'
+  params: {
+    serviceBusName: serviceBusName
+    apiPrincipalId: identities[0].properties.principalId
+    controlPrincipalId: identities[4].properties.principalId
+    provisionAccess: provisionRbac
+  }
+}
 resource notifications 'Microsoft.ServiceBus/namespaces/queues@2024-01-01' = {
   parent: bus
   name: 'graph-notifications'
@@ -142,7 +152,7 @@ resource dataRoles 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@202
   name: guid(cosmos.id, identities[access.role].id, containerNames[access.container], access.permission)
   properties: {
     principalId: identities[access.role].properties.principalId
-    roleDefinitionId: primaryReads && access.permission == '00000000-0000-0000-0000-000000000001'
+    roleDefinitionId: access.permission == '00000000-0000-0000-0000-000000000001'
       ? primaryReadRole.id
       : '${cosmos.id}/sqlRoleDefinitions/${access.permission}'
     scope: '${cosmos.id}/dbs/teams/colls/${containerNames[access.container]}'
@@ -322,7 +332,7 @@ resource apps 'Microsoft.App/containerApps@2025-07-01' = [for (role, index) in r
       }
     }
   }
-  dependsOn: [containers, primaryReadProcedures, leases, dataRoles, leaseAccess, pulls, senders, receiver, deliveryAccess, redisAccess, realtime, sessionProtection, decryption]
+  dependsOn: [containers, primaryReadProcedures, leases, dataRoles, leaseAccess, pulls, senders, receiver, deliveryAccess, readRefresh, redisAccess, realtime, sessionProtection, decryption]
 }]
 resource groups 'Microsoft.Cdn/profiles/originGroups@2024-02-01' = [for index in [0, 1]: if (deployWorkloads) {
   parent: edge

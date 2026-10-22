@@ -9,6 +9,11 @@
 
 ## Decision
 
+**Historical consistency decision:** [ADR 0012](0012-session-content-reads-and-revision-convergence.md)
+supersedes the Strong/SessionPrimary profile selection below with explicit Session
+content reads and targeted current reads. The original decision and its evidence
+remain here; other boundaries are not superseded by that change.
+
 Retain one codebase and image with independent Api, Receiver, Projector, Delivery and Control roles. Separate projection, authority and subscription/repair state into `live-state`, `live-authority` and `live-control` containers. Keep the simulator and its aggregate schema isolated; do not migrate fixture bodies into live data.
 
 Support two explicit Cosmos read profiles. The original `Strong` profile remains the default and requests account-level Strong reads. `SessionPrimary` supports a single-readable/single-writable-region Session account, including serverless, without upgrading its consistency setting. It executes the bounded, read-only `readCurrentV1` stored procedure for point reads in projection, authority and control containers. Microsoft documents that stored procedures execute on the primary replica and their reads offer strong consistency; the SDK captures the returned partition session token for subsequent same-client queries. Point reads therefore establish a current revision/authority barrier instead of assuming independent Session clients share tokens.

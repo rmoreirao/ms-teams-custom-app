@@ -38,13 +38,16 @@ public sealed class PrimaryReadTests
             new PrimaryReadResult(1, true, Document, "etag").Validate("tenant|resource", "member", null)).Code);
     }
     [Theory]
-    [InlineData("Strong", "Strong", 1, 1, true)]
+    [InlineData("Session", "Session", 1, 1, true)]
+    [InlineData("Session", "Strong", 1, 1, true)]
+    [InlineData("", "Session", 1, 1, false)]
+    [InlineData("Strong", "Strong", 1, 1, false)]
     [InlineData("Strong", "Session", 1, 1, false)]
-    [InlineData("SessionPrimary", "Session", 1, 1, true)]
-    [InlineData("SessionPrimary", "Strong", 1, 1, true)]
-    [InlineData("SessionPrimary", "Eventual", 1, 1, false)]
-    [InlineData("SessionPrimary", "Session", 2, 1, false)]
-    [InlineData("SessionPrimary", "Session", 2, 2, false)]
+    [InlineData("SessionPrimary", "Session", 1, 1, false)]
+    [InlineData("SessionPrimary", "Strong", 1, 1, false)]
+    [InlineData("Session", "Eventual", 1, 1, false)]
+    [InlineData("Session", "Session", 2, 1, false)]
+    [InlineData("Session", "Session", 2, 2, false)]
     [InlineData("Unsupported", "Session", 1, 1, false)]
     public void StorageProfileIsValidatedAtRuntimeNotOnlyByTheDeploymentScript(string profile, string account,
         int reads, int writes, bool accepted)

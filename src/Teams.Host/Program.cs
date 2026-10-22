@@ -89,7 +89,7 @@ public static class TeamsApplication
                 {
                     var id = context.Principal?.FindFirstValue("oid") ??
                         context.Principal?.FindFirstValue("http://schemas.microsoft.com/identity/claims/objectidentifier");
-                    if (id is null || liveOptions.DelegatedSynthetic && !liveOptions.SyntheticActorIds.Contains(id))
+                    if (id is null || !liveOptions.Admits(id))
                     {
                         context.Fail("This development application is limited to its approved identities.");
                         return Task.CompletedTask;
@@ -166,7 +166,8 @@ public static class TeamsApplication
                 if (context.Response.HasStarted) throw;
                 context.Response.StatusCode = ex.Status;
                 if (ex.Status == 429) context.Response.Headers.RetryAfter = "2";
-                await context.Response.WriteAsJsonAsync(new { code = ex.Code, message = ex.Message, traceId = context.TraceIdentifier });
+                await context.Response.WriteAsJsonAsync(new { code = ex.Code, message = ex.Message, access = ex.Access,
+                    traceId = context.TraceIdentifier });
             }
             catch (Exception ex)
             {
@@ -186,7 +187,7 @@ public static class TeamsApplication
                 var actor = Current(context);
                 if (!liveOptions.AdmissionEnabled && context.Request.Path != "/api/session")
                     throw new AppError(503, "live_admission_disabled", "Live user admission has not been approved.");
-                if (actor.TenantId != tenant || liveOptions.DelegatedSynthetic && !liveOptions.SyntheticActorIds.Contains(actor.Id) ||
+                if (actor.TenantId != tenant || !liveOptions.Admits(actor.Id) ||
                     await context.RequestServices.GetRequiredService<IPrincipalRevocations>().IsBlockedAsync(tenant, actor.Id, context.RequestAborted))
                     throw new AppError(401, "authentication_required", "This session no longer has access. Sign in again.");
             }
@@ -245,6 +246,8 @@ public static class TeamsApplication
                 environment = "Development",
                 source = "Microsoft Teams",
                 scopedValidation = liveOptions.DelegatedSynthetic,
+                backgroundAuthentication = liveOptions.DelegatedSynthetic ? "delegated-validation" : "application",
+                entitlementProvider = liveOptions.EntitlementProvider,
                 canStartDirectChats = liveOptions.DirectChats.Length > 0,
                 canCreateDirectChats = false,
                 csrf = csrf.GetAndStoreTokens(c).RequestToken
@@ -263,10 +266,17 @@ public static class TeamsApplication
                 c.Response.Headers["X-Next-Cursor"] = commands.Issue(actor, "catalog", "catalog-page", page.Cursor, TimeSpan.FromMinutes(5));
             return page.Items;
         });
-        api.MapGet("/conversations/{id}/messages", (string id, string? cursor, string? parent, long? minimumRevision,
-            HttpContext c, Messaging service, CancellationToken ct) => service.ReadAsync(Current(c), id, cursor, parent, minimumRevision ?? 0, ct));
-        api.MapGet("/conversations/{id}/changes", (string id, long? after, HttpContext c, Messaging service, CancellationToken ct) =>
-            service.ChangesAsync(Current(c), id, after ?? 0, ct));
+        api.MapGet("/conversations/{id}/messages", async (string id, string? cursor, string? parent, long? minimumRevision,
+            HttpContext c, Messaging service, CancellationToken ct) =>
+        {
+            var page = await service.ReadAsync(Current(c), id, cursor, parent, minimumRevision ?? 0, ct);
+            if (!page.Pending) return Results.Ok(page);
+            c.Response.Headers.RetryAfter = "1";
+            return Results.Json(new PendingRead("pending", 1000, page.Access), statusCode: 202);
+        });
+        api.MapGet("/conversations/{id}/changes", (string id, long? after, string? parent, long? minimumRevision,
+            HttpContext c, Messaging service, CancellationToken ct) =>
+            service.ChangesAsync(Current(c), id, after ?? 0, ct, parent, minimumRevision ?? 0));
         api.MapPost("/conversations/{id}/messages", async (string id, SendCommand command, HttpContext c, Messaging service, CancellationToken ct) =>
         {
             var result = await service.SendAsync(Current(c), id, command, ct);

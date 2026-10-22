@@ -56,7 +56,7 @@ test("invalid and oversized primary point-read arguments are rejected", () => {
   for (const input of [{ id: "" }, { id: "x".repeat(1025) }, { partition: "" }, { partition: "x".repeat(2049) }])
     assert.throws(() => execute(input), /Invalid primary point-read arguments/);
 });
-test("SessionPrimary provisioning keeps authority readers free of item-write actions", () => {
+test("Session provisioning retains critical current reads without item-write actions for authority readers", () => {
   const template = readFileSync(new URL("../../infra/live.bicep", import.meta.url), "utf8");
   const role = template.match(/resource primaryReadRole[\s\S]*?\n\}/)?.[0];
   assert.ok(role);

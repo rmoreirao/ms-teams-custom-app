@@ -3,17 +3,17 @@
 | Field | Value |
 | --- | --- |
 | Status | Bounded three-user Azure Live rollout deployed and verified end to end; production acceptance remains gated |
-| Last implementation update | 2026-10-19; see execution status and remaining release work below |
-| Current hosted validation | Existing two apps host all five logical Live roles for three synthetic users/five approved resources. Actual storage/crypto, signed notifications, durable projection/delivery, browser deltas and normal chat/reply confirmations passed; see [current evidence](dev-validation.md). Earlier [GraphPilot evidence](graph-pilot.md) is historical. |
+| Last implementation update | Availability-first source increment; dated cloud milestones below remain historical evidence |
+| Current hosted validation | Five isolated service-authenticated roles now run the bounded Dev scope. Earlier two-app notification/browser/send evidence remains historical; Session/availability-first rollout and fresh/unattended acceptance are separate. See [current evidence](dev-validation.md) and [runtime status](live-runtime.md). |
 | Direction selected | 2026-10-16: complete the scalable, event-driven projection architecture, not a direct-Graph-read MVP |
 | Current source baseline | Live-only .NET 10 API/BFF, React frontend and single-region Development; Simulator/GraphPilot runtimes removed, mocks confined to tests |
-| Architecture | [Technical design](technical-design.md), [detailed architecture](detailed-architecture.md), ADRs 0001-0009 |
+| Architecture | [Technical design](technical-design.md), [detailed architecture](detailed-architecture.md), [current ADRs](adr/README.md) |
 | Rebuild contract | [Entra configuration and rebuild runbook](entra-configuration.md) |
 | Implemented runtime | [Configuration, rollout, policy contract and remaining limits](live-runtime.md) |
 
 ## 1. Outcome and boundaries
 
-Implement the final production-shaped paths incrementally in the existing codebase. Teams remains the system of record; Azure maintains a bounded, authorized recent-message projection. Normal application reads never call Graph. User-authored sends use delegated Graph authorization, while separately permissioned background processing maintains the projection.
+Implement the final production-shaped paths incrementally in the existing codebase. Teams remains the system of record; Azure maintains a bounded, authorized recent-message projection. The API serves Cosmos/cache content, not direct Graph bodies. A genuinely cold view can request durable, bounded Control-owned Graph hydration and wait briefly for an authorized Cosmos reread. User-authored sends use delegated Graph authorization, while separately permissioned background processing maintains the projection.
 
 Use one codebase with independently deployed API/BFF, notification receiver, projector, delivery, and control/repair roles. Do not introduce a new broker or a full event-sourcing archive. Retain Cosmos, Redis, Service Bus, Web PubSub, Key Vault, and Container Apps, with production settings determined by the existing capacity and recovery gates.
 
@@ -23,7 +23,7 @@ Selecting this engineering direction does not approve copying existing business 
 
 | Path | Required behavior |
 | --- | --- |
-| Recent read | BFF session and fresh authorization, then Redis view or bounded Cosmos query. A cache miss does not trigger Graph. Missing coverage produces an explicit preparing/unavailable state and coalesced, budgeted hydration. |
+| Recent read | Current authority/history/parent/epoch guards, then revision-keyed Redis or bounded Cosmos. Redis miss alone does not trigger Graph. Unhealthy coverage does not hide available content; a genuinely cold view requires durable coalesced Control hydration and returns usable content or typed pending after a bounded wait. Known-empty needs real evidence. |
 | External Teams change | Validate a rich notification and approved scope, durably enqueue its encrypted envelope, acknowledge, then decrypt/normalize/project asynchronously. |
 | Committed projection change | Atomically update message/tombstone, application revision, change journal, and outbox in one Cosmos logical partition. Publish the outbox recoverably, then deliver authorized, coalesced body-free hints. |
 | User send | Validate and journal the command, acquire shared permits, claim dispatch, call Graph with that user's delegated token, then atomically record known confirmation and projection/outbox changes. |
@@ -55,6 +55,22 @@ Dependencies identify implementation prerequisites, not permission to execute ch
 
 ### Execution status
 
+**Current consistency source:** [ADR 0012](adr/0012-session-content-reads-and-revision-convergence.md)
+replaces the historical Strong/SessionPrimary operating choices below with one
+explicit Session content contract and targeted current reads. Revision lag is
+distinct from lost history or invalid authority. Existing live settings
+need the [reviewed configuration migration](live-runtime.md#session-configuration-migration);
+the earlier cloud evidence does not establish deployment of this increment.
+
+**Availability-first source:** [ADR 0013](adr/0013-availability-first-reads-and-bounded-hydration.md)
+removes the coverage display gate, preserves valid authorized history through
+operational failures and adds typed cold loading through bounded Control hydration.
+Durable intake, conditional merge/outbox, revision-keyed cache and change-feed
+delivery remain the convergence path. This accepts delayed missed edits/deletions,
+not stale authority or unlimited retention. The new queue/scoped grants, rebuilt
+combined image, alert routing and real-service acceptance are separately gated;
+the earlier Session-only image is not this release package.
+
 **Azure vertical slice delivered:** the existing-platform `DelegatedSynthetic` profile now passes real signed Graph notifications through Service Bus, Key Vault decryption, Cosmos projection/outbox, delivery and Web PubSub into two open browser feeds. It uses the existing serverless Session account with SessionPrimary and the existing two app sizes. All three users, five scoped resources, exact-pair denials and restart persistence were checked. The bounded adapter retains original delegated sessions for at most eight hours; it does not supply unattended production authorization, organizational policy/DLP equivalence, dynamic production onboarding, 200,000-user capacity or regional recovery. The broader production work-package gates below remain separate from this completed milestone.
 
 **Basic validation delivered:** after the user deferred additional infrastructure, the existing API was updated to delegated GraphPilot mode. Alex, Sam and Jordan each completed fresh password/TOTP and actual Teams chat/channel/post/reply creation plus read-back. This validates the agreed basic functionality, not production `Live` acceptance. ADR 0010 records the scope change; the stronger work-package gates below remain intentionally separate.
@@ -63,7 +79,7 @@ Dependencies identify implementation prerequisites, not permission to execute ch
 | --- | --- | --- |
 | W0 | Deployment gate; engineering decisions recorded | Retain the global-cloud, single-tenant BFF and event-driven projection. Deployment-specific G0 approval, authoritative policy endpoint, resource/licence evidence, sustainable write mix, cost envelope and recovery acceptance must be supplied before activation. Code work did not grant access or provision resources. |
 | W1 | Implemented locally; tenant evidence pending | Schema/example and Plan/Apply/Verify/Export, user/group admission, exact consent/federation checks, explicit opt-in trust rotation with preflight-race refusal, partial resume, rediscovery and no-write WhatIf tests. Licence purchases/assignment and optional RSC installation remain approval/endpoint-specific steps; no real grants applied. |
-| W2 | Implemented and verified locally; Cosmos acceptance pending | Separate projection/authority/control and lease documents, bounded catalog/message paging, immutable logical-to-Graph mapping, Strong and single-region SessionPrimary profiles, source leases, tombstones, change journal, atomic outbox and dispatch-epoch claims. Real Cosmos query/transaction/index/hot-key behavior remains an environment gate. |
+| W2 | Implemented locally; updated Session migration separately gated | Separate projection/authority/control and lease documents, bounded catalog/message paging, immutable logical-to-Graph mapping, Session content and targeted current reads, source leases, tombstones, change journal, atomic outbox and dispatch-epoch claims. Real Cosmos query/transaction/index/hot-key behavior remains an environment gate. |
 | W3 | Implemented and verified locally; real Graph acceptance pending | Delegated writes and background-only clients, opaque paging guards, whole-operation deadlines and payload bounds, shared permits/cooldowns, explicit interaction/unknown outcomes. Pre-token cancellation is definite non-dispatch; post-dispatch uncertainty never triggers automatic replay. Real consent/Conditional Access and budgets remain gates. |
 | W4 | Implemented and verified locally; service acceptance pending | Signed publisher/tenant/audience validation, scope-filtered encrypted durable intake, authenticated decryption, lock-managed consumer, stale-lifecycle refusal, schema checks and repair-before-DLQ cleanup. Real notification versions, lock loss, key rotation and webhook deadlines remain environment checks. |
 | W5 | Implemented locally; service/capacity evidence pending | Cosmos change-feed outbox dispatch with lease container, duplicate-safe Service Bus delivery queue, conditional page claims/checkpoints and atomic completion/revision watermark. Includes replay/continuation-loss/claim-expiry/coalescing tests; no tenant outbox polling on the normal path. Real broker/change-feed and high-fan-out capacity still require evidence. |
@@ -110,14 +126,20 @@ The end-state plan remains only partially deliverable without external inputs:
 | Browser live behavior | Implemented targeted synchronization, preserved pages, stale-history clearing, explicit failure/reconnect and background reconciliation; real-service freshness acceptance remains required |
 | Production New chat | Current-authority discovery/open of approved existing pairs implemented; automatic creation/registration/subscription/policy onboarding and broader paged directory discovery remain engineering work after their scope/authority contract is approved |
 | Content/UX | Allowlisted rich formatting, safe links, explicit attachment boundaries, variable-height virtualization and responsive/keyboard journeys implemented; attachment transfer, arbitrary cards and full-history search are not implemented or claimed |
-| Bounded rollout | Use the selected storage profile and its read contracts; SessionPrimary supports the current account type without replacing it. Role/configuration wiring, a supported authority integration and operational acceptance remain work, not an intrinsic serverless/pub-sub incompatibility. No cloud admission/deployment was performed |
+| Bounded rollout | Use explicit Session configuration and targeted current reads on the existing account. Coordinate image/configuration migration; source completion is not cloud acceptance or permission to change admission |
 | Final scale/recovery | Sustainable Graph write mix, 200,000-user capacity, full regional recovery implementation/drill and G0-G7 evidence remain unproven |
 
 Do not describe this increment, a passing local suite or a transport's `Live` label as completion of all seven product milestones. See the [runtime contracts](live-runtime.md#browser-synchronization-and-approved-contact-discovery) and [test boundaries](testing.md#end-state-synchronization-increment).
 
 ### Session-consistency correction
 
-The earlier Strong-only implementation gate was a chosen correctness shortcut, not a Cosmos serverless or pub/sub limitation. The new `SessionPrimary` path executes bounded read-only primary-replica point reads and retains SDK session barriers, current authorization, conditional operation/epoch checks and explicit failures. The existing Strong profile remains available; the private live example now selects SessionPrimary. Deployment and runtime validate single-region compatibility, and the template supplies procedure/RBAC wiring without changing the account's consistency/capacity mode. Actual private-service verification is separately opt-in and is not inferred from local contracts.
+Historically, the Strong-only shortcut was replaced by SessionPrimary, which
+routed all point reads through the primary procedure. ADR 0012 now removes both
+runtime choices: content uses native Session, critical reads remain current, and
+legacy configuration must migrate explicitly. Provisioning retains procedures and
+scoped reader execution without changing account consistency/capacity. Actual
+private-service verification remains opt-in; previous deployment evidence is
+historical rather than proof for the new image/settings.
 
 ## 5. Design requirements within the work packages
 

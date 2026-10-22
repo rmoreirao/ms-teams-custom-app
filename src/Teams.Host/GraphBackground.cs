@@ -49,8 +49,8 @@ public static class GraphUrls
         canonicalPath.Replace("%3A", ":", StringComparison.OrdinalIgnoreCase)
             .Replace("%40", "@", StringComparison.OrdinalIgnoreCase);
     public static bool IsReauthorization(HttpMethod method, Uri uri) =>
-        method == HttpMethod.Post && uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries)
-            is ["v1.0", "subscriptions", _, "reauthorize"];
+        method == HttpMethod.Post && ResourcePath(uri).Split('/')
+            is ["subscriptions", _, "reauthorize"];
     public static Uri Validate(string value, string? expectedPath = null)
     {
         var uri = Uri.TryCreate(value, UriKind.Absolute, out var absolute)
@@ -58,16 +58,19 @@ public static class GraphUrls
         if (uri.Scheme != "https" || uri.Host != "graph.microsoft.com" || uri.Port != 443 ||
             uri.UserInfo.Length != 0 || uri.Fragment.Length != 0 || !uri.AbsolutePath.StartsWith("/v1.0/", StringComparison.Ordinal))
             throw new AppError(400, "graph_url_invalid", "Graph URL leaves the configured authority/version.");
-        if (expectedPath is not null && uri.AbsolutePath != new Uri(new Uri("https://graph.microsoft.com/v1.0/"), expectedPath).AbsolutePath)
+        if (expectedPath is not null && ResourcePath(uri) != ResourcePath(Validate(expectedPath)))
             throw new AppError(400, "graph_cursor_invalid", "Graph continuation leaves the approved resource.");
         return uri;
     }
+    public static string ResourcePath(Uri uri) =>
+        GraphMessages.NormalizeResource(Validate(uri.AbsoluteUri).AbsolutePath["/v1.0/".Length..]);
     public static string BudgetResource(Uri uri)
     {
-        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (segments is ["v1.0", "chats", _, ..]) return string.Join('/', segments.Take(3));
-        if (segments is ["v1.0", "teams", _, "channels", _, ..]) return string.Join('/', segments.Take(5));
-        return uri.AbsolutePath;
+        var path = ResourcePath(uri);
+        var segments = path.Split('/');
+        if (segments is ["chats", _, ..]) return "v1.0/" + string.Join('/', segments.Take(2));
+        if (segments is ["teams", _, "channels", _, ..]) return "v1.0/" + string.Join('/', segments.Take(4));
+        return "/v1.0/" + path;
     }
 }
 public sealed class GraphBackground(HttpClient http, TokenCredential credential, IGraphCallBudget budget) : IGraphBackground
@@ -78,18 +81,42 @@ public sealed class GraphBackground(HttpClient http, TokenCredential credential,
     private async Task<JsonElement> RequestAsync(HttpMethod method, string path, object? body, CancellationToken ct)
     {
         using var measurement = LiveTelemetry.Measure("graph-background");
+        var callerToken = ct;
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         ct = deadline.Token;
         var uri = GraphUrls.Validate(path);
-        var control = uri.AbsolutePath == "/v1.0/subscriptions" ||
-            uri.AbsolutePath.StartsWith("/v1.0/subscriptions/", StringComparison.Ordinal);
+        var canonical = GraphUrls.ResourcePath(uri);
+        var control = canonical == "subscriptions" || canonical.StartsWith("subscriptions/", StringComparison.Ordinal);
         if (!control && method != HttpMethod.Get) throw new InvalidOperationException("Background Graph clients cannot send user messages.");
-        await budget.AcquireAsync(control ? "control" : "data", GraphUrls.BudgetResource(uri), ct).WaitAsync(ct);
-        var token = await credential.GetTokenAsync(new TokenRequestContext(["https://graph.microsoft.com/.default"]), ct)
-            .AsTask().WaitAsync(ct);
+        string token;
+        try
+        {
+            for (;;)
+            {
+                try { await budget.AcquireAsync(control ? "control" : "data", GraphUrls.BudgetResource(uri), ct).WaitAsync(ct); break; }
+                catch (AppError error) when (error.Code == "graph_capacity_exceeded")
+                { await Task.Delay(TimeSpan.FromMilliseconds(1300), ct); }
+            }
+            token = (await credential.GetTokenAsync(new TokenRequestContext(["https://graph.microsoft.com/.default"]), ct)
+                .AsTask().WaitAsync(ct)).Token;
+        }
+        catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
+        { throw; }
+        catch (OperationCanceledException)
+        {
+            throw new AppError(429, "graph_capacity_exceeded", "Capacity or token preparation ended before Graph dispatch; work remains pending.");
+        }
+        catch (Azure.Identity.AuthenticationFailedException)
+        {
+            throw new AppError(503, "graph_not_dispatched", "Workload authentication was unavailable before Graph dispatch; work remains pending.");
+        }
+        catch (RedisException)
+        {
+            throw new AppError(503, "graph_not_dispatched", "Shared permit storage was unavailable before Graph dispatch; work remains pending.");
+        }
         using var request = new HttpRequestMessage(method, uri);
-        request.Headers.Authorization = new("Bearer", token.Token);
+        request.Headers.Authorization = new("Bearer", token);
         request.Headers.Add("client-request-id", Guid.NewGuid().ToString());
         if (body is not null) request.Content = JsonContent.Create(body);
         LiveTelemetry.GraphAttempts.Add(1, new KeyValuePair<string, object?>("mode", "application"));

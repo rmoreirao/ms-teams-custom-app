@@ -13,6 +13,13 @@ export function isLiveSession(value) {
     "canCreateDirectChats" in value && value.canCreateDirectChats === false &&
     !["simulated", "localAuth", "scenarioAdmin", "basicValidation"].some(field => field in value);
 }
+/** @param {unknown} value */
+export function isServiceSession(value) {
+  return !!value && typeof value === "object" && isLiveSession(value) &&
+    "scopedValidation" in value && value.scopedValidation === false &&
+    "backgroundAuthentication" in value && value.backgroundAuthentication === "application" &&
+    "entitlementProvider" in value && value.entitlementProvider === "Graph";
+}
 
 /** @param {string} [account] */
 export function credentialKeys(account = "alex") {
@@ -24,8 +31,8 @@ export function credentialKeys(account = "alex") {
 }
 
 /**
- * @param {import("@playwright/test").APIRequestContext} request
- * @param {Pick<ReturnType<typeof readSettings>, "origin" | "actorId">} settings
+ * @param {{get:(url:string, options:{maxRedirects:number,timeout:number}) => Promise<Pick<import("@playwright/test").APIResponse,"status"|"json"|"dispose">>}} request
+ * @param {Pick<ReturnType<typeof readSettings>, "origin" | "actorId"> & {authProfile?:string}} settings
  * @param {number} [timeoutMs]
  */
 export async function waitForSession(request, settings, timeoutMs = 30_000) {
@@ -42,6 +49,8 @@ export async function waitForSession(request, settings, timeoutMs = 30_000) {
         if (!session || typeof session !== "object" || !("id" in session) || session.id !== settings.actorId || !isLiveSession(session)) {
           throw new SignInCheckError("The session does not match the expected Entra identity and Live contract.");
         }
+        if (settings.authProfile === "service" && !isServiceSession(session))
+          throw new SignInCheckError("The session did not confirm application-authenticated Graph policy; no validation-only fallback is accepted.");
         return { environment: "Development", source: "Microsoft Teams" };
       }
       if (response.status() !== 401) {
@@ -182,8 +191,8 @@ export function readSettings(env, account = "alex") {
   const configuredProfile = env.ENTRA_AUTH_PROFILE ?? "signin";
   const authProfile = configuredProfile === "graph-pilot" ? "live" :
     configuredProfile === "graph-pilot-direct" ? "live-delegated" : configuredProfile;
-  if (!["signin", "live", "live-delegated"].includes(authProfile))
-    throw new SignInCheckError("ENTRA_AUTH_PROFILE must be signin, live or live-delegated.");
+  if (!["signin", "live", "live-delegated", "service"].includes(authProfile))
+    throw new SignInCheckError("ENTRA_AUTH_PROFILE must be signin, live, live-delegated or service.");
   const deferRegistration = env.ENTRA_DEFER_OPTIONAL_REGISTRATION ?? "false";
   if (!["true", "false"].includes(deferRegistration) || deferRegistration === "true" && !["live", "live-delegated"].includes(authProfile))
     throw new SignInCheckError("Optional registration deferral requires explicit Live validation opt-in.");
@@ -202,7 +211,8 @@ export function verifyAuthorization(location, settings) {
     .map(scope => scope.startsWith("https://graph.microsoft.com/") ? scope.slice("https://graph.microsoft.com/".length) : scope));
   const expectedScopes = ["openid", "profile", "offline_access", ...(["live", "live-delegated"].includes(settings.authProfile) ?
     ["Chat.Read", "ChatMessage.Send", "Channel.ReadBasic.All", "ChannelMessage.Read.All", "ChannelMessage.Send"] : []),
-    ...(settings.authProfile === "live-delegated" ? ["Chat.Create"] : [])];
+    ...(settings.authProfile === "live-delegated" ? ["Chat.Create"] : []),
+    ...(settings.authProfile === "service" ? ["ChatMessage.Send", "ChannelMessage.Send"] : [])];
   if (url.origin !== "https://login.microsoftonline.com" || url.username || url.password ||
       url.pathname.toLowerCase() !== `/${settings.tenantId.toLowerCase()}/oauth2/v2.0/authorize` ||
       url.searchParams.get("client_id")?.toLowerCase() !== settings.clientId.toLowerCase() ||

@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       confirmation:
-        description: "Enter DEPLOY-DEV to release an image to the two existing Live Development apps."
+        description: "Enter DEPLOY-DEV for an image-only release to the reviewed existing Development targets."
         type: string
         required: true
 permissions:
@@ -28,6 +28,7 @@ jobs:
       AZURE_API_APP_NAME: ${{ vars.AZURE_API_APP_NAME }}
       AZURE_WORKER_APP_NAME: ${{ vars.AZURE_WORKER_APP_NAME }}
       AZURE_CONTAINER_APP_ENVIRONMENT_ID: ${{ vars.AZURE_CONTAINER_APP_ENVIRONMENT_ID }}
+      AZURE_SERVICE_TARGETS_JSON: ${{ vars.AZURE_SERVICE_TARGETS_JSON }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Require existing protected Live Development targets
@@ -38,9 +39,12 @@ jobs:
         run: |
           set -euo pipefail
           test "$CONFIRMATION" = "DEPLOY-DEV" || { echo "Explicit DEPLOY-DEV acknowledgement is required."; exit 1; }
-          for name in AZURE_SUBSCRIPTION_ID AZURE_TENANT_ID AZURE_RESOURCE_GROUP AZURE_REGISTRY_NAME AZURE_API_APP_NAME AZURE_WORKER_APP_NAME AZURE_CONTAINER_APP_ENVIRONMENT_ID DEPLOY_CLIENT_ID; do
+          for name in AZURE_SUBSCRIPTION_ID AZURE_TENANT_ID AZURE_RESOURCE_GROUP AZURE_REGISTRY_NAME AZURE_CONTAINER_APP_ENVIRONMENT_ID DEPLOY_CLIENT_ID; do
             test -n "${!name}" || { echo "Missing protected Development variable: $name"; exit 1; }
           done
+          if test -z "$AZURE_SERVICE_TARGETS_JSON"; then
+            test -n "$AZURE_API_APP_NAME" && test -n "$AZURE_WORKER_APP_NAME" || { echo "Missing legacy targets before the approved service cutover."; exit 1; }
+          fi
           # Environment reviewers and existing OIDC/RBAC are external prerequisites; this job grants nothing.
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
@@ -62,6 +66,7 @@ jobs:
         run: |
           ./tests/Scripts/DeploymentContract.Tests.ps1
           ./tests/Scripts/DevDeployment.Tests.ps1
+          ./tests/Scripts/ServiceDev.Tests.ps1
       - uses: Azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
         with:
           client-id: ${{ vars.AZURE_DEPLOY_CLIENT_ID }}
@@ -86,7 +91,7 @@ jobs:
           IMAGE_REFERENCE: ${{ steps.image.outputs.reference }}
           CONFIRMATION: ${{ inputs.confirmation }}
         run: |
-          $arguments = @{
+          $legacyArguments = @{
             SubscriptionId = $env:AZURE_SUBSCRIPTION_ID
             TenantId = $env:AZURE_TENANT_ID
             ResourceGroup = $env:AZURE_RESOURCE_GROUP
@@ -96,12 +101,31 @@ jobs:
             EnvironmentId = $env:AZURE_CONTAINER_APP_ENVIRONMENT_ID
             Image = $env:IMAGE_REFERENCE
           }
-          ./scripts/Deploy-Dev.ps1 @arguments
-          # Only image/revision identities are retained; never publish environment or secret snapshots.
-          ./scripts/Deploy-Dev.ps1 @arguments -Apply -Confirmation $env:CONFIRMATION -Confirm:$false |
-            ForEach-Object {
-              $_
-              if ($_ -is [string] -and $_ -match '^(Recovery:|Verified:|Recovery requires)') {
-                Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $_
-              }
+          $targetFile = $null
+          if ($env:AZURE_SERVICE_TARGETS_JSON) {
+            $targets = $env:AZURE_SERVICE_TARGETS_JSON | ConvertFrom-Json -Depth 100
+            if ($targets.subscriptionId -ne $env:AZURE_SUBSCRIPTION_ID -or $targets.tenantId -ne $env:AZURE_TENANT_ID -or
+                $targets.resourceGroup -ne $env:AZURE_RESOURCE_GROUP -or $targets.environmentId -ne $env:AZURE_CONTAINER_APP_ENVIRONMENT_ID) {
+              throw 'Service targets differ from the protected Development environment.'
             }
+            $targetFile = Join-Path $env:RUNNER_TEMP 'service-targets.json'
+            $env:AZURE_SERVICE_TARGETS_JSON | Set-Content -LiteralPath $targetFile -Encoding utf8
+            $releaseScript = './scripts/Deploy-ServiceDev.ps1'
+            $arguments = @{ TargetsPath=$targetFile; RegistryName=$env:AZURE_REGISTRY_NAME; Image=$env:IMAGE_REFERENCE }
+          } else {
+            $releaseScript = './scripts/Deploy-Dev.ps1'
+            $arguments = $legacyArguments
+          }
+          # Only image/revision identities are retained; never publish environment or secret snapshots.
+          try {
+            & $releaseScript @arguments
+            & $releaseScript @arguments -Apply -Confirmation $env:CONFIRMATION -Confirm:$false |
+              ForEach-Object {
+                $_
+                if ($_ -is [string] -and $_ -match '^(Recovery:|Verified:|Recovery requires)') {
+                  Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $_
+                }
+              }
+          } finally {
+            if ($targetFile) { Remove-Item -LiteralPath $targetFile -Force }
+          }

@@ -58,8 +58,8 @@ public sealed class LiveDiscovery(ILiveStateStore store, LiveOptions options, st
         await VerifyPairAsync(pair, ct);
         var other = await RecipientAsync(personId, pair.ResourceId, ct);
         var resource = await store.GetAsync(tenant, pair.ResourceId, ct);
-        if (resource is null || !resource.Value.CoverageReady)
-            throw new AppError(503, "projection_preparing", "This approved chat is still synchronizing. No message was sent. Try again.");
+        if (resource is null)
+            throw new AppError(503, "resource_preparing", "This approved chat is awaiting onboarding. No message was sent.");
         return new(pair.ResourceId, other.Name, "chat", null, resource.Value.Revision, IsDirect: true);
     }
 

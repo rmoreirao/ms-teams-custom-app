@@ -2,10 +2,10 @@ import { expect } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
-import { isLiveSession, SignInCheckError } from "./entra-signin.mjs";
+import { isLiveSession, isServiceSession, SignInCheckError } from "./entra-signin.mjs";
 
 /** @typedef {{ id: string, kind: "chat" | "channel", title: string }} LiveResource */
-/** @typedef {{ schemaVersion: number, tenantId: string, webClientId: string, origin: string, actors: {persona:string,id:string,upn:string}[], resources: LiveResource[], directChatsEnabled?:boolean, authProfile?:"live"|"live-delegated" }} LiveMetadata */
+/** @typedef {{ schemaVersion: number, tenantId: string, webClientId: string, origin: string, actors: {persona:string,id:string,upn:string}[], resources: LiveResource[], directChatsEnabled?:boolean, authProfile?:"live"|"live-delegated"|"service" }} LiveMetadata */
 /** @typedef {{ id: string, body: string, actorId: string }} GraphMessage */
 
 /** @param {string} left @param {string} right */
@@ -19,7 +19,7 @@ export function validateLiveMetadata(metadata) {
       !Array.isArray(metadata.resources) || metadata.resources.length !== 5 ||
       ![metadata.tenantId, metadata.webClientId].every(value => guid.test(value)) ||
       !URL.canParse(metadata.origin) ||
-      !["live", "live-delegated"].includes(metadata.authProfile ?? "live-delegated"))
+      !["live", "live-delegated", "service"].includes(metadata.authProfile ?? "live-delegated"))
     throw new SignInCheckError("Migrate the private Live metadata to schemaVersion 2 with the approved three actors and five existing resources.");
   const origin = new URL(metadata.origin);
   if (origin.protocol !== "https:" || origin.origin !== metadata.origin || origin.username || origin.password ||
@@ -96,7 +96,8 @@ export async function validateTeams(context, page, settings, metadata, settingsP
     throw new SignInCheckError("Teams validation settings differ from the pinned authentication boundary.");
   const sessionResponse = await context.request.get(`${settings.origin}/api/session`, { maxRedirects: 0 });
   const session = await sessionResponse.json();
-  if (sessionResponse.status() !== 200 || session.id !== settings.actorId || !isLiveSession(session) || session.scopedValidation !== true)
+  if (sessionResponse.status() !== 200 || session.id !== settings.actorId || !isLiveSession(session) ||
+      (settings.authProfile === "service" ? !isServiceSession(session) : session.scopedValidation !== true))
     throw new SignInCheckError("The session is not the approved event-driven Live workspace.");
   await context.unroute(`${settings.origin}/api/**`);
   stage("open the real Teams-backed workspace");
@@ -197,7 +198,8 @@ export async function validateDirectChat(context, page, settings, metadata, sett
   const sessionResponse = await context.request.get(`${settings.origin}/api/session`, { maxRedirects: 0 });
   const session = await sessionResponse.json();
   if (sessionResponse.status() !== 200 || session.id !== settings.actorId || !isLiveSession(session) ||
-      session.scopedValidation !== true || session.canStartDirectChats !== true)
+      (settings.authProfile === "service" ? !isServiceSession(session) : session.scopedValidation !== true) ||
+      session.canStartDirectChats !== true)
     throw new SignInCheckError("The session cannot reuse the approved Live direct chat without creating a new chat.");
   const pair = pairId(settings.actorId, target.id);
   const messagePath = `/api/conversations/${pair}/messages`;

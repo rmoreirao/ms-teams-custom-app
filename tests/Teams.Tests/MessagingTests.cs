@@ -138,7 +138,7 @@ public sealed class MessagingTests
     public async Task MissingCoverageIsNotFabricatedEmptyContent()
     {
         await fixture.Store.SetCoverageAsync(new(fixture.Tenant, "chat-empty", false, fixture.Clock.GetUtcNow(), null, "gap"), default);
-        Assert.Equal("projection_preparing", (await Assert.ThrowsAsync<AppError>(() =>
+        Assert.Equal("read_refresh_unavailable", (await Assert.ThrowsAsync<AppError>(() =>
             service.ReadAsync(Alex, "chat-empty", null, null, 0, default))).Code);
     }
     [Fact]

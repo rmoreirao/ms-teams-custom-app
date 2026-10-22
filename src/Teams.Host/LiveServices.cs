@@ -19,6 +19,8 @@ public static class LiveServices
         services.AddSingleton(options);
         services.AddSingleton(sp => new LiveControlStore(sp.GetRequiredKeyedService<Teams.Infrastructure.IPartitionDocuments>("control"),
             sp.GetRequiredService<TimeProvider>(), tenant));
+        services.AddHostedService<ReadRefreshQueueValidation>();
+        if (options.Hosts("Api", role)) services.AddSingleton<IReadRefresh, ServiceBusReadRefresh>();
         if (options.Hosts("Receiver", role))
         {
             services.AddSingleton<INotificationTokenValidator>(new NotificationTokenValidator(tenant, options.SyncClientId,
@@ -67,7 +69,7 @@ public static class LiveServices
             }
             else
             {
-                services.AddSingleton<IGraphBackground>(sp =>
+                services.AddSingleton<GraphBackground>(sp =>
                 {
                     var managed = new ManagedIdentityCredential(ManagedIdentityId.FromUserAssignedClientId(options.ControlIdentityClientId));
                     var sync = new ClientAssertionCredential(tenant, options.SyncClientId, async ct =>
@@ -75,16 +77,36 @@ public static class LiveServices
                     return new GraphBackground(sp.GetRequiredService<IHttpClientFactory>().CreateClient("live-graph"), sync,
                         sp.GetRequiredService<IGraphCallBudget>());
                 });
-                services.AddSingleton<IEntitlementFeed>(sp => new EntitlementFeed(
-                    sp.GetRequiredService<IHttpClientFactory>().CreateClient("live-authority"), credential, options, tenant));
+                if (options.EntitlementProvider == "Graph")
+                {
+                    services.AddSingleton<ApplicationGraph>();
+                    services.AddSingleton<IGraphBackground>(sp => sp.GetRequiredService<ApplicationGraph>());
+                    services.AddSingleton<IGraphPolicyReader>(sp => sp.GetRequiredService<ApplicationGraph>());
+                    services.AddSingleton<IEntitlementFeed>(sp => new GraphPolicyFeed(
+                        sp.GetRequiredService<IGraphBackground>(), sp.GetRequiredService<IGraphPolicyReader>(),
+                        sp.GetRequiredService<ILiveStateStore>(), options, tenant, configWebClient(sp),
+                        sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<GraphPolicyFeed>>()));
+                }
+                else
+                {
+                    services.AddSingleton<IGraphBackground>(sp => sp.GetRequiredService<GraphBackground>());
+                    services.AddSingleton<IEntitlementFeed>(sp => new EntitlementFeed(
+                        sp.GetRequiredService<IHttpClientFactory>().CreateClient("live-authority"), credential, options, tenant));
+                }
             }
             services.AddSingleton<SubscriptionController>();
             services.AddSingleton<ResourceHydrator>();
+            services.AddSingleton(sp => new ReadRefreshHandler(tenant, options, sp.GetRequiredService<ILiveStateStore>(),
+                sp.GetRequiredService<LiveControlStore>(), sp.GetRequiredService<IGraphBackground>(),
+                sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<ReadRefreshHandler>>()));
+            services.AddHostedService<ReadRefreshWorker>();
             services.AddHostedService(sp => new LiveControlWorker(tenant, options, sp.GetRequiredService<ILiveStateStore>(),
                 sp.GetRequiredService<LiveControlStore>(), sp.GetRequiredService<SubscriptionController>(),
                 sp.GetRequiredService<ResourceHydrator>(), sp.GetRequiredService<IEntitlementFeed>(),
                 sp.GetRequiredService<IRealtime>(), sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<LiveControlWorker>>()));
         }
+        static string configWebClient(IServiceProvider sp) => sp.GetRequiredService<IConfiguration>()["AzureAd:ClientId"]
+            ?? throw new InvalidOperationException("The Web application client ID is required for source-backed admission.");
     }
     public static void MapGraphCallbacks(this WebApplication app)
     {

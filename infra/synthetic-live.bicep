@@ -77,6 +77,15 @@ resource dataAccess 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@20
   dependsOn: [containers, leases]
 }]
 resource bus 'Microsoft.ServiceBus/namespaces@2024-01-01' existing = { name: serviceBusName }
+module readRefresh 'modules/read-refresh.bicep' = {
+  name: 'synthetic-read-refresh'
+  params: {
+    serviceBusName: serviceBusName
+    apiPrincipalId: apiPrincipalId
+    controlPrincipalId: apiPrincipalId
+    provisionAccess: true
+  }
+}
 resource notificationQueue 'Microsoft.ServiceBus/namespaces/queues@2024-01-01' = {
   parent: bus
   name: 'graph-notifications'

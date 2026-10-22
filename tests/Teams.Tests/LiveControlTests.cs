@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using Teams.Core;
 using Teams.Host;
 using Teams.Infrastructure;
@@ -49,6 +50,18 @@ public sealed class LiveControlTests
         {
             Pending = false, Verifying = true, Generation = generation, UpdatedAt = at ?? clock.GetUtcNow()
         } }, default));
+    }
+    [Fact]
+    public async Task CoverageInspectionPreservesInvalidationReasonWithoutRenewingEvidence()
+    {
+        var resource = options.Resources[0];
+        await Prepare(resource);
+        var invalidation = new Coverage(Tenant, resource.Id, false, null, null, "missed");
+        await store.SetCoverageAsync(invalidation, default);
+        Assert.Equal(invalidation, await store.ReadCoverageAsync(Tenant, resource.Id, default));
+        clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.Equal(invalidation, await store.ReadCoverageAsync(Tenant, resource.Id, default));
+        Assert.False((await store.GetAsync(Tenant, resource.Id, default))!.Value.CoverageReady);
     }
     [Fact]
     public async Task CompletedRepairRecoversAFailedCoverageCommitWithoutRepeatingGraphReads()
@@ -111,6 +124,7 @@ public sealed class LiveControlTests
         Assert.False((await control.RepairAsync(resource.Id, null, default))!.Value.Pending);
         Assert.All(graph.Reads, path => Assert.Contains("/parent/replies", path));
         graph.Read = _ => JsonSerializer.SerializeToElement(new { value = Array.Empty<object>() });
+        clock.Advance(TimeSpan.FromSeconds(3));
         await worker.StepAsync(default);
         Assert.True((await store.GetAsync(Tenant, resource.Id, default))!.Value.CoverageReady);
         Assert.False(await control.HasPendingRepairAsync(resource.Id, default));
@@ -180,6 +194,49 @@ public sealed class LiveControlTests
         }
     }
     [Fact]
+    public async Task RenewalStartsWithFourMinutesRemainingForMultiPassVerification()
+    {
+        options.Resources = [options.Resources[0], new("other", "chat", "Other", null, "graph-other", null, null)];
+        options.SubscriptionScopes = [options.SubscriptionScopes[0], new("other-scope", "chats/graph-other/messages")];
+        var initial = clock.GetUtcNow();
+        foreach (var resource in options.Resources)
+        {
+            await Prepare(resource, ready: true);
+            for (var index = 0; index < 85; index++)
+                await store.ApplyAsync(Tenant, resource.Id, GraphMessages.Parse(Source($"{index:D2}", initial)), default);
+            await CompleteRoot(resource);
+        }
+        clock.Advance(TimeSpan.FromSeconds(59));
+        await worker.StepAsync(default);
+        Assert.Empty(graph.Reads);
+        clock.Advance(TimeSpan.FromSeconds(2));
+        var started = clock.GetUtcNow();
+        graph.Read = path =>
+        {
+            clock.Advance(TimeSpan.FromMilliseconds(1300));
+            return path.Contains('?', StringComparison.Ordinal)
+                ? JsonSerializer.SerializeToElement(new { value = Array.Empty<object>() })
+                : Source(path[(path.LastIndexOf('/') + 1)..], initial);
+        };
+        for (var pass = 0; pass < 5; pass++)
+        {
+            await worker.StepAsync(default);
+            foreach (var resource in options.Resources)
+                Assert.True((await store.GetAsync(Tenant, resource.Id, default))!.Value.CoverageReady);
+            if (pass < 4) clock.Advance(TimeSpan.FromSeconds(2));
+        }
+        Assert.InRange(clock.GetUtcNow() - started, TimeSpan.FromSeconds(180), TimeSpan.FromSeconds(239));
+        Assert.True(clock.GetUtcNow() < initial.AddMinutes(5));
+        foreach (var resource in options.Resources)
+        {
+            Assert.False((await control.RepairAsync(resource.Id, null, default))!.Value.Pending);
+            Assert.Equal(86, graph.Reads.Count(path => path.StartsWith(resource.Path, StringComparison.Ordinal)));
+            var metadata = (await store.GetAsync(Tenant, resource.Id, default))!.Value;
+            var root = (await control.RepairAsync(resource.Id, null, default))!.Value;
+            Assert.Equal(root.UpdatedAt.AddMinutes(5), metadata.CoverageUntil);
+        }
+    }
+    [Fact]
     public async Task CapacityDeferralRetainsTheVerifiedCursorAndDoesNotPretendRepairIsComplete()
     {
         var resource = options.Resources[0];
@@ -196,11 +253,235 @@ public sealed class LiveControlTests
         Assert.False((await store.GetAsync(Tenant, resource.Id, default))!.Value.CoverageReady);
         Assert.True((await control.RepairAsync(resource.Id, null, default))!.Value.Pending);
         Assert.NotNull((await control.RepairAsync(resource.Id, null, default))!.Value.ScanCursor);
+        clock.Advance(TimeSpan.FromSeconds(3));
         await worker.StepAsync(default);
         Assert.True((await store.GetAsync(Tenant, resource.Id, default))!.Value.CoverageReady);
         Assert.Equal(1, graph.Reads.Count(path => path.EndsWith("/00", StringComparison.Ordinal)));
         Assert.Equal(2, graph.Reads.Count(path => path.EndsWith("/01", StringComparison.Ordinal)));
         Assert.Equal(1, graph.Reads.Count(path => path.EndsWith("/02", StringComparison.Ordinal)));
+    }
+    [Theory]
+    [InlineData(51)]
+    [InlineData(101)]
+    public async Task RepairAdvancesDocumentedPaginationBeyondFiftyMessages(int count)
+    {
+        var resource = new ApprovedResource("chat", "chat", "Chat", null, "19:Mixed@thread.v2", null, null);
+        options.Resources = [resource];
+        options.SubscriptionScopes = [new("chat-scope", resource.Path)];
+        await Prepare(resource);
+        var at = clock.GetUtcNow();
+        graph.Read = path =>
+        {
+            if (!path.Contains('?', StringComparison.Ordinal)) return Source(path[(path.LastIndexOf('/') + 1)..], at);
+            var offset = path.Contains("$skiptoken=", StringComparison.Ordinal)
+                ? int.Parse(path[(path.IndexOf("$skiptoken=", StringComparison.Ordinal) + 11)..], System.Globalization.CultureInfo.InvariantCulture) : 0;
+            var values = Enumerable.Range(offset, Math.Min(50, count - offset)).Select(index => Source($"{index:D3}", at)).ToArray();
+            return JsonSerializer.SerializeToElement(new Dictionary<string, object?>
+            {
+                ["value"] = values,
+                ["@odata.nextLink"] = offset + 50 < count
+                    ? $"https://graph.microsoft.com/v1.0/chats/19:Mixed@thread.v2/messages?$skiptoken={offset + 50}" : null
+            }.Where(pair => pair.Value is not null).ToDictionary());
+        };
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            await worker.StepAsync(default);
+            if ((await store.GetAsync(Tenant, resource.Id, default))!.Value.CoverageReady) break;
+        }
+        Assert.True((await store.GetAsync(Tenant, resource.Id, default))!.Value.CoverageReady);
+        Assert.Equal(count, (await store.GetAsync(Tenant, resource.Id, default))!.Value.Revision);
+        Assert.Equal(count + (count + 49) / 50, graph.Reads.Count);
+        Assert.NotNull(await store.MessageAsync(Tenant, resource.Id, $"{count - 1:D3}", null, default));
+    }
+    [Fact]
+    public async Task InvalidContinuationBlocksWithoutHotRetriesOrRestoringCoverage()
+    {
+        var resource = options.Resources[0];
+        await Prepare(resource);
+        graph.Read = _ => JsonSerializer.SerializeToElement(new Dictionary<string, object>
+        {
+            ["value"] = Array.Empty<object>(), ["@odata.nextLink"] = "https://evil.invalid/v1.0/chats/graph-chat/messages"
+        });
+        await worker.StepAsync(default);
+        var failed = (await control.RepairAsync(resource.Id, null, default))!.Value;
+        Assert.Equal("blocked", failed.Status);
+        Assert.True(failed.Pending);
+        Assert.Equal("graph_url_invalid", failed.Failure!.Code);
+        Assert.True(await control.HasPendingRepairAsync(resource.Id, default));
+        for (var attempt = 0; attempt < 5; attempt++) { clock.Advance(TimeSpan.FromMinutes(1)); await worker.StepAsync(default); }
+        Assert.Single(graph.Reads);
+        Assert.False((await store.GetAsync(Tenant, resource.Id, default))!.Value.CoverageReady);
+        await control.EnqueueRepairAsync(resource, null, null, default);
+        Assert.Equal("blocked", (await control.RepairAsync(resource.Id, null, default))!.Value.Status);
+    }
+    [Fact]
+    public async Task TransientFailureDefersWithoutExtendingProofAndResumesWithBoundedBackoff()
+    {
+        await Prepare(options.Resources[0]);
+        graph.Read = _ => throw new AppError(503, "graph_503", "Private upstream details must not be logged.");
+        await worker.StepAsync(default);
+        var first = (await control.RepairAsync("chat", null, default))!.Value;
+        Assert.Equal("deferred", first.Status);
+        Assert.Equal(1, first.Failure!.Attempts);
+        Assert.InRange(first.Failure.NextAttemptAt!.Value - clock.GetUtcNow(), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(3));
+        for (var attempt = 0; attempt < 3; attempt++) await worker.StepAsync(default);
+        Assert.Single(graph.Reads);
+        clock.Advance(TimeSpan.FromSeconds(3));
+        await worker.StepAsync(default);
+        var second = (await control.RepairAsync("chat", null, default))!.Value;
+        Assert.Equal(2, second.Failure!.Attempts);
+        Assert.Equal(first.UpdatedAt, second.UpdatedAt);
+        Assert.InRange(second.Failure.NextAttemptAt!.Value - clock.GetUtcNow(), TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(5));
+        graph.Read = _ => JsonSerializer.SerializeToElement(new { value = Array.Empty<object>() });
+        clock.Advance(TimeSpan.FromSeconds(5));
+        await worker.StepAsync(default);
+        var completed = (await control.RepairAsync("chat", null, default))!.Value;
+        Assert.Equal("completed", completed.Status);
+        Assert.Equal(0, completed.Failure!.Attempts);
+        Assert.Equal("graph_503", completed.Failure.Code);
+        Assert.Equal(clock.GetUtcNow(), completed.LastProgressAt);
+        Assert.True((await store.GetAsync(Tenant, "chat", default))!.Value.CoverageReady);
+    }
+    [Fact]
+    public async Task AContinuousSubscriptionGapDoesNotResetRepairGenerationOrRetryBackoff()
+    {
+        var resource = options.Resources[0];
+        await Prepare(resource);
+        var subscription = (await control.SubscriptionAsync(options.SubscriptionScopes[0].Id, default))!;
+        Assert.True(await control.SaveSubscriptionAsync(subscription.Value with { Expires = clock.GetUtcNow().AddSeconds(-1) },
+            subscription.Version, default));
+        await control.EnqueueRepairAsync(resource, null, null, default);
+        graph.Read = _ => throw new AppError(401, "graph_not_dispatched", "The retained synchronization account needs sign-in.");
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            await worker.StepAsync(default);
+            Assert.Equal(1, (await store.GetAsync(Tenant, resource.Id, default))!.Value.RepairGeneration);
+            clock.Advance(TimeSpan.FromSeconds(3));
+        }
+        var deferred = (await control.RepairAsync(resource.Id, null, default))!.Value;
+        Assert.Equal("deferred", deferred.Status);
+        Assert.Equal(4, deferred.Failure!.Attempts);
+        Assert.Equal(4, graph.Reads.Count);
+        Assert.False((await store.GetAsync(Tenant, resource.Id, default))!.Value.CoverageReady);
+
+        subscription = (await control.SubscriptionAsync(options.SubscriptionScopes[0].Id, default))!;
+        Assert.True(await control.SaveSubscriptionAsync(subscription.Value with { Expires = clock.GetUtcNow().AddMinutes(30) },
+            subscription.Version, default));
+        graph.Read = _ => JsonSerializer.SerializeToElement(new { value = Array.Empty<object>() });
+        clock.Advance(TimeSpan.FromSeconds(61));
+        await worker.StepAsync(default);
+        Assert.True((await store.GetAsync(Tenant, resource.Id, default))!.Value.CoverageReady);
+        Assert.Equal(1, (await store.GetAsync(Tenant, resource.Id, default))!.Value.RepairGeneration);
+
+        subscription = (await control.SubscriptionAsync(options.SubscriptionScopes[0].Id, default))!;
+        Assert.True(await control.SaveSubscriptionAsync(subscription.Value with { Expires = clock.GetUtcNow().AddSeconds(-1) },
+            subscription.Version, default));
+        await worker.StepAsync(default);
+        Assert.Equal(2, (await store.GetAsync(Tenant, resource.Id, default))!.Value.RepairGeneration);
+        Assert.False((await store.GetAsync(Tenant, resource.Id, default))!.Value.CoverageReady);
+    }
+    [Fact]
+    public async Task ExpiredContinuationRestartsOnceAtTheApprovedBoundary()
+    {
+        var resource = options.Resources[0];
+        await Prepare(resource);
+        await control.EnqueueRepairAsync(resource, null, null, default);
+        var queued = (await control.RepairAsync("chat", null, default))!;
+        Assert.True(await control.SaveRepairAsync(queued with { Value = queued.Value with
+            { NextLink = resource.Path + "?$skiptoken=expired", Generation = 0 } }, default));
+        graph.Read = path => path.Contains("expired", StringComparison.Ordinal)
+            ? throw new AppError(503, "graph_400", "Continuation expired.")
+            : JsonSerializer.SerializeToElement(new { value = Array.Empty<object>() });
+        await worker.StepAsync(default);
+        var restarted = (await control.RepairAsync("chat", null, default))!.Value;
+        Assert.Equal(1, restarted.Recovery!.Restarts);
+        Assert.Null(restarted.NextLink);
+        Assert.Equal("deferred", restarted.Status);
+        Assert.Equal(queued.Value.UpdatedAt, restarted.UpdatedAt);
+        clock.Advance(TimeSpan.FromSeconds(3));
+        await worker.StepAsync(default);
+        Assert.Equal("completed", (await control.RepairAsync("chat", null, default))!.Value.Status);
+        Assert.True((await store.GetAsync(Tenant, "chat", default))!.Value.CoverageReady);
+    }
+    [Fact]
+    public async Task ARepeatedInvalidContinuationBlocksInsteadOfRestartingForever()
+    {
+        var resource = options.Resources[0];
+        await Prepare(resource);
+        await control.EnqueueRepairAsync(resource, null, null, default);
+        var queued = (await control.RepairAsync("chat", null, default))!;
+        Assert.True(await control.SaveRepairAsync(queued with { Value = queued.Value with
+            { NextLink = resource.Path + "?$skiptoken=expired", Generation = 0 } }, default));
+        graph.Read = path => path.Contains("expired", StringComparison.Ordinal)
+            ? throw new AppError(503, "graph_400", "Continuation expired.")
+            : JsonSerializer.SerializeToElement(new Dictionary<string, object>
+            {
+                ["value"] = Array.Empty<object>(), ["@odata.nextLink"] = resource.Path + "?$skiptoken=expired"
+            });
+        await worker.StepAsync(default);
+        clock.Advance(TimeSpan.FromSeconds(3));
+        await worker.StepAsync(default);
+        var failed = (await control.RepairAsync("chat", null, default))!.Value;
+        Assert.Equal("blocked", failed.Status);
+        Assert.Equal(1, failed.Recovery!.Restarts);
+        Assert.Equal(3, graph.Reads.Count);
+        clock.Advance(TimeSpan.FromHours(1));
+        await worker.StepAsync(default);
+        Assert.Equal(3, graph.Reads.Count);
+        Assert.False((await store.GetAsync(Tenant, "chat", default))!.Value.CoverageReady);
+    }
+    [Fact]
+    public async Task RepairDiagnosticsIdentifyTheResourceAndSuppressRepeatedPrivateDetails()
+    {
+        await Prepare(options.Resources[0]);
+        var logger = new CaptureLogger();
+        var observed = new LiveControlWorker(Tenant, options, store, control, new(graph, control, options, clock),
+            new(graph, store, control, clock), authority, new Realtime(), clock, logger);
+        graph.Read = _ => throw new AppError(503, "graph_503", "PRIVATE-BODY-AND-CURSOR");
+        await observed.StepAsync(default);
+        clock.Advance(TimeSpan.FromSeconds(3));
+        await observed.StepAsync(default);
+        var warning = Assert.Single(logger.Messages, message => message.Level == LogLevel.Warning).Message;
+        Assert.Contains("resource=chat", warning);
+        Assert.Contains("checkpoint=root", warning);
+        Assert.Contains("stage=hydration", warning);
+        Assert.Contains("code=graph_503", warning);
+        Assert.Contains("state=deferred", warning);
+        Assert.DoesNotContain("PRIVATE-BODY-AND-CURSOR", warning);
+        Assert.DoesNotContain("skiptoken", warning);
+    }
+    [Fact]
+    public async Task SupersededPendingRepairRestartsBeforeReadingItsOldContinuation()
+    {
+        var resource = options.Resources[0];
+        await Prepare(resource);
+        await control.EnqueueRepairAsync(resource, null, null, default);
+        var queued = (await control.RepairAsync("chat", null, default))!;
+        Assert.True(await control.SaveRepairAsync(queued with { Value = queued.Value with
+            { NextLink = resource.Path + "?$skiptoken=old-generation", Generation = 0 } }, default));
+        await store.SetCoverageAsync(new(Tenant, "chat", false, null, null, "source_gap"), default);
+        await worker.StepAsync(default);
+        Assert.DoesNotContain(graph.Reads, path => path.Contains("old-generation", StringComparison.Ordinal));
+        var completed = (await control.RepairAsync("chat", null, default))!.Value;
+        Assert.Equal(1, completed.Generation);
+        Assert.Equal("repair_generation_superseded", completed.Recovery!.Reason);
+        Assert.True((await store.GetAsync(Tenant, "chat", default))!.Value.CoverageReady);
+    }
+    [Fact]
+    public async Task BlockedRepliesStillFenceACompletedRoot()
+    {
+        var resource = new ApprovedResource("channel", "channel", "Channel", "Team", null, "team", "channel");
+        options.Resources = [resource];
+        options.SubscriptionScopes = [new("channel-scope", resource.Path)];
+        await Prepare(resource);
+        await CompleteRoot(resource);
+        await control.EnqueueRepairAsync(resource, null, "parent", default);
+        var reply = (await control.RepairAsync(resource.Id, "parent", default))!;
+        Assert.NotNull(await control.FailRepairAsync(resource, reply, 0, "graph_cursor_invalid", true, false, default));
+        await worker.StepAsync(default);
+        Assert.Empty(graph.Reads);
+        Assert.True(await control.HasPendingRepairAsync(resource.Id, default));
+        Assert.False((await store.GetAsync(Tenant, resource.Id, default))!.Value.CoverageReady);
     }
     [Fact]
     public async Task ManyReplyJobsShareOneBoundedResourceBudgetPerPass()
@@ -266,6 +547,7 @@ public sealed class LiveControlTests
         public bool FailNextCoverage;
         public int FailedCoverageWrites;
         public Task<Versioned<PartitionDocument>?> ReadAsync(string pk, string id, CancellationToken ct) => inner.ReadAsync(pk, id, ct);
+        public Task<Versioned<PartitionDocument>?> ReadCurrentAsync(string pk, string id, CancellationToken ct) => inner.ReadCurrentAsync(pk, id, ct);
         public Task<DocumentPage> QueryAsync(DocumentFilter filter, int limit, string? cursor, CancellationToken ct) =>
             inner.QueryAsync(filter, limit, cursor, ct);
         public Task<bool> WriteAsync(IReadOnlyList<DocumentWrite> writes, CancellationToken ct)
@@ -290,6 +572,14 @@ public sealed class LiveControlTests
         }
         public Task<JsonElement> PostAsync(string path, object body, CancellationToken ct) => throw new InvalidOperationException("Unexpected POST.");
         public Task<JsonElement> PatchAsync(string path, object body, CancellationToken ct) => throw new InvalidOperationException("Unexpected PATCH.");
+    }
+    private sealed class CaptureLogger : ILogger<LiveControlWorker>
+    {
+        public readonly ConcurrentQueue<(LogLevel Level, string Message)> Messages = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) => Messages.Enqueue((logLevel, formatter(state, exception)));
     }
     private sealed class Authority : IEntitlementFeed
     {

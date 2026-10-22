@@ -6,7 +6,7 @@
     "location": { "value": "swedencentral" },
     "environmentId": { "value": "/subscriptions/<subscription>/resourceGroups/<dedicated-group>/providers/Microsoft.App/managedEnvironments/<private-environment>" },
     "registryName": { "value": "<registry>" },
-    "cosmosAccountName": { "value": "<strong-consistency-account>" },
+    "cosmosAccountName": { "value": "<single-region-session-compatible-account>" },
     "serviceBusName": { "value": "<private-premium-namespace>" },
     "redisName": { "value": "<private-nonpersistent-cache>" },
     "pubsubName": { "value": "<pubsub-with-managed-identity>" },
@@ -22,7 +22,7 @@
     "liveConfig": {
       "value": {
         "approvalReference": "<recorded-G0-and-resource-approval>",
-        "readConsistency": "SessionPrimary",
+        "readConsistency": "Session",
         "writerEpoch": 1,
         "notificationCertificateId": "<active-certificate-id>",
         "notificationCertificate": "<base64-DER-public-certificate>",

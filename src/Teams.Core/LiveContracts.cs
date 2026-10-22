@@ -10,6 +10,19 @@ public sealed record DirectChatAuthority(string TenantId, string ResourceId, str
 public sealed record ProjectionScan(IReadOnlyList<Message> Items, string? Cursor);
 public sealed record Coverage(string TenantId, string ConversationId, bool Ready, DateTimeOffset? VerifiedAt,
     string? NextLink, string? Reason, DateTimeOffset? FreshUntil = null, long? RepairGeneration = null);
+public sealed record ReadViewState(long Epoch, bool Complete, string? NextLink, DateTimeOffset VerifiedAt,
+    DateTimeOffset? OldestAt = null, bool ParentMissing = false);
+public sealed record ReadRefreshRequest(string TenantId, string ConversationId, long Epoch, string? Parent,
+    DateTimeOffset? Before, string? BeforeId, DateTimeOffset RequestedAt, int SchemaVersion = 1)
+{
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string Key => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+        System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new { TenantId, ConversationId, Epoch, Parent, Before, BeforeId })));
+}
+public interface IReadRefresh
+{
+    Task RequestAsync(ReadRefreshRequest request, bool required, CancellationToken ct);
+}
 public sealed record OutboxChange(string Id, string TenantId, string ConversationId, long Revision, DateTimeOffset CreatedAt);
 public sealed record DeliveryProgress(long Page, string? Cursor, string Owner, DateTimeOffset LeaseUntil, bool Complete,
     long TargetRevision = 0);
@@ -39,9 +52,14 @@ public interface ILiveStateStore : IStateStore
     Task<IReadOnlyList<Message>> MessagesAsync(Actor actor, string conversation, string? parent,
         DateTimeOffset historyFrom, DateTimeOffset? before, string? beforeId, CancellationToken ct);
     Task<Message?> MessageAsync(string tenant, string conversation, string id, string? parent, CancellationToken ct);
+    Task<Message?> CurrentMessageAsync(string tenant, string conversation, string id, string? parent, CancellationToken ct);
     Task<bool> ApplyAsync(string tenant, string conversation, Message message, CancellationToken ct);
     Task<bool> ApplyVerifiedAsync(string tenant, string conversation, Message message, string expectedSourceVersion, CancellationToken ct);
     Task SetCoverageAsync(Coverage coverage, CancellationToken ct);
+    Task<Coverage?> ReadCoverageAsync(string tenant, string conversation, CancellationToken ct);
+    Task<Versioned<ReadViewState>?> ReadViewAsync(string tenant, string conversation, string? parent, CancellationToken ct);
+    Task<bool> SaveReadViewAsync(string tenant, string conversation, string? parent,
+        Versioned<ReadViewState>? previous, ReadViewState next, CancellationToken ct);
     Task SetEntitlementAsync(Entitlement entitlement, CancellationToken ct);
     Task SetDirectChatAuthorityAsync(DirectChatAuthority evidence, CancellationToken ct);
     Task<DirectChatAuthority?> DirectChatAuthorityAsync(string tenant, string resource, CancellationToken ct);

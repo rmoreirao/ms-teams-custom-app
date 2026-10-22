@@ -170,7 +170,7 @@ function Get-Target([string]$Name, [string]$Role, [string[]]$HostedRoles) {
     }
     $null = Get-RequiredSetting $settings 'App__TrustedProxyNetworks__0'
     $live = (Get-RequiredSetting $settings 'Live__Configuration') | ConvertFrom-Json -Depth 100
-    if ($live.authorityMode -cne 'DelegatedSynthetic' -or $live.readConsistency -cne 'SessionPrimary' -or
+    if ($live.authorityMode -cne 'DelegatedSynthetic' -or $live.readConsistency -cne 'Session' -or
         -not $live.approvalReference -or $live.writerEpoch -lt 1 -or
         (@($live.hostedRoles | Sort-Object) -join ',') -cne (@($HostedRoles | Sort-Object) -join ',') -or
         -not (Test-NonemptyGuid $live.syncClientId) -or -not (Test-NonemptyGuid $live.controlIdentityClientId) -or

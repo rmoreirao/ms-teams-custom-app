@@ -48,6 +48,7 @@ function Invoke-RestMethod {
         if ($path.StartsWith('applications?')) { return @{ value = @($state.apps.ToArray()) } }
         if ($path.StartsWith('servicePrincipals?')) { return @{ value = @($state.principals.ToArray()) } }
         if ($path -like 'applications/*/federatedIdentityCredentials') { return @{ value = @($state.fics.ToArray()) } }
+        if ($path -eq 'applications/app-object?$select=id,passwordCredentials,keyCredentials') { return @{id='app-object';passwordCredentials=@();keyCredentials=@()} }
         if ($path -eq 'applications/app-object/federatedIdentityCredentials/fic-managed') {
             if ($state.raceTrust) { $state.fics[0].subject = '77777777-7777-7777-7777-777777777777'; $state.raceTrust = $false }
             return $state.fics[0]
@@ -95,6 +96,10 @@ function Invoke-RestMethod {
         if ($value.clientId -ne 'client-sp' -or $value.resourceId -ne 'graph-sp') { throw 'Wrong consent ID types.' }
         $value | Add-Member id 'consent-id'
         $state.grants.Add($value); return $value
+    }
+    if ($Method -eq 'PATCH' -and $path -eq 'oauth2PermissionGrants/consent-id') {
+        $state.grants[0].scope = $value.scope
+        return
     }
     throw "Unexpected test mutation $Method $path"
 }
@@ -158,6 +163,16 @@ try {
     $state.grants[0].scope += ' Chat.Read'
     Expect-Failure { & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Apply -ApprovePermissionChanges -Confirm:$false } 'Unexpected delegated access'
     if ($state.writes -ne $count) { throw 'Drift rejection mutated state.' }
+    Save-Profile
+    & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Plan -RetireValidationGrants
+    if ($state.writes -ne $count) { throw 'Legacy grant retirement planning mutated state.' }
+    Expect-Failure { & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Apply -RetireValidationGrants -Confirm:$false } 'ApprovePermissionChanges'
+    & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Apply -ApprovePermissionChanges -RetireValidationGrants -Confirm:$false
+    $count = $state.writes
+    if ($state.grants[0].scope -like '*Chat.Read*') { throw 'Approved validation-only scope retirement did not remove the legacy read scope.' }
+    $state.grants[0].scope += ' Directory.Read.All'
+    Expect-Failure { & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Plan -RetireValidationGrants } 'Unexpected delegated access'
+    $state.grants[0].scope = $state.grants[0].scope.Replace(' Directory.Read.All','')
     $saved = $profile
     $profile = $profile | ConvertTo-Json -Depth 15 | ConvertFrom-Json -AsHashtable
     $profile.applications[0].directChatValidation = $true
@@ -190,7 +205,21 @@ try {
     $profile.tenantId = $tenant; $profile.unknown = $true; Save-Profile
     Expect-Failure { & $command -ProfilePath $profilePath -InventoryPath $inventory } '*'
     if ($state.cliCalls -ne $before) { throw 'Invalid schema contacted Azure.' }
-    Write-Output 'Passed identity profile checks: no-write plan/WhatIf, verify gate, user/group admission, consent opt-in, interrupted apply/resume, verification/export, no-op reapply, rediscovery, explicit trust rotation/race refusal, broad-grant refusal, placeholder/schema rejection.'
+    $profile=@{schemaVersion=1;tenantId=$tenant;subscriptionId=$subscription;prefix='test-identity';
+        applications=@(@{purpose='sync';assignmentRequired=$true;graphNotificationPublisher=$true;applicationPermissions=@();federatedCredentials=@()})}
+    foreach($collection in @('apps','principals','assignments','grants','fics')){$state[$collection].Clear()}
+    Remove-Item -LiteralPath $inventory
+    Save-Profile
+    $count=$state.writes
+    & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Plan
+    if($state.writes -ne $count){throw 'Sync publisher planning mutated directory state.'}
+    Expect-Failure { & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Apply -Confirm:$false } 'ApprovePermissionChanges'
+    & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Apply -ApprovePermissionChanges -Confirm:$false
+    if(@($state.assignments|Where-Object principalId -eq 'publisher-sp').Count -ne 1 -or -not $state.principals[0].appRoleAssignmentRequired){
+        throw 'Sync publisher admission did not enforce explicit Default Access.'
+    }
+    & $command -ProfilePath $profilePath -InventoryPath $inventory -Mode Verify
+    Write-Output 'Passed identity profile checks including explicitly approved legacy-scope retirement and isolated sync publisher admission; no cloud calls.'
 } finally {
     foreach ($path in @($profilePath, $inventory)) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path } }
     Remove-Item -LiteralPath $temporary

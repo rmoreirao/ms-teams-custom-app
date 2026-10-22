@@ -46,6 +46,10 @@ jobs:
           az bicep build --file infra/subscription.bicep --outfile "$RUNNER_TEMP/subscription.json"
           az bicep build --file infra/live.bicep --outfile "$RUNNER_TEMP/live.json"
           az bicep build --file infra/synthetic-live.bicep --outfile "$RUNNER_TEMP/synthetic-live.json"
+          az bicep build --file infra/service-dev-identities.bicep --outfile "$RUNNER_TEMP/service-dev-identities.json"
+          az bicep build --file infra/service-dev.bicep --outfile "$RUNNER_TEMP/service-dev.json"
+          az bicep build --file infra/service-dev-access.bicep --outfile "$RUNNER_TEMP/service-dev-access.json"
+          az bicep build --file infra/service-dev-edge.bicep --outfile "$RUNNER_TEMP/service-dev-edge.json"
       - name: Verify management scripts
         shell: pwsh
         run: |
@@ -56,6 +60,7 @@ jobs:
           ./tests/Scripts/LiveDeployment.Tests.ps1
           ./tests/Scripts/DeploymentContract.Tests.ps1
           ./tests/Scripts/DevDeployment.Tests.ps1
+          ./tests/Scripts/ServiceDev.Tests.ps1
           ./tests/Scripts/LiveOnly.Tests.ps1
           ./tests/Scripts/LiveSetup.Tests.ps1
       - name: Correctness artifacts

@@ -15,6 +15,7 @@ public sealed record DocumentWrite(PartitionDocument Value, string? ExpectedVers
 public interface IPartitionDocuments
 {
     Task<Versioned<PartitionDocument>?> ReadAsync(string pk, string id, CancellationToken ct);
+    Task<Versioned<PartitionDocument>?> ReadCurrentAsync(string pk, string id, CancellationToken ct);
     Task<DocumentPage> QueryAsync(DocumentFilter filter, int limit, string? cursor, CancellationToken ct);
     Task<bool> WriteAsync(IReadOnlyList<DocumentWrite> writes, CancellationToken ct);
 }
@@ -43,26 +44,26 @@ public sealed record PrimaryReadResult(int Version, bool Found, PartitionDocumen
     }
 }
 
-public sealed class CosmosPartitionDocuments(Container container, bool primaryReads = false) : IPartitionDocuments
+public sealed class CosmosPartitionDocuments(Container container) : IPartitionDocuments
 {
+    public async Task<Versioned<PartitionDocument>?> ReadCurrentAsync(string pk, string id, CancellationToken ct)
+    {
+        try
+        {
+            // Critical reads also advance this SDK client's partition session barrier.
+            var response = await container.Scripts.ExecuteStoredProcedureAsync<PrimaryReadResult>(
+                "readCurrentV1", new PartitionKey(pk), new object[] { id, pk }, cancellationToken: ct);
+            var result = response.Resource ?? throw new AppError(503, "primary_read_invalid", "The authoritative read returned no evidence.");
+            return result.Validate(pk, id, response.Headers.Session);
+        }
+        catch (CosmosException ex) when (ex.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Forbidden)
+        {
+            throw new AppError(503, "primary_read_unavailable",
+                "A critical current read requires readCurrentV1 and its execute permission. Provision the Session storage contract.");
+        }
+    }
     public async Task<Versioned<PartitionDocument>?> ReadAsync(string pk, string id, CancellationToken ct)
     {
-        if (primaryReads)
-        {
-            try
-            {
-                // The primary-only procedure also advances this SDK client's partition session token.
-                var response = await container.Scripts.ExecuteStoredProcedureAsync<PrimaryReadResult>(
-                    "readCurrentV1", new PartitionKey(pk), new object[] { id, pk }, cancellationToken: ct);
-                var result = response.Resource ?? throw new AppError(503, "primary_read_invalid", "The authoritative read returned no evidence.");
-                return result.Validate(pk, id, response.Headers.Session);
-            }
-            catch (CosmosException ex) when (ex.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Forbidden)
-            {
-                throw new AppError(503, "primary_read_unavailable",
-                    "The primary-read procedure or its execute permission is missing. Provision the SessionPrimary storage contract.");
-            }
-        }
         try
         {
             var response = await container.ReadItemAsync<PartitionDocument>(id, new PartitionKey(pk), cancellationToken: ct);

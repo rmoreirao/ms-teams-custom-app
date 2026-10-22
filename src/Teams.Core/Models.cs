@@ -1,7 +1,8 @@
 namespace Teams.Core;
 
 public sealed record Actor(string TenantId, string Id, string Name, string SessionId = "fixture");
-public sealed record Member(string Id, string Name, DateTimeOffset HistoryFrom, bool Active = true);
+public sealed record Member(string Id, string Name, DateTimeOffset HistoryFrom, bool Active = true,
+    DateTimeOffset? FreshUntil = null);
 public sealed record Message(string Id, string ActorId, string Author, string Body,
     DateTimeOffset CreatedAt, DateTimeOffset ModifiedAt, string? ParentId = null,
     bool Deleted = false, string SourceVersion = "1", string? ContentNotice = null, string? TeamsUrl = null, string? HtmlBody = null);
@@ -21,14 +22,29 @@ public sealed record SendCommand(string OperationId, string Window, string Body,
 public sealed record WriteResult(OperationState State, Message? Message, string? Error = null, TimeSpan? RetryAfter = null);
 public sealed record OperationView(string Id, OperationState State, string? MessageId, string? Error);
 public sealed record ConversationView(string Id, string Title, string Kind, string? Team, long Revision, bool IsDirect = false);
-public sealed record MessagePage(IReadOnlyList<Message> Messages, string? Cursor, long Revision, string Window, Message? ParentMessage = null);
+public sealed record ReadAccess(DateTimeOffset HistoryFrom, DateTimeOffset ValidUntil, long Epoch)
+{
+    public static ReadAccess Create(Member member, Conversation conversation, DateTimeOffset now)
+    {
+        if (member.FreshUntil is not { } authorityUntil || authorityUntil <= now)
+            throw new AppError(503, "authorization_stale", "Current policy authority is required before serving this content.");
+        return new(member.HistoryFrom > now.AddDays(-7) ? member.HistoryFrom : now.AddDays(-7),
+            authorityUntil, conversation.Epoch);
+    }
+}
+public sealed record MessagePage(IReadOnlyList<Message> Messages, string? Cursor, long Revision, string Window,
+    Message? ParentMessage = null, ReadAccess? Access = null,
+    [property: System.Text.Json.Serialization.JsonIgnore] ReadRefreshRequest? Refresh = null,
+    [property: System.Text.Json.Serialization.JsonIgnore] bool Pending = false);
+public sealed record PendingRead(string State, int RetryAfterMs, ReadAccess? Access);
 public sealed record ChangePage(IReadOnlyList<Change> Changes, long Revision, bool ResetRequired,
-    IReadOnlyList<Message>? Messages = null, DateTimeOffset? HistoryFrom = null, string? Window = null);
+    IReadOnlyList<Message>? Messages = null, DateTimeOffset? HistoryFrom = null, string? Window = null, ReadAccess? Access = null);
 
-public sealed class AppError(int status, string code, string message) : Exception(message)
+public sealed class AppError(int status, string code, string message, ReadAccess? access = null) : Exception(message)
 {
     public int Status { get; } = status;
     public string Code { get; } = code;
+    public ReadAccess? Access { get; } = access;
 }
 
 public interface IPrincipalRevocations

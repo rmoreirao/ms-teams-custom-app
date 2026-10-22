@@ -18,8 +18,11 @@ ADR 0008 records approval of a synthetic-only dev boundary. That limited approva
 | [0006](0006-slo-driven-capacity-and-feasibility-validation.md) | Accepted for reference design | Separate SLO, Azure-capacity, and real Graph feasibility evidence |
 | [0007](0007-message-content-processing-and-storage-boundary.md) | Proposed | Select and approve the message-content processing/storage boundary before enabling the real-data path |
 | [0008](0008-simulator-first-single-region-development.md) | Runtime superseded; historical evidence retained | Sweden/private-network decisions retained; simulator, persona login and fixture workloads removed |
-| [0009](0009-live-projection-runtime-boundaries.md) | Selected for local implementation; production acceptance conditional | Independent live roles, separated authority/control/projection containers, Strong or single-region SessionPrimary read contracts and disabled-by-default live gates |
+| [0009](0009-live-projection-runtime-boundaries.md) | Consistency decision superseded by 0012; other boundaries retained | Independent live roles, separated authority/control/projection containers and disabled-by-default live gates |
 | [0010](0010-basic-delegated-teams-validation.md) | Runtime superseded; scope/consent retained | Earlier real delegated validation preserved as history; Development now uses Live only |
+| [0011](0011-service-authenticated-development.md) | Implementation staged; live activation gated | Service-authenticated background work and five isolated Dev roles; test users are not connector credentials |
+| [0012](0012-session-content-reads-and-revision-convergence.md) | Accepted; content-availability policy amended by 0013 | Explicit Session content reads, targeted current security/control reads and access-bounded monotonic revision convergence |
+| [0013](0013-availability-first-reads-and-bounded-hydration.md) | Accepted for source implementation; cloud release separate | Available authorized history, typed cold loading and bounded durable Control hydration without weakening access or retention |
 
 ## Maintenance
 

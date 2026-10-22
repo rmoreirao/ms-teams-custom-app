@@ -51,13 +51,19 @@ public sealed class ResourceHydrator(IGraphBackground graph, ILiveStateStore sto
     {
         var scopedGraph = graph.ForResource(resource.Path);
         var state = await control.RepairAsync(resource.Id, pending.ParentId, ct);
-        if (state is null || !state.Value.Pending) return;
+        if (state is null || !state.Value.IsRunnable(clock.GetUtcNow())) return;
         var value = state.Value;
+        var current = await store.GetAsync(tenant, resource.Id, ct)
+            ?? throw new AppError(503, "resource_preparing", "Repair awaits resource onboarding.");
+        if (value.Generation is not null && value.Generation != current.Value.RepairGeneration)
+        {
+            if (!await control.RestartRepairAsync(resource, state, current.Value.RepairGeneration, "repair_generation_superseded", ct))
+                throw new AppError(409, "repair_conflict", "Repair generation changed concurrently.");
+            return;
+        }
         if (value.Generation is null)
         {
-            var metadata = await store.GetAsync(tenant, resource.Id, ct)
-                ?? throw new AppError(503, "resource_preparing", "Repair awaits resource onboarding.");
-            value = value with { Generation = metadata.Value.RepairGeneration };
+            value = value with { Generation = current.Value.RepairGeneration };
             if (!await control.SaveRepairAsync(state with { Value = value }, ct))
                 throw new AppError(409, "repair_conflict", "Repair generation changed concurrently.");
             state = await control.RepairAsync(resource.Id, pending.ParentId, ct)
@@ -78,8 +84,8 @@ public sealed class ResourceHydrator(IGraphBackground graph, ILiveStateStore sto
                         ModifiedAt = clock.GetUtcNow(), SourceVersion = $"verified-delete:{Guid.NewGuid():N}" }, message.SourceVersion, ct);
                 }
             }
-            if (!await control.SaveRepairAsync(state with { Value = value with { ScanCursor = scan.Cursor,
-                Pending = scan.Cursor is not null, UpdatedAt = clock.GetUtcNow() } }, ct))
+            if (!await control.SaveRepairAsync(state with { Value = (value with { ScanCursor = scan.Cursor,
+                Pending = scan.Cursor is not null }).Progress(clock.GetUtcNow()) }, ct))
                 throw new AppError(409, "repair_conflict", "Verification checkpoint changed concurrently.");
             return;
         }
@@ -116,8 +122,8 @@ public sealed class ResourceHydrator(IGraphBackground graph, ILiveStateStore sto
         if (next is not null) GraphUrls.Validate(next, expected);
         if (resource.Kind == "chat" && items.EnumerateArray().Any(m =>
             m.GetProperty("createdDateTime").GetDateTimeOffset() < clock.GetUtcNow().AddDays(-7))) next = null;
-        if (!await control.SaveRepairAsync(state with { Value = value with { NextLink = next,
-            Verifying = next is null, UpdatedAt = clock.GetUtcNow() } }, ct))
+        if (!await control.SaveRepairAsync(state with { Value = (value with { NextLink = next,
+            Verifying = next is null }).Progress(clock.GetUtcNow()) }, ct))
             throw new AppError(409, "repair_conflict", "Hydration checkpoint changed concurrently.");
     }
 }
@@ -128,6 +134,18 @@ public sealed class SubscriptionController(IGraphBackground graph, LiveControlSt
     public async Task StepAsync(SubscriptionScope scope, CancellationToken ct)
     {
         var scopedGraph = graph.ForResource(scope.Path);
+        async Task<JsonElement> RenewAsync(string id)
+        {
+            var result = await scopedGraph.PatchAsync($"subscriptions/{Uri.EscapeDataString(id)}", new
+            {
+                expirationDateTime = clock.GetUtcNow().AddMinutes(50), encryptionCertificate = options.NotificationCertificate,
+                encryptionCertificateId = options.NotificationCertificateId
+            }, ct);
+            if (result.GetProperty("id").GetString() != id ||
+                result.GetProperty("expirationDateTime").GetDateTimeOffset() <= clock.GetUtcNow())
+                throw new JsonException("Subscription renewal returned mismatched or expired confirmation.");
+            return result;
+        }
         var stored = await control.SubscriptionAsync(scope.Id, ct);
         var value = stored?.Value ?? new(scope.Id, scope.Path, Convert.ToHexString(RandomNumberGenerator.GetBytes(32)),
             null, DateTimeOffset.MinValue, options.NotificationCertificateId, false, "", DateTimeOffset.MinValue);
@@ -142,7 +160,15 @@ public sealed class SubscriptionController(IGraphBackground graph, LiveControlSt
             var removed = lifecycle.Value.Action == "subscriptionRemoved";
             if (lifecycle.Value.Action == "reauthorizationRequired" && value.GraphId is not null)
             {
-                try { await scopedGraph.PostAsync($"subscriptions/{Uri.EscapeDataString(value.GraphId)}/reauthorize", new { }, ct); }
+                try
+                {
+                    var renewed = await RenewAsync(value.GraphId);
+                    value = value with { Expires = renewed.GetProperty("expirationDateTime").GetDateTimeOffset(),
+                        CertificateId = options.NotificationCertificateId };
+                    if (!await control.SaveSubscriptionAsync(value, stored.Version, ct))
+                        throw new AppError(409, "subscription_conflict", "Subscription reauthorization confirmation changed concurrently.");
+                    stored = await control.SubscriptionAsync(scope.Id, ct) ?? throw new InvalidOperationException("Subscription renewal checkpoint is missing.");
+                }
                 catch (AppError ex) when (ex.Code == "graph_404") { removed = true; }
             }
             if (removed)
@@ -198,7 +224,7 @@ public sealed class SubscriptionController(IGraphBackground graph, LiveControlSt
                     clientState = value.ClientState, expirationDateTime = clock.GetUtcNow().AddMinutes(50)
                 }, ct);
             }
-            catch (AppError ex) when (ex.Code is "graph_capacity_exceeded" or "graph_not_dispatched" ||
+            catch (AppError ex) when (ex.Code is "graph_capacity_exceeded" or "graph_not_dispatched" or "graph_scope_denied" or "graph_url_invalid" ||
                 ex.Code.StartsWith("graph_4", StringComparison.Ordinal) && ex.Code != "graph_408")
             {
                 if (!await control.SaveSubscriptionAsync(value with { CreateAttempted = false }, stored.Version, ct))
@@ -210,11 +236,7 @@ public sealed class SubscriptionController(IGraphBackground graph, LiveControlSt
         {
             try
             {
-                response = await scopedGraph.PatchAsync($"subscriptions/{Uri.EscapeDataString(value.GraphId)}", new
-                {
-                    expirationDateTime = clock.GetUtcNow().AddMinutes(50), encryptionCertificate = options.NotificationCertificate,
-                    encryptionCertificateId = options.NotificationCertificateId
-                }, ct);
+                response = await RenewAsync(value.GraphId);
             }
             catch (AppError ex) when (ex.Code == "graph_404")
             {
@@ -238,6 +260,9 @@ public sealed class LiveControlWorker(string tenant, LiveOptions options, ILiveS
     IEntitlementFeed authority, IRealtime realtime, TimeProvider clock, ILogger<LiveControlWorker> logger) : BackgroundService
 {
     private readonly ConcurrentDictionary<string, string> authorityCursors = new();
+    private readonly ConcurrentDictionary<string, byte> subscriptionGaps = new();
+    private readonly ConcurrentDictionary<string, (string Code, DateTimeOffset At, int Suppressed)> loggedFailures = new();
+    private DateTimeOffset repairHealthAt = DateTimeOffset.MinValue;
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!options.SynchronizationEnabled)
@@ -267,7 +292,7 @@ public sealed class LiveControlWorker(string tenant, LiveOptions options, ILiveS
     private async Task RefreshAsync(CancellationToken ct)
     {
         foreach (var scope in options.SubscriptionScopes)
-            await GuardAsync(() => subscriptions.StepAsync(scope, ct), "subscription", ct);
+            await GuardAsync(() => subscriptions.StepAsync(scope, ct), "subscription", ct, scope.Id);
         await Parallel.ForEachAsync(options.Resources, new ParallelOptions
             { MaxDegreeOfParallelism = options.QueueConcurrency, CancellationToken = ct }, async (resource, resourceToken) =>
         {
@@ -286,9 +311,19 @@ public sealed class LiveControlWorker(string tenant, LiveOptions options, ILiveS
                 var expires = await SubscriptionExpiryAsync(resource, resourceToken);
                 if (expires <= clock.GetUtcNow())
                 {
-                    await store.SetCoverageAsync(new(tenant, resource.Id, false, null, null, "subscription_unavailable"), resourceToken);
+                    if (subscriptionGaps.TryAdd(resource.Id, 0))
+                    {
+                        var invalidated = false;
+                        try
+                        {
+                            await store.SetCoverageAsync(new(tenant, resource.Id, false, null, null, "subscription_unavailable"), resourceToken);
+                            invalidated = true;
+                        }
+                        finally { if (!invalidated) subscriptionGaps.TryRemove(resource.Id, out _); }
+                    }
                     throw new AppError(503, "subscription_unavailable", "Hydration requires an established subscription.");
                 }
+                subscriptionGaps.TryRemove(resource.Id, out _);
                 var grants = await authority.ReadAsync(resource, authorityCursors.GetValueOrDefault(resource.Id), resourceToken);
                 if (grants.DirectChat is not null)
                     await store.SetDirectChatAuthorityAsync(grants.DirectChat, resourceToken);
@@ -304,14 +339,29 @@ public sealed class LiveControlWorker(string tenant, LiveOptions options, ILiveS
                 if (!metadata.Value.CoverageReady && root?.Value.Generation == metadata.Value.RepairGeneration)
                     coverageUntil = await CompleteCoverageAsync(resource, root.Value, expires, resourceToken) ?? coverageUntil;
                 if ((root is null || !root.Value.Pending && (root.Value.Generation != metadata.Value.RepairGeneration ||
-                    coverageUntil is null || coverageUntil <= clock.GetUtcNow().AddMinutes(2))) &&
+                    coverageUntil is null || coverageUntil < clock.GetUtcNow().AddMinutes(4))) &&
                     !await control.HasPendingRepairAsync(resource.Id, resourceToken))
                     await control.EnqueueRepairAsync(resource, null, null, resourceToken);
-            }, "authority/onboarding", resourceToken);
+            }, "authority/onboarding", resourceToken, resource.Id);
         });
     }
     private async Task RepairAsync(CancellationToken ct)
     {
+        if (clock.GetUtcNow() - repairHealthAt >= TimeSpan.FromMinutes(1))
+        {
+            repairHealthAt = clock.GetUtcNow();
+            await Parallel.ForEachAsync(options.Resources, new ParallelOptions
+                { MaxDegreeOfParallelism = options.QueueConcurrency, CancellationToken = ct }, async (resource, token) =>
+                await GuardAsync(async () =>
+                {
+                    var unresolved = await control.UnresolvedRepairsAsync(resource.Id, token);
+                    var stalled = unresolved.Count(job => job.Pending &&
+                        (job.Failure?.Blocked == true ||
+                         clock.GetUtcNow() - (job.LastProgressAt ?? job.UpdatedAt) >= TimeSpan.FromMinutes(
+                             job.Failure?.Code is "graph_capacity_exceeded" or "graph_429" ? 5 : 2)));
+                    LiveTelemetry.RepairStalled.Record(stalled);
+                }, "repair-health", token, resource.Id));
+        }
         var jobs = await control.PendingRepairsAsync(ct);
         await Parallel.ForEachAsync(jobs.GroupBy(job => job.ResourceId), new ParallelOptions
             { MaxDegreeOfParallelism = options.QueueConcurrency, CancellationToken = ct }, async (resourceJobs, resourceToken) =>
@@ -322,18 +372,58 @@ public sealed class LiveControlWorker(string tenant, LiveOptions options, ILiveS
             foreach (var job in resourceJobs)
             {
                 if (steps >= 20) break;
-                await GuardAsync(async () =>
+                Versioned<RepairState>? attempted = null;
+                try
                 {
                     while (steps < 20)
                     {
+                        attempted = await control.RepairAsync(resource.Id, job.ParentId, resourceToken);
+                        if (attempted?.Value.IsRunnable(clock.GetUtcNow()) != true) break;
                         steps++;
                         await hydrator.StepAsync(tenant, resource, job, resourceToken);
-                        if ((await control.RepairAsync(resource.Id, job.ParentId, resourceToken))?.Value.Pending != true) break;
+                        if ((await control.RepairAsync(resource.Id, job.ParentId, resourceToken))?.Value.IsRunnable(clock.GetUtcNow()) != true) break;
                     }
                     var root = await control.RepairAsync(resource.Id, null, resourceToken);
                     if (root is not null)
                         await CompleteCoverageAsync(resource, root.Value, await SubscriptionExpiryAsync(resource, resourceToken), resourceToken);
-                }, "repair", resourceToken);
+                }
+                catch (OperationCanceledException) when (resourceToken.IsCancellationRequested) { throw; }
+                catch (Exception error)
+                {
+                    if (error is AppError { Status: 429 }) LiveTelemetry.GraphDeferred.Add(1);
+                    else LiveTelemetry.Failure("control");
+                    var code = error is AppError appError ? appError.Code : error.GetType().Name;
+                    var failed = await control.RepairAsync(resource.Id, job.ParentId, resourceToken);
+                    var stage = failed?.Value.Verifying == true ? "verification" : "hydration";
+                    var recorded = failed?.Value;
+                    if (failed is { Value.Pending: true } && attempted is not null &&
+                        failed.Value.Path == attempted.Value.Path && failed.Value.NextLink == attempted.Value.NextLink &&
+                        failed.Value.ScanCursor == attempted.Value.ScanCursor &&
+                        failed.Value.LastProgressAt == attempted.Value.LastProgressAt &&
+                        failed.Value.Recovery == attempted.Value.Recovery &&
+                        (attempted.Value.Generation is null || failed.Value.Generation == attempted.Value.Generation))
+                    {
+                        var metadata = await store.GetAsync(tenant, resource.Id, resourceToken)
+                            ?? throw new AppError(503, "resource_preparing", "Repair recovery awaits resource metadata.");
+                        var restart = code is "graph_400" or "graph_410" && failed.Value.NextLink is not null &&
+                            !failed.Value.Verifying && (failed.Value.Recovery?.Restarts ?? 0) == 0;
+                        var blocked = error is AppError { Status: 400 or 403 or 404 or 410 } ||
+                            code is "graph_url_invalid" or "graph_cursor_invalid" or "notification_resource_invalid" or
+                                "graph_400" or "graph_403" or "graph_404" or "graph_410" or
+                                "synthetic_scope_denied" or "synthetic_scope_mismatch";
+                        recorded = await control.FailRepairAsync(resource, failed, metadata.Value.RepairGeneration,
+                            code, blocked && !restart, restart, resourceToken);
+                        if (recorded is null)
+                            logger.LogInformation("Repair failure checkpoint changed concurrently; resource={ResourceId}, stage={Stage}, code={Code}.",
+                                resource.Id, stage, code);
+                    }
+                    if (ShouldLog("repair:" + resource.Id, code, out var suppressed))
+                        logger.LogWarning("Live control repair failed; resource={ResourceId}, checkpoint={Checkpoint}, stage={Stage}, code={Code}, generation={Generation}, " +
+                            "state={State}, attempts={Attempts}, lastProgress={LastProgress}, nextAttempt={NextAttempt}, restarts={Restarts}, suppressed={Suppressed}.",
+                            resource.Id, LiveControlStore.RepairId(job.ParentId), stage, code, recorded?.Generation, recorded?.Status,
+                            recorded?.Failure?.Attempts ?? 0, recorded?.LastProgressAt ?? recorded?.UpdatedAt,
+                            recorded?.Failure?.NextAttemptAt, recorded?.Recovery?.Restarts ?? 0, suppressed);
+                }
             }
         });
     }
@@ -358,24 +448,39 @@ public sealed class LiveControlWorker(string tenant, LiveOptions options, ILiveS
         }
         return expires;
     }
-    private async Task GuardAsync(Func<Task> action, string stage, CancellationToken ct)
+    private bool ShouldLog(string key, string code, out int suppressed)
+    {
+        var now = clock.GetUtcNow();
+        var previous = loggedFailures.GetValueOrDefault(key);
+        var emit = previous.Code != code || now - previous.At >= TimeSpan.FromMinutes(1);
+        loggedFailures[key] = (code, emit ? now : previous.At, emit ? 0 : previous.Suppressed + 1);
+        suppressed = previous.Suppressed;
+        return emit;
+    }
+    private async Task GuardAsync(Func<Task> action, string stage, CancellationToken ct, string resourceId)
     {
         try { await action(); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (AppError ex) when (ex.Status == 429)
         {
             LiveTelemetry.GraphDeferred.Add(1);
-            logger.LogInformation("Live control {Stage} deferred by shared Graph capacity: {Code}; work remains pending.", stage, ex.Code);
+            if (ShouldLog(stage + ":" + resourceId, ex.Code, out var suppressed))
+                logger.LogInformation("Live control {Stage} deferred; resource={ResourceId}, code={Code}, suppressed={Suppressed}; work remains pending.",
+                    stage, resourceId, ex.Code, suppressed);
         }
         catch (AppError ex)
         {
             LiveTelemetry.Failure("control");
-            logger.LogWarning("Live control {Stage} failed with {Code}; checkpoint retained.", stage, ex.Code);
+            if (ShouldLog(stage + ":" + resourceId, ex.Code, out var suppressed))
+                logger.LogWarning("Live control {Stage} failed; resource={ResourceId}, code={Code}, suppressed={Suppressed}; checkpoint retained.",
+                    stage, resourceId, ex.Code, suppressed);
         }
         catch (Exception ex)
         {
             LiveTelemetry.Failure("control");
-            logger.LogError("Live control {Stage} failed: {ErrorType}; checkpoint retained.", stage, ex.GetType().Name);
+            if (ShouldLog(stage + ":" + resourceId, ex.GetType().Name, out var suppressed))
+                logger.LogError("Live control {Stage} failed; resource={ResourceId}, errorType={ErrorType}, suppressed={Suppressed}; checkpoint retained.",
+                    stage, resourceId, ex.GetType().Name, suppressed);
         }
     }
 }

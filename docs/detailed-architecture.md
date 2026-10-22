@@ -183,11 +183,11 @@ Names are logical identifiers. Provision separate identities and credentials per
 | `app-web` | Confidential, single-tenant app registration | OIDC sign-in and delegated Graph calls; registered **Web** callback URI, not a browser-held client credential |
 | `app-sync` | Confidential app registration/service principal | Unattended Graph subscriptions, permitted hydration, and reconciliation; no normal user-authored sending |
 | `app-events-api` | Callback API registration | Audience and application-role boundary for authenticated Web PubSub upstream requests; no Graph permission required |
-| `mi-api` | User-assigned managed identity | Approved Cosmos/session/cache access, credential retrieval, and Web PubSub negotiation |
+| `mi-api` | User-assigned managed identity | Approved Cosmos/session/cache access, credential retrieval, Web PubSub negotiation and exact read-refresh queue send |
 | `mi-callbacks` | User-assigned managed identity | Notification queue send, admission authority/connection-plan access, and minimal configuration; no broad message-projection writes |
-| `mi-projector` | User-assigned managed identity | Notification receive, projection/outbox writes, cache invalidation, approved decryption access |
+| `mi-projector` | User-assigned managed identity | Notification receive, revisioned projection/outbox writes, approved decryption access |
 | `mi-delivery` | User-assigned managed identity | Outbox/delivery work, required entitlement reads, and Web PubSub publish/group/connection control |
-| `mi-control` | User-assigned managed identity | Control/repair data, `app-sync` credential access, subscription coordination, and approved lifecycle ingestion |
+| `mi-control` | User-assigned managed identity | Control/repair data, exact read-refresh queue receive, `app-sync` credential access, subscription coordination and approved lifecycle ingestion |
 | `mi-pubsub` | Web PubSub resource identity | Calls the upstream handler using the explicit `app-events-api` audience |
 | Deployment principal | Federated CI/CD principal | Environment-scoped deployment permissions; no routine business-data access |
 
@@ -338,7 +338,7 @@ The control worker invokes the same projection engine after bounded hydration/re
 | Browser shell | In-memory views, pending/send states, cursor catch-up, rendering metrics | Store Graph credentials, authorize itself, or persist business content offline by default |
 | Session middleware | BFF session, CSRF/correlation, token-cache handle | Treat a browser-supplied user/tenant ID as authority |
 | Authorization guard | Fresh entitlement decision and action/history constraints | Convert app-only Graph consent into user access |
-| Read service | Bounded pages, coverage and minimum-revision handling | Execute an unbounded Graph scan on cache miss |
+| Read service | Current access, bounded available/pending pages and minimum-revision handling | Execute an unbounded Graph scan or bypass authority on cache miss |
 | Send service | Command validation, idempotency scope, dispatch state, known confirmation | Report local acceptance as sent or replay uncertain commands |
 | Projection engine | Conditional merge, normalization, tombstones, app revisions, outbox creation | Treat opaque Graph ETags as sortable versions |
 | Graph adapter | Typed endpoint capabilities, auth mode, permits, deadlines, attempt telemetry | Expose a generic arbitrary-URL proxy or silently switch to app-only sending |
@@ -416,7 +416,9 @@ Use a bounded, server-issued command window, returned with an authorized convers
 
 Reject expired or invalid command windows instead of treating a reclaimed operation key as proof of a new safe send. Status lookup can remain available after dispatch permission expires. The UI must never convert an unknown operation into a new send automatically.
 
-For read-your-writes and hint-driven refresh, the read service enforces a minimum application revision. Use a suitable database consistency/session-token or read-barrier strategy across SDK instances and regions; an app revision number alone does not strengthen Cosmos consistency. If the required state is not available before the deadline, return a retry/coverage state rather than an older page labeled current.
+For read-your-writes and hint-driven refresh, the read service enforces a minimum application revision. Ordinary content uses native Cosmos Session reads; explicit current reads protect authorization, parent eligibility, security/coverage metadata and critical control/write decisions. Same-client partition barriers may benefit later queries, but independent SDK clients do not automatically share tokens and an app revision does not strengthen Cosmos consistency. The implemented contract is single-region; regional recovery needs separate acceptance.
+
+A reader behind the requested revision returns explicit `503 projection_behind`, not an older page labeled current or an automatic cursor reset. Successful reads and lag responses carry a verified history boundary, epoch and validity deadline capped by the original authority lease, not source coverage. The browser keeps revisions monotonic and retains an already loaded same-epoch view during operational failures only while those boundaries remain valid, applying history/retention restrictions and expiring it locally. Stale or unverifiable authority still fails closed; unhealthy synchronization alone does not hide stored history. Missed source edits/deletions can remain visible until reconciliation or seven-day expiry. Genuine journal expiry/gaps or bounded-response limits require an authorized snapshot reset. See [ADR 0012](adr/0012-session-content-reads-and-revision-convergence.md) and its availability amendment, [ADR 0013](adr/0013-availability-first-reads-and-bounded-hydration.md).
 
 ### 5.4 Cache and messaging contracts
 
@@ -426,7 +428,7 @@ For read-your-writes and hint-driven refresh, the read service enforces a minimu
 | Entitlement lease | Tenant/principal/resource/policy epoch | Expiry is bounded by verified source evidence; not renewed on cache reads |
 | Session/token-cache reference | Tenant/principal/application/session | Protected backend storage; cache loss requires supported refresh or sign-in |
 | Graph permit state | Actual client identity plus applicable limit scopes | Coordinated scopes and cooldown; unknown state cannot grant unlimited capacity |
-| Hydration single-flight | Tenant/resource/window | Bounded lease; one queue job does not prove successful coverage |
+| Hydration single-flight | Tenant/resource/epoch/parent/page | Conditional Control lease and durable queue; accepted work does not prove completion or healthy coverage |
 
 The durable outbox carries a versioned internal event, for example:
 
@@ -460,7 +462,7 @@ Routes describe contracts to implement, not existing endpoints. Use application-
 | `GET /auth/signin`, `/auth/callback` | Library-managed OIDC flow; no Graph tokens returned to JavaScript |
 | `POST /auth/signout` | Invalidate session and related connection permissions |
 | `GET /api/conversations` | Bounded authorized inbox/feed references and coverage |
-| `GET /api/conversations/{id}/messages` | Authorized initial/recent page, opaque cursor, coverage, command window |
+| `GET /api/conversations/{id}/messages` | `200` authorized page/cursor/revision/access/command window, or typed `202` pending after durable cold-view submission |
 | `GET /api/conversations/{id}/changes` | Bounded authorized catch-up from a signed application change token |
 | `POST /api/conversations/{id}/messages` | Operation ID/window plus validated body; known Graph creation returns `201` |
 | `GET /api/conversations/{id}/operations/{operationId}` | Actor-authorized pending/confirmed/rejected/unknown state |
@@ -468,9 +470,9 @@ Routes describe contracts to implement, not existing endpoints. Use application-
 | `POST /callbacks/graph/messages`, `/callbacks/graph/lifecycle` | Resource/lifecycle validation and acceptance |
 | `/callbacks/pubsub` | Supported Web PubSub upstream protocol with service authentication |
 
-Use explicit typed errors: `authentication_required`, `access_denied`, `access_verification_unavailable`, `projection_preparing`, `graph_capacity_exceeded`, `operation_unknown`, and `idempotency_conflict`.
+Use explicit typed errors: `authentication_required`, `access_denied`, `authorization_stale`, `projection_behind`, `read_refresh_unavailable`, `graph_capacity_exceeded`, `operation_unknown`, and `idempotency_conflict`.
 
-`202` can describe an existing pending/unknown operation or preparing projection, but does not satisfy usable-content or confirmed-send SLOs. `429` before dispatch communicates known capacity rejection and retry guidance. A same-operation replay does not resend; a deliberate new attempt after a definitive rejection uses the documented new-operation policy.
+Read `202 { state: "pending", retryAfterMs: 1000, access }` with `Retry-After: 1` describes accepted cold-view recovery, not empty history or a send outcome. A send `202` can describe an existing pending/unknown operation. Neither satisfies usable-content or confirmed-send SLOs. `429` before dispatch communicates known capacity rejection and retry guidance. A same-operation replay does not resend; a deliberate new attempt after a definitive rejection uses the documented new-operation policy.
 
 An uncertain or failed authorization check is not a fabricated empty list. Missing resources/access failures must not reveal another user's operation or resource existence.
 
@@ -586,9 +588,9 @@ The BFF validates application access before establishing the session. Later Grap
 
 ### 6.2 F02: Read recent content, including cache miss
 
-**Description:** This flow serves a recent-message page or bounded change request from the application projection rather than querying Graph synchronously. The read API checks the user's access and looks for a suitable cached view; a cache miss or insufficient revision falls back to a bounded Cosmos query. The response contains only authorized content with its cursor and coverage evidence. If coverage or authorization cannot be established, the API returns an explicit preparing or verification state instead of presenting incomplete or unverifiable content as current.
+**Description:** This flow serves recent messages from the authorized projection. The read API checks current access and parent eligibility, then uses revision-keyed cached content or bounded Session Cosmos reads. Existing content remains available during unhealthy source synchronization. A genuinely cold page triggers durable, coalesced Control hydration and a bounded authorized reread; the API never acquires background Graph credentials. Replica lag, unknown initialization, invalid authority and lost journal history remain distinct states.
 
-**Components:** browser, read API, authorization guard, Redis, Cosmos. **Preconditions:** authenticated user, verified resource entitlement, defined projection window.
+**Components:** browser, read API, authorization guard, Redis, Cosmos, read-refresh queue, Control, Graph. **Preconditions:** authenticated user, verified resource entitlement, approved resource and retention window.
 
 ```mermaid
 ---
@@ -605,30 +607,38 @@ sequenceDiagram
     participant P as Access guard
     participant C as Cache
     participant D as Cosmos
+    participant Q as Refresh queue
+    participant R as Control
+    participant G as Graph
 
     B->>A: Request page or authorized change token
-    A->>P: Verify session, history, policy and freshness
+    A->>P: Verify current session, history, policy and epoch
     P-->>A: Decision and policy epoch
     A->>C: Read scoped view and revision
     alt Suitable cache view
         C-->>A: Candidate content
     else Miss or insufficient revision
-        A->>D: Bounded query with read barrier
-        D-->>A: Content, revision and coverage
+        A->>D: Bounded Session query after critical guards
+        D-->>A: Content, revision and initialization evidence
         A->>C: Populate bounded view
     end
-    alt Coverage and authorization valid
+    alt Authorized content or known-empty view available
         A->>P: Confirm decision still usable
-        A-->>B: Filtered page, cursor and coverage
-    else Projection gap or authority unavailable
-        A->>A: Schedule coalesced bounded repair if permitted
-        A-->>B: Explicit preparing or verification state
+        A-->>B: 200 filtered page, cursor, revision and access
+    else Authorized view is genuinely cold
+        A->>Q: Durably submit body-free approved context
+        Q->>R: Deliver and conditionally claim context
+        R->>G: Bounded source pages under shared permits
+        G-->>R: Source messages and continuation
+        R->>D: Existing version-aware merge and outbox
+        A->>D: Bounded authorized reread within five seconds
+        A-->>B: 200 usable page, otherwise typed 202 pending
     end
 ```
 
-There is no synchronous Graph read in this recent-content path. Older history uses an explicitly separate, budgeted request/job; missing history does not authorize bypassing the projection guard.
+A Redis miss falls back to Cosmos, not Graph. Partial pages can submit optional refresh and keep their continuation; cold initial/thread/older pages require durable acceptance. Control continues independently of the HTTP wait, using at most three 50-item pages plus an optional parent lookup per 45-second job. Known-empty requires real initialization evidence. Persistent body-free view markers are not healthy-coverage certificates, and absent source rows never imply deletion. A Cosmos/security-store outage cannot become a Graph-only response. The browser retries pending safely within 120 seconds, retaining already loaded authorized history.
 
-**Failure/telemetry:** distinguish cache miss, insufficient revision, incomplete coverage, and unavailable authority. Count normal recent-page gaps/failures in the TDD population, and record usable rendering rather than skeleton time.
+**Failure/telemetry:** distinguish cache miss, replica lag, cold pending, queue failure, unhealthy source synchronization and unavailable authority. Monitor stalled work and refresh age/progress independently of availability; an idle chat's old message timestamp is not a failure. Count cold-page gaps/failures in the TDD population, and record usable rendering rather than skeleton time.
 
 ### 6.3 F03: Send a message with known confirmation
 
@@ -764,9 +774,11 @@ Validate each item in a collection. Acknowledge only after all valid in-scope it
 
 **Failure/telemetry:** acceptance failure is non-success, not `202`. Record acknowledgment latency, validation failures, event age, processing attempts, certificate identity, projection lag, and dead-letter age without routine payload logging.
 
+Cold-view Control hydration uses the same parser, conditional message/tombstone merge and atomic change/outbox rules. It supplements rather than replaces durable rich-notification intake and normal reconciliation.
+
 ### 6.6 F06: Publish an outbox change and refresh a client
 
-**Description:** This flow makes a committed projection change visible to connected, authorized clients. The outbox worker invalidates stale cache state or advances a read barrier, publishes a stable event to the delivery queue, and records publication progress. The delivery service rechecks recipient policy and sends a coalesced change hint through Web PubSub. The browser uses that hint to fetch authorized changes through F02; acceptance by the messaging services alone does not mean the user has seen the updated content.
+**Description:** This flow makes a committed projection change visible to connected, authorized clients. The Cosmos change-feed dispatcher durably publishes committed outbox work to the delivery queue before advancing its checkpoint. The delivery service rechecks recipient policy, records leased fan-out progress and sends a coalesced revision hint through Web PubSub. Revision-keyed cache pages need no synchronous invalidation. The browser fetches authorized changes through F02; messaging-service acceptance alone does not mean the user has seen the content.
 
 **Components:** outbox dispatcher, Cosmos, delivery queue, delivery service, Web PubSub, browser. **Preconditions:** committed projection event and current recipient authority.
 
@@ -787,12 +799,11 @@ sequenceDiagram
     participant W as Web PubSub
     participant B as Browser
 
-    O->>D: Read and claim committed outbox item
+    O->>D: Observe committed outbox through change feed
     D-->>O: Event and projection revision
-    O->>O: Invalidate cache or advance read barrier
     O->>Q: Publish stable event ID
     Q-->>O: Durable acceptance
-    O->>D: Record publication progress
+    O->>D: Advance change-feed checkpoint
     Q->>F: Deliver event
     F->>F: Check current recipient/group policy
     F->>W: Send coalesced authorized change hint
@@ -806,7 +817,7 @@ A crash after queue acceptance but before marking publication can produce a dupl
 
 The delivery worker does not hold a queue lock while waiting for browser rendering. Service acceptance and client display are separate observations.
 
-Cache invalidation is not atomic with Cosmos. Version/read barriers prevent a newly notified client from being served an older cached page labeled current. Failed invalidation is monitored and repaired.
+Cache keys include the projection revision; a new revision cannot select an old page as current. Old keys expire normally. Minimum-revision checks protect clients from replica lag without an extra invalidation/read-barrier service. Change feed observes committed state, not missing Teams content; bounded hydration and reconciliation must first merge that content into Cosmos.
 
 **Failure/telemetry:** recheck eligibility after delayed queue processing; removed users must not receive body-bearing updates. Measure client content display after any follow-up read, not only publish acceptance.
 
@@ -851,7 +862,7 @@ sequenceDiagram
 
 The sync-workers lane combines the separately scheduled hydration and notification-consumer paths for readability; it does not merge their deployment identities or queue ownership. They share merge logic but retain separate scheduling/budgets. If processing is concurrent, conditional merges preserve changes; a snapshot is not assumed to be an atomic tenant-wide point in time.
 
-Mark ready only for demonstrated resource/window coverage. Page/time-budget exhaustion records partial coverage and follow-up work. Renewal failure/removal triggers repair; do not wait for a universal `missed` event or assume every selected resource supports delta.
+Mark source synchronization ready only for demonstrated resource/window coverage; this is distinct from displaying already authorized stored content. Page/time-budget exhaustion records partial coverage and follow-up work. Renewal failure/removal triggers repair; do not wait for a universal `missed` event or assume every selected resource supports delta.
 
 **Failure/telemetry:** monitor coverage age, oldest buffered change, successful renewal margin, credential/key rotation, repair backlog, and Graph budget consumption. No unbounded catch-up scan is allowed on the interactive read path.
 
@@ -889,7 +900,7 @@ sequenceDiagram
     D->>D: Retry unresolved control and record lag
 ```
 
-For offboarding, invalidate all affected application sessions, command windows, and connection permissions. For conversation/history changes, constrain the affected resource and invalidate corresponding cached views/decisions.
+For offboarding, invalidate all affected application sessions, command windows, and connection permissions. For conversation/history changes, constrain the affected resource and invalidate access decisions. Shared message-only cache entries still pass current history/parent guards; their deletion is not the authorization mechanism.
 
 Colocate denial and its connection-control outbox in the same control partition. Dispatcher wake-up is only an optimization; committed control work remains discoverable after a worker crash.
 
@@ -1000,7 +1011,7 @@ Read readiness, write readiness, and synchronization readiness are separate. Edg
 | Redis read-view failure | Bounded Cosmos read with current authorization | Controlled refill; no Graph storm |
 | Redis policy/budget uncertainty | Deny/temporarily unavailable for affected capability | Recover authority/coordination before issuing permits |
 | Cosmos apply failure | Explicit coverage/projection status | Keep inbox work; retry with concurrency checks; no early completion |
-| Cache stale after commit | Enforce minimum revision or explicit retry state | Retry invalidation/read-barrier update |
+| Cache stale after commit | Select revision-keyed content; enforce minimum revision or explicit replica lag | Old entries expire; no synchronous invalidation dependency |
 | Outbox publication crash | No duplicate Graph send | Republish stable event; tolerate duplicate delivery |
 | Missing decryption key | No fabricated content | Refresh approved key versions; bounded retry/DLQ and alert |
 | Subscription removal/expiry | Surface synchronization degradation | Renew/recreate and repair approved windows within budget |
@@ -1049,7 +1060,7 @@ Deploy networking/identity/data dependencies before enabling traffic. Private en
 
 The [Entra configuration and rebuild runbook](entra-configuration.md) maps current scripts, identity ID types, federation, consent, and deployment inputs, including the implemented desired-state reconciler. The [live integration plan](live-integration-plan.md) records current implementation and remaining acceptance work; neither document implies live traffic is enabled.
 
-The locally implemented profiles are detailed in [live runtime and rollout](live-runtime.md) and [ADR 0009](adr/0009-live-projection-runtime-boundaries.md): separate projection/authority/control and change-feed lease containers, explicit Strong or single-region SessionPrimary read barriers, change-feed-to-queue outbox dispatch, durable fan-out pages, independent host roles and disabled-by-default synchronization/admission. SessionPrimary does not require replacing the existing serverless account. Local correctness coverage is not proof of reference-scale capacity or regional recovery.
+The locally implemented contract is detailed in [live runtime and rollout](live-runtime.md), [ADR 0012](adr/0012-session-content-reads-and-revision-convergence.md) and [ADR 0013](adr/0013-availability-first-reads-and-bounded-hydration.md): separate projection/authority/control and change-feed lease containers, Session content reads with targeted current security/control reads, available authorized history, bounded Control hydration for cold views, change-feed-to-queue outbox dispatch, durable fan-out pages, independent host roles and disabled-by-default synchronization/admission. The existing account is retained; the new refresh queue and narrow grants require separate approval. Local correctness coverage is not proof of a configuration rollout, reference-scale capacity or regional recovery.
 
 | Configuration family | Required content |
 | --- | --- |

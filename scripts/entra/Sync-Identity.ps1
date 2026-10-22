@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory)][string]$InventoryPath,
     [ValidateSet('Plan', 'Apply', 'Verify', 'Export')][string]$Mode = 'Plan',
     [switch]$ApprovePermissionChanges,
-    [switch]$ApproveTrustRotation
+    [switch]$ApproveTrustRotation,
+    [switch]$RetireValidationGrants
 )
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
@@ -26,16 +27,16 @@ if ([guid]$profile.tenantId -eq [guid]::Empty -or [guid]$profile.subscriptionId 
 if (@($profile.applications.purpose | Sort-Object -Unique).Count -ne $profile.applications.Count) { throw 'Duplicate application purpose.' }
 foreach ($desired in $profile.applications) {
     if ($desired.purpose -eq 'web' -and -not $desired.assignmentRequired) { throw 'The web application must require explicit assignment.' }
-    if ($desired.purpose -eq 'sync' -and $desired.assignmentRequired) {
-        throw 'This implementation requires the documented rich-notification assignment policy on sync; Change Tracking role provisioning is not implemented.'
+    if ($desired.purpose -eq 'sync' -and $desired.assignmentRequired -and -not $desired.graphNotificationPublisher) {
+        throw 'Assignment-required sync applications must explicitly admit the Graph Change Tracking publisher.'
     }
     if ($desired.purpose -ne 'sync' -and $desired.applicationPermissions) { throw 'Only sync may receive Graph application permissions.' }
     if ($desired.purpose -ne 'web' -and $desired.delegatedGrants) { throw 'Only web may receive delegated grants.' }
     if ($desired.purpose -ne 'web' -and $desired.assignedUsers) { throw 'Only web may admit users.' }
     if ($desired.purpose -ne 'web' -and $desired.assignedGroups) { throw 'Only web may admit groups.' }
     if ($desired.purpose -ne 'events' -and $desired.callbackPrincipals) { throw 'Callback assignments belong to events.' }
-    if ($desired.graphNotificationPublisher -and ($desired.purpose -ne 'web' -or -not $desired.assignmentRequired)) {
-        throw 'Graph publisher admission is an explicit assignment-required web application setting.'
+    if ($desired.graphNotificationPublisher -and ($desired.purpose -notin @('web','sync') -or -not $desired.assignmentRequired)) {
+        throw 'Graph publisher admission requires an explicit assignment-required web or sync application.'
     }
     if ($desired.basicGraphValidation -and ($desired.purpose -ne 'web' -or $desired.assignedUsers.Count -ne 3 -or
         $desired.assignedGroups -or @($desired.delegatedGrants | Where-Object consentType -ne 'Principal').Count)) {
@@ -81,7 +82,7 @@ if (Test-Path -LiteralPath $inventoryFile) {
 }
 $account = az account show --subscription $profile.subscriptionId --output json | ConvertFrom-Json
 if ($LASTEXITCODE -or $account.tenantId -ne $profile.tenantId) { throw 'Subscription and profile tenant do not match.' }
-$token = az account get-access-token --subscription $profile.subscriptionId --resource-type ms-graph --output json | ConvertFrom-Json
+$token = az account get-access-token --subscription $profile.subscriptionId --scope https://graph.microsoft.com/.default --output json | ConvertFrom-Json
 if ($LASTEXITCODE) { throw 'Graph authentication failed.' }
 $headers = @{ Authorization = "Bearer $($token.accessToken)" }
 $tag = "teams-reference:$($profile.prefix)"
@@ -195,6 +196,13 @@ try {
         if ($previous -and $previous.applications.$purpose.principalId -and
             $previous.applications.$purpose.principalId -ne $sp.id) { throw "Service principal changed for $purpose; review replacement explicitly." }
         if (-not $sp) { Step $purpose 'create-sp' }
+        if ($purpose -eq 'sync' -and $app) {
+            $credentialMetadata = Graph GET "applications/$($app.id)?`$select=id,passwordCredentials,keyCredentials"
+            if (@($credentialMetadata.passwordCredentials | Where-Object { $null -ne $_ }).Count -or
+                @($credentialMetadata.keyCredentials | Where-Object { $null -ne $_ }).Count) {
+                throw 'Stored sync credentials require separate retirement/review before workload-federated application access is activated.'
+            }
+        }
         if (-not $sp -or $sp.appRoleAssignmentRequired -ne $desired.assignmentRequired) {
             Step $purpose 'assignment-policy' @{ appRoleAssignmentRequired = $desired.assignmentRequired } '' $true
         }
@@ -224,7 +232,7 @@ try {
         $publisher = $null
         if ($desired.graphNotificationPublisher) {
             if (@($app.appRoles | Where-Object { $null -ne $_ }).Count) {
-                throw 'Default publisher admission requires a web application with no declared app roles.'
+                throw 'Default publisher admission requires a web or sync application with no declared app roles.'
             }
             $publishers = @(Collection "servicePrincipals?`$filter=appId eq '0bf30f3b-4a52-48df-9a82-234910c4a086'")
             if ($publishers.Count -ne 1 -or $publishers[0].appId -ne '0bf30f3b-4a52-48df-9a82-234910c4a086') {
@@ -232,11 +240,11 @@ try {
             }
             $publisher = $publishers[0]
         }
-        if ($purpose -eq 'web') {
+        if ($purpose -in @('web','sync')) {
             foreach ($assignment in $assignments) {
                 if ($assignment.principalId -notin (@($desired.assignedUsers) + @($desired.assignedGroups) + @($publisher.id)) -or
                     $assignment.appRoleId -ne [guid]::Empty.ToString()) {
-                    throw 'Unexpected web admission assignment; explicit review required.'
+                    throw 'Unexpected web or sync admission assignment; explicit review required.'
                 }
             }
         }
@@ -267,8 +275,12 @@ try {
         $grants = if ($sp) { @(Collection "oauth2PermissionGrants?`$filter=clientId eq '$($sp.id)'") } else { @() }
         foreach ($grant in $grants) {
             $expected = @($desired.delegatedGrants | Where-Object { $_.consentType -eq $grant.consentType -and $_.principalId -eq $grant.principalId })
+            $extra = @($grant.scope.Split(' ', [StringSplitOptions]::RemoveEmptyEntries) | Where-Object { $expected.Count -eq 1 -and $_ -notin $expected[0].scopes })
+            $reviewedRetirement = $RetireValidationGrants -and $purpose -eq 'web' -and $grant.consentType -eq 'Principal' -and
+                $grant.principalId -in $desired.assignedUsers -and
+                @($extra | Where-Object { $_ -notin @('Chat.Read','Channel.ReadBasic.All','ChannelMessage.Read.All','Chat.Create') }).Count -eq 0
             if ($grant.resourceId -ne $resource.id -or $expected.Count -ne 1 -or
-                @($grant.scope.Split(' ', [StringSplitOptions]::RemoveEmptyEntries) | Where-Object { $_ -notin $expected[0].scopes }).Count) {
+                ($extra.Count -and -not $reviewedRetirement)) {
                 throw "Unexpected delegated access on $purpose; explicit review required."
             }
         }

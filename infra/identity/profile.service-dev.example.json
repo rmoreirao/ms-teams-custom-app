@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "tenantId": "00000000-0000-0000-0000-000000000000",
+  "subscriptionId": "00000000-0000-0000-0000-000000000000",
+  "prefix": "teams-reference-dev",
+  "applications": [
+    {
+      "purpose": "web",
+      "assignmentRequired": true,
+      "graphNotificationPublisher": true,
+      "assignedUsers": [],
+      "assignedGroups": [],
+      "delegatedGrants": [],
+      "applicationPermissions": [],
+      "federatedCredentials": []
+    },
+    {
+      "purpose": "sync",
+      "assignmentRequired": true,
+      "graphNotificationPublisher": true,
+      "applicationPermissions": [
+        "Application.Read.All",
+        "Channel.ReadBasic.All",
+        "ChannelMessage.Read.All",
+        "Chat.Read.All",
+        "Team.ReadBasic.All",
+        "TeamMember.Read.All",
+        "User.Read.All"
+      ],
+      "federatedCredentials": [
+        {
+          "name": "control-managed-identity",
+          "issuer": "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0",
+          "subject": "00000000-0000-0000-0000-000000000000",
+          "audiences": ["api://AzureADTokenExchange"]
+        }
+      ]
+    },
+    { "purpose": "events", "assignmentRequired": false, "callbackPrincipals": [] },
+    {
+      "purpose": "deploy",
+      "assignmentRequired": false,
+      "federatedCredentials": [
+        {
+          "name": "github-dev",
+          "issuer": "https://token.actions.githubusercontent.com",
+          "subject": "repo:rmoreirao/ms-teams-custom-app:environment:dev",
+          "audiences": ["api://AzureADTokenExchange"]
+        }
+      ]
+    }
+  ]
+}

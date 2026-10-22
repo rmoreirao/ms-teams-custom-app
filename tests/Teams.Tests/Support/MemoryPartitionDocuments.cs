@@ -8,6 +8,8 @@ public sealed class MemoryPartitionDocuments : IPartitionDocuments
     private readonly Dictionary<string, Versioned<PartitionDocument>> values = [];
     private readonly object gate = new();
     private long version;
+    public Task<Versioned<PartitionDocument>?> ReadCurrentAsync(string pk, string id, CancellationToken ct) =>
+        ReadAsync(pk, id, ct);
     public Task<Versioned<PartitionDocument>?> ReadAsync(string pk, string id, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();

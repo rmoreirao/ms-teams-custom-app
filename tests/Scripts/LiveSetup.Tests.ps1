@@ -12,7 +12,7 @@ $actors = @(
     '77777777-7777-7777-7777-777777777777'
 )
 $live = @{
-    authorityMode = 'DelegatedSynthetic'; readConsistency = 'SessionPrimary'; approvalReference = 'test-approved-scope'
+    authorityMode = 'DelegatedSynthetic'; readConsistency = 'Session'; approvalReference = 'test-approved-scope'
     writerEpoch = 1; syntheticActorIds = $actors; syncClientId = $client; controlIdentityClientId = $control
     syntheticNotBefore = '2026-10-19T00:00:00Z'; notificationUrl = 'https://example.test/callbacks/graph/notifications'
     lifecycleUrl = 'https://example.test/callbacks/graph/lifecycle'; notificationCertificateId = 'test-key'

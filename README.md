@@ -44,7 +44,16 @@ Offline checks use **test-only dependency doubles**, never a selectable applicat
 
 The deployed bounded Live increment wires targeted push/revision catch-up, preserves loaded history, adds sanitized rich formatting and large-history virtualization, and opens the three approved existing chat pairs. It combines the five logical roles in the existing two Container Apps only under explicit `DelegatedSynthetic` configuration. It does not complete automatic production chat onboarding or the production policy/G0-G7 gates. See the [bounded Azure runbook](docs/live-runtime.md#bounded-existing-platform-azure-validation) and [end-state status](docs/live-integration-plan.md#end-state-app-integration-follow-up-2026-10-19).
 
-Live storage now also supports the single-region `SessionPrimary` profile: read-only primary-replica point reads establish current authority/revision barriers on a Session account. Serverless/Session is not an intrinsic real-time blocker, and this profile does not require replacing the account or changing its consistency. The original Strong profile remains available. See the [storage/runtime contract](docs/live-runtime.md#runtime-and-storage-boundaries).
+Live storage requires explicit `readConsistency: "Session"`: ordinary content lookups use native SDK reads, while critical authorization/control/write decisions retain read-only current reads. Browser revisions prevent rollback and bound catch-up without treating replica lag as lost history. Legacy profile names are rejected; existing deployments need a reviewed image/configuration transition, not an account upgrade. This source change is not evidence of a cloud rollout. See the [storage/runtime contract](docs/live-runtime.md#runtime-and-storage-boundaries).
+
+The source now keeps stored, authorized history available during source
+synchronization failures. Genuinely cold views request durable, bounded
+Control-owned Teams hydration and automatically retry typed loading instead of
+showing a false empty conversation. Missed edits/deletions may remain until
+reconciliation or seven-day expiry; authorization, history, parent and epoch
+checks remain strict. This is **not deployed**: a rebuilt coordinated image and
+separately approved read-refresh queue/scoped grants are required. See
+[ADR 0013](docs/adr/0013-availability-first-reads-and-bounded-hydration.md).
 
 ## Try the UI prototypes
 

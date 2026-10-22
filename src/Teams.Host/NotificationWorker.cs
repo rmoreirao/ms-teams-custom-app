@@ -106,7 +106,7 @@ public sealed class NotificationProjector(LiveOptions options, string tenant, IL
                 channel.GetProperty("channelId").GetString() != resource.GraphChannelId))
             throw new AppError(400, "resource_mismatch", "Decrypted channel context does not match.");
         await store.ApplyAsync(notification.TenantId, resource.Id, message, ct);
-        var projected = await store.MessageAsync(notification.TenantId, resource.Id, message.Id, message.ParentId, ct);
+        var projected = await store.CurrentMessageAsync(notification.TenantId, resource.Id, message.Id, message.ParentId, ct);
         var metadata = (await store.GetAsync(notification.TenantId, resource.Id, ct))!.Value;
         if (projected?.SourceVersion == message.SourceVersion)
             await control.SaveReceiptAsync(new(resource.Id, message.Id, message.ParentId, metadata.Revision,

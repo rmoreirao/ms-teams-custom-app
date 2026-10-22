@@ -4,6 +4,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using Azure.Identity;
+using Azure.Core;
 using Azure.Security.KeyVault.Keys.Cryptography;
 using Microsoft.Azure.Cosmos;
 using Teams.Core;
@@ -67,22 +68,37 @@ public static class LiveDiagnostics
     public static async Task RunAsync(IServiceProvider services, IConfiguration configuration, LiveOptions options,
         string tenant, string operation)
     {
-        if (!options.DelegatedSynthetic || configuration["App:Role"] != "Api")
-            throw new InvalidOperationException("Live diagnostics are restricted to the explicit synthetic API/control identity.");
+        var serviceInspect = options.EntitlementProvider == "Graph" && configuration["App:Role"] == "Control" && operation == "Inspect";
+        var projectionCheck = options.EntitlementProvider == "Graph" && configuration["App:Role"] == "Api" && operation == "ProjectionCheck";
+        var sessionCheck = options.EntitlementProvider == "Graph" && configuration["App:Role"] == "Api" && operation == "SessionCheck";
+        if (!serviceInspect && !projectionCheck && !sessionCheck && (!options.DelegatedSynthetic || configuration["App:Role"] != "Api"))
+            throw new InvalidOperationException("Inspect requires Control, ProjectionCheck/SessionCheck require Api, and legacy write probes require their explicit bounded API profile.");
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(8));
         var ct = deadline.Token;
         using var scope = services.CreateScope();
         var store = scope.ServiceProvider.GetRequiredService<ILiveStateStore>();
+        if (projectionCheck)
+        {
+            var proof = await ProjectionChecks.RunAsync(store, options, tenant, services.GetRequiredService<TimeProvider>(),
+                services.GetRequiredService<ILogger<LiveDiscovery>>(), ct);
+            Print(new { operation, proof, evidence = "API-identity projected data access, not browser authentication or delegated sends",
+                sourceWrites = 0, messageBodiesLogged = false });
+            return;
+        }
         if (operation == "Inspect")
         {
             var results = new List<object>();
             foreach (var resource in options.Resources)
             {
                 var item = await store.GetAsync(tenant, resource.Id, ct);
+                var control = services.GetRequiredService<LiveControlStore>();
+                var root = await control.RepairAsync(resource.Id, null, ct);
+                var repairs = await control.UnresolvedRepairsAsync(resource.Id, ct);
+                var coverageCheckpoint = await store.ReadCoverageAsync(tenant, resource.Id, ct);
                 var members = 0;
                 var denials = new List<string>();
                 if (item is not null)
-                    foreach (var actor in options.SyntheticActorIds)
+                    foreach (var actor in serviceInspect ? options.GraphPolicy!.AdmittedUserIds : options.SyntheticActorIds)
                     {
                         try { await store.GetMemberAsync(new(tenant, actor, ""), resource.Id, false, ct); members++; }
                         catch (AppError error) when (error.Status == 404 || error.Code == "authorization_stale")
@@ -90,13 +106,25 @@ public static class LiveDiagnostics
                     }
                 results.Add(new { resourceId = resource.Id, exists = item is not null, revision = item?.Value.Revision,
                     publishedRevision = item?.Value.PublishedRevision,
-                    coverage = item?.Value.CoverageReady, freshMembers = members, denials });
+                    coverage = item?.Value.CoverageReady, coverageUntil = item?.Value.CoverageUntil,
+                    coverageCheckpoint = coverageCheckpoint is null ? null : new { coverageCheckpoint.Reason,
+                        coverageCheckpoint.Ready, coverageCheckpoint.VerifiedAt, coverageCheckpoint.FreshUntil,
+                        coverageCheckpoint.RepairGeneration },
+                    repairGeneration = item?.Value.RepairGeneration, freshMembers = members, denials,
+                    rootRepair = root is null ? null : new { status = root.Value.Status, root.Value.Generation,
+                        root.Value.LastProgressAt, root.Value.Failure, root.Value.Recovery },
+                    unresolvedRepairs = repairs.Count,
+                    repairStates = repairs.Select(repair => new { checkpoint = LiveControlStore.RepairId(repair.ParentId),
+                        stage = repair.Verifying ? "verification" : "hydration",
+                        status = repair.Status, repair.Generation, repair.LastProgressAt, repair.Failure, repair.Recovery }) });
             }
             var subscriptions = new List<object>();
             foreach (var subscriptionScope in options.SubscriptionScopes)
             {
                 var subscription = await services.GetRequiredService<LiveControlStore>().SubscriptionAsync(subscriptionScope.Id, ct);
+                var lifecycle = await services.GetRequiredService<LiveControlStore>().LifecycleAsync(subscriptionScope.Id, ct);
                 JsonElement? remote = null;
+                string? remoteReadError = null;
                 if (subscription?.Value.GraphId is { } graphId)
                     try
                     {
@@ -104,9 +132,11 @@ public static class LiveDiagnostics
                             .GetAsync($"subscriptions/{Uri.EscapeDataString(graphId)}", ct);
                     }
                     catch (AppError error) when (error.Code == "graph_404") { }
+                    catch (AppError error) { remoteReadError = error.Code; }
                 subscriptions.Add(new { scopeId = subscriptionScope.Id, registered = subscription?.Value.GraphId is not null,
+                    lifecycle = lifecycle is null ? null : new { lifecycle.Value.Action, lifecycle.Value.At, lifecycle.Value.Handled },
                     expires = subscription?.Value.Expires, creationUnresolved = subscription?.Value is { GraphId: null, CreateAttempted: true },
-                    remoteExists = remote is not null,
+                    remoteExists = remoteReadError is null ? remote is not null : (bool?)null, remoteReadError,
                     remoteRich = remote is { } r && r.TryGetProperty("includeResourceData", out var rich) ? rich.GetBoolean() : (bool?)null,
                     remoteResourceMatches = remote is { } p && p.TryGetProperty("resource", out var path) &&
                         GraphMessages.NormalizeResource(path.GetString() ?? "") == subscriptionScope.Path,
@@ -144,11 +174,19 @@ public static class LiveDiagnostics
         if (operation == "SessionCheck")
         {
             var name = configuration["LiveDiagnostics:Container"] ?? throw new InvalidOperationException("Select the synthetic validation container.");
+            SessionReadProbe.ValidateContainerName(name);
+            var first = services.GetRequiredService<CosmosClient>();
+            var account = await first.ReadAccountAsync().WaitAsync(TimeSpan.FromSeconds(20), ct);
+            options.ValidateStorageProfile(account.Consistency.DefaultConsistencyLevel.ToString(),
+                account.ReadableRegions.Count(), account.WritableRegions.Count());
+            TokenCredential credential = options.EntitlementProvider == "Graph"
+                ? new ManagedIdentityCredential(ManagedIdentityId.FromUserAssignedClientId(configuration["AzureClientId"]!))
+                : new DefaultAzureCredential(new DefaultAzureCredentialOptions { ManagedIdentityClientId = configuration["AzureClientId"] });
             using var other = new CosmosClient(configuration["Azure:CosmosEndpoint"],
-                new DefaultAzureCredential(new DefaultAzureCredentialOptions { ManagedIdentityClientId = configuration["AzureClientId"] }),
+                credential,
                 new CosmosClientOptions { ConnectionMode = ConnectionMode.Gateway, ConsistencyLevel = ConsistencyLevel.Session,
                     SerializerOptions = new() { PropertyNamingPolicy = CosmosPropertyNamingPolicy.CamelCase }, RequestTimeout = TimeSpan.FromSeconds(10) });
-            var proof = await SessionPrimaryProbe.RunAsync(services.GetRequiredService<CosmosClient>(), other, name, ct);
+            var proof = await SessionReadProbe.RunAsync(first, other, name, ct);
             Print(new { operation, proof });
             return;
         }

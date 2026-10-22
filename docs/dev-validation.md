@@ -1,8 +1,119 @@
 # Dev functional validation report
 
+## Combined service rollout (2026-10-22)
+
+**Deployed and admitted; final migration acceptance/cleanup remains pending.**
+ACR `dt13`, digest
+`sha256:e8bb2357c55871fa16193892ed01b3e862710abccb793400c5df0ff2a216a57b`,
+now runs on the five existing isolated Api/Receiver/Projector/Delivery/Control
+workloads with exact `readConsistency: "Session"`, synchronization and admission
+enabled. The matching bundled frontend is deployed. The three users and five
+source resources, account policy, network, scale, identities and Graph grants
+were preserved.
+
+The existing namespace now contains `graph-read-refresh` with five-minute TTL,
+one-minute lock/duplicate window, five deliveries and expiry dead-lettering.
+Only the exact queue-scoped Api Sender and Control Receiver grants were added;
+real queue-access startup checks and all five exact healthy revisions passed.
+The account's eleven normal Cosmos assignments and four `readCurrentV1`
+procedures remain intact.
+
+| Evidence | Result / boundary |
+| --- | --- |
+| Real isolated Cosmos `SessionCheck` | Independent-client content convergence, current revocation and epoch fencing passed; eight tracked synthetic documents cleaned; exact temporary Api grant removed and original manual job restored |
+| Strict source-health `ProjectionCheck` | Passed for three actors, twelve snapshots, three excluded-pair denials and six existing direct-chat opens; this is Api-identity evidence, not browser authentication |
+| Current Control inspection | All five remote rich subscriptions match, with current expected member counts and progressing reconciliation; intermittent DM coverage gaps remain observable and are not a continuous source-health pass |
+| Application authentication beyond the old user-context limit | Five matched renewed subscriptions and current memberships observed 24.24 hours after original Control creation; seven sync application read grants, zero Web application grants and Control-only federation verified. This is not a new continuous source-health soak |
+| Public deployment smoke | Bundled frontend/readiness, anonymous API denial and canonical Entra redirect passed |
+| Signed-in warm/cold/older reads | Pending normal user-assisted sign-in; the user was unavailable. No fabricated session or password/TOTP automation was used |
+| Cold queue consumption and bounded recovery | Startup permissions are verified; full signed-in on-demand-path acceptance remains pending |
+| Operational alerts | Explicitly deferred by the user to future work; no recipients, routing or test notifications configured |
+
+Combined offline evidence is **280 backend passes with one explicit real-Cosmos
+opt-in skip**, **99 frontend**, **19 authentication-helper** and **35 installed-Edge
+journeys**, plus script/protocol checks and compiled templates. The initial
+parallel `Validate.ps1 -Browser` invocation timed out in three frontend files and
+cascaded to failures; its logs are retained, not reported as a passing invocation.
+The same frontend assertions/timeouts passed with one worker, and the remaining
+original checks passed separately. The integration includes the equal-timestamp
+older-page hydration regression/fix.
+
+Admission uses current authority, exact subscription bindings and operational
+progress, not blanket global coverage. Strict source-health acceptance remains
+separate: available history does not certify reconciliation or bounded recovery.
+Missed source edits/deletions can remain until reconciliation/retention. Native
+current-guard RU/latency, full read-path and unattended/recovery acceptance are
+not inherited from dt12 or the earlier failed/paused observers.
+
+Keep dt11 with its matching SessionPrimary settings as historical rollback
+evidence; dt12 is superseded Session-only evidence. Guarded retained-user runtime
+and obsolete validation-grant retirement await remaining acceptance, followed by
+the cleanup image/retest. No real Teams messages, source reset, commit or Git push
+were performed. Resolved settings, grant IDs, exact revisions and operation logs
+remain private outside the repository.
+
+## Prior availability-first source increment
+
+**Historical source-only handoff: implemented and verified locally, not deployed by that increment.**
+[ADR 0013](adr/0013-availability-first-reads-and-bounded-hydration.md) removes the
+source-coverage display gate, retains valid authorized history during operational
+failures and adds typed cold loading through durable, bounded Control hydration.
+Source freshness remains distinct from availability: missed edits/deletions may
+remain until reconciliation or seven-day expiry. Authority/history/parent/epoch
+checks, transactional merge/outbox and uncertain-send guarantees remain strict.
+
+The final post-cleanup `Validate.ps1 -Browser` run passed **279 backend tests**,
+**99 frontend tests**, **19 authentication-helper tests**, **nine Azure protocol
+contracts**, all mocked management/release suites and **35 installed-Edge
+journeys**. The real-Cosmos opt-in test was explicitly skipped. The frontend
+build/type-check passed. `live.bicep`, `synthetic-live.bicep`,
+`service-dev-access.bicep` and `service-dev.bicep` compiled with available Bicep
+0.46.1, including the new refresh queue and monitoring modules; CI remains pinned
+to 0.48.1 and was not dispatched. These are controlled offline results,
+not real queue/Graph, deployment, alert-routing or capacity acceptance.
+
+Implementation and cleanup replaced obsolete coverage-denial expectations and
+retained coverage for initialization/source-health evidence. The post-test pass
+restored bounded lag jitter and tightened critical-guard failure classification. Regression coverage
+also checks a restriction observed during a cache read against its returned
+access proof, and a parent appearing after an earlier source `404` against
+false-empty reply evidence. Historical ADRs, resource names and independent
+migration changes remain intact.
+
+No image was built/pushed to ACR, no workload was deployed and no queue/grant,
+account/network, Graph permission, Teams content or admission setting was changed
+by this increment. The live baseline at that handoff was `dt11`, digest
+`sha256:3f76605f3723be02c5c5083a0b91be21e7655110ab4315391dc9c507c3e8f901`,
+with SessionPrimary settings. Prepared `dt12`, digest
+`sha256:fc3e2373cec2c7c6b70eedfb982921029dff0733d389c6bbe9ef5e8251cec6ab`,
+predates this increment and is not its release package. A rebuilt coordinated
+image, reviewed Session settings, separately approved `graph-read-refresh` queue
+and exact API Sender/Control Receiver grants and real-service acceptance were
+subsequent release requirements. The combined rollout and explicit support-alert
+deferral are recorded above. The separate migration's unattended,
+signed-in, isolated-Cosmos and legacy-cleanup gates are not certified by these
+tests. See the [release/support runbook](live-runtime.md#availability-first-reads-and-hydration).
+
+## Prior Session consistency source increment
+
+**Session consistency source update:** [ADR 0012](adr/0012-session-content-reads-and-revision-convergence.md)
+replaces the historical profiles below with explicit Session content reads and
+targeted current reads. The new image/settings have not been deployed by this
+work; earlier Azure evidence is not acceptance for them. Use the
+[migration runbook](live-runtime.md#session-configuration-migration) and
+[current storage checks](testing.md#session-storage-checks). Historical counts,
+digests and failed observations below are retained unchanged.
+
+The Session source regression run passed **247 backend tests**, **86 frontend
+tests**, **34 installed-Edge browser journeys** and the existing script,
+deployment-contract and authentication-helper suites. The real-Cosmos opt-in
+test was explicitly skipped. The four consistency-related Bicep entry points
+compiled; the synthetic template retains its existing nullable-key warning.
+These are local/controlled-service results, not a new Azure acceptance result.
+
 **Live-only source migration:** Simulator and legacy GraphPilot executables, local persona login, fixture seed/reset and pilot polling have been removed. Offline tests now inject dependencies only from test assemblies/runners. This migration is hosted by the image-only Development release recorded below; existing Live configuration, identity, consent, services and sizing were preserved. GitHub Actions was not dispatched by this release.
 
-**Current outcome (2026-10-20 UTC): chat-name and synchronization-recovery changes are deployed to the existing two Azure apps. Read-only inspection confirmed coverage, current exact membership and matching rich subscriptions for all five approved resources. No Teams messages were sent during this release.**
+**Historical outcome (2026-10-20 UTC): chat-name and synchronization-recovery changes were deployed to the existing two Azure apps. Read-only inspection confirmed coverage, current exact membership and matching rich subscriptions for all five approved resources. No Teams messages were sent during this release.**
 
 ## Chat names and synchronization recovery (2026-10-20)
 
@@ -109,6 +220,10 @@ Only account/resource metadata and runtime mode/binding names were reported; cre
 
 ### Session-consistency correction (2026-10-19, source only)
 
+This subsection records the earlier SessionPrimary increment, now superseded by
+ADR 0012. `CosmosSessionReadTests` is the current opt-in entry point;
+the old test name/instructions below are historical, not current commands.
+
 The original Strong-only guard has been replaced by two explicit supported profiles. `Strong` preserves backward compatibility. `SessionPrimary` uses a Session SDK client and the canonical bounded read-only `readCurrentV1` procedure for authoritative point reads in projection, authority and control containers. Microsoft documents primary-replica/strong read semantics for stored procedures; the SDK captures their partition session tokens for following queries. There is no shared-token parsing/cache and no fallback to ordinary stale reads.
 
 Both runtime metadata validation and deployment preflight accept a single-region Session account under SessionPrimary, refuse unsupported regions/consistency modes, and leave account configuration unchanged. Bicep provisions the procedure before workloads and defines a reader with stored-procedure execution but no item-write actions. The private live example now selects SessionPrimary. None of this source was deployed or used to process additional Teams content.
@@ -124,7 +239,7 @@ Both runtime metadata validation and deployment preflight accept a single-region
 | Installed Edge browser journeys | **25 passed** | Existing real local SSE, safe-send, history, offboarding, rich-content and virtualization cases remain intact |
 | Independent real Cosmos clients | **Unexecuted, explicit opt-in skip** | The dedicated synthetic target/procedure/data access were not supplied; no real replica/RU or capacity result is claimed |
 
-`CosmosSessionPrimaryTests` provides the separately executable existing-account check with two Gateway/Session clients, no manually forwarded writer token, synthetic-only tracked writes/cleanup and no Graph calls. It checks current messages, source revocation, principal denial and epoch fencing. See the [opt-in instructions](testing.md#sessionprimary-storage-checks). The remaining real-service and rollout acceptance must not be confused with an intrinsic serverless limitation.
+The then-current `CosmosSessionPrimaryTests` provided the separately executable existing-account check with two Gateway/Session clients, no manually forwarded writer token, synthetic-only tracked writes/cleanup and no Graph calls. It checked current messages, source revocation, principal denial and epoch fencing. See the [current opt-in instructions](testing.md#session-storage-checks). The remaining real-service and rollout acceptance must not be confused with an intrinsic serverless limitation.
 
 ## Earlier deployment history
 

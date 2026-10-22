@@ -1,31 +1,45 @@
-export interface Session { id: string; name: string; environment: "Development"; source: "Microsoft Teams"; csrf: string; scopedValidation?: boolean; canStartDirectChats?: boolean; canCreateDirectChats?: false }
+export interface Session { id: string; name: string; environment: "Development"; source: "Microsoft Teams"; csrf: string; scopedValidation?: boolean; backgroundAuthentication?: "delegated-validation" | "application"; entitlementProvider?: "External" | "Graph"; canStartDirectChats?: boolean; canCreateDirectChats?: false }
 export interface Person { id: string; name: string; email: string | null }
 export interface Conversation { id: string; title: string; kind: "chat" | "channel"; team: string | null; revision: number; isDirect?: boolean }
 export interface Message { id: string; actorId: string; author: string; body: string; createdAt: string; modifiedAt: string; parentId: string | null; deleted: boolean; contentNotice?: string | null; teamsUrl?: string | null; htmlBody?: string | null }
-export interface MessagePage { messages: Message[]; cursor: string | null; revision: number; window: string; parentMessage: Message | null }
-export interface ChangePage { changes: { revision: number; messageId: string; parentId: string | null }[]; revision: number; resetRequired: boolean; messages?: Message[]; historyFrom?: string; window?: string }
+export interface ReadAccess { historyFrom: string; validUntil: string; epoch: number }
+export interface MessagePage { messages: Message[]; cursor: string | null; revision: number; window: string; parentMessage: Message | null; access?: ReadAccess }
+export interface PendingRead { state: "pending"; retryAfterMs: number; access: ReadAccess | null }
+export const isPendingRead = (value: unknown): value is PendingRead =>
+  typeof value === "object" && value !== null && "state" in value;
+export interface ChangePage { changes: { revision: number; messageId: string; parentId: string | null }[]; revision: number; resetRequired: boolean; messages?: Message[]; historyFrom?: string; window?: string; access?: ReadAccess }
 export interface RealtimeHint { conversationId: string; revision: number }
 export type DeliveryState = "pending" | "dispatching" | "confirmed" | "rejected" | "unknown";
 export interface Operation { id: string; state: DeliveryState; messageId: string | null; error: string | null }
 export interface SendCommand { operationId: string; window: string; body: string; parentId: string | null }
 export class ApiError extends Error {
-  constructor(public status: number, public code: string, message: string) { super(message); }
+  constructor(public status: number, public code: string, message: string, public access?: ReadAccess) { super(message); }
 }
-async function request<T>(path: string, init?: RequestInit): Promise<{ body: T; headers: Headers }> {
+async function request<T>(path: string, init?: RequestInit): Promise<{ body: T; headers: Headers; status: number }> {
   const response = await fetch(path, { ...init, credentials: "same-origin", cache: "no-store" });
   const text = await response.text();
   let body: unknown;
   try { body = text ? JSON.parse(text) : undefined; }
   catch { throw new ApiError(response.status, "invalid_response", "The service returned an invalid response. Refresh the page."); }
   if (!response.ok) {
-    const error = body as { code?: string; message?: string } | undefined;
+    const error = body as { code?: string; message?: string; access?: ReadAccess } | undefined;
     throw new ApiError(response.status, error?.code ?? "request_failed",
-      error?.message ?? (response.status === 401 ? "Sign in to continue." : "The request failed. Try again."));
+      error?.message ?? (response.status === 401 ? "Sign in to continue." : "The request failed. Try again."), error?.access);
   }
-  return { body: body as T, headers: response.headers };
+  return { body: body as T, headers: response.headers, status: response.status };
 }
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return (await request<T>(path, init)).body;
+}
+export async function readMessages(path: string, signal?: AbortSignal): Promise<MessagePage | PendingRead> {
+  const response = await request<MessagePage | PendingRead>(path, { signal });
+  const value = response.body;
+  if (response.status === 202 && value && isPendingRead(value) && value.state === "pending" &&
+      Number.isInteger(value.retryAfterMs) && value.retryAfterMs >= 100 && value.retryAfterMs <= 30000 &&
+      "access" in value) return value;
+  if (response.status === 200 && value && !isPendingRead(value) && Array.isArray(value.messages) &&
+      Number.isSafeInteger(value.revision) && value.revision >= 0 && typeof value.window === "string") return value;
+  throw new ApiError(response.status, "invalid_response", "History could not be loaded because the read response was invalid.");
 }
 export async function conversationPage(cursor?: string | null, signal?: AbortSignal): Promise<{ items: Conversation[]; cursor: string | null }> {
   const response = await request<Conversation[]>(`/api/conversations${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`, { signal });

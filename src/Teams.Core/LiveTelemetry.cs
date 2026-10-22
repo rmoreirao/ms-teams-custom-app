@@ -16,6 +16,12 @@ public static class LiveTelemetry
     public static readonly Counter<long> DeliveryRecipients = Meter.CreateCounter<long>("teamsref_delivery_recipients");
     public static readonly Counter<long> WriteOutcomes = Meter.CreateCounter<long>("teamsref_write_outcomes");
     public static readonly Counter<long> Failures = Meter.CreateCounter<long>("teamsref_worker_failures");
+    public static readonly Counter<long> ReadRefreshRequests = Meter.CreateCounter<long>("teamsref_read_refresh_requests");
+    public static readonly Counter<long> ReadRefreshCoalesced = Meter.CreateCounter<long>("teamsref_read_refresh_coalesced");
+    public static readonly Counter<long> ReadRefreshFailures = Meter.CreateCounter<long>("teamsref_read_refresh_failures");
+    public static readonly Counter<long> ReadRefreshProgress = Meter.CreateCounter<long>("teamsref_read_refresh_progress");
+    public static readonly Histogram<double> ReadRefreshAge = Meter.CreateHistogram<double>("teamsref_read_refresh_age_ms", "ms");
+    public static readonly Histogram<long> RepairStalled = Meter.CreateHistogram<long>("teamsref_repair_stalled");
     private static readonly Histogram<double> Duration = Meter.CreateHistogram<double>("teamsref_dependency_duration_ms", "ms");
     public static void Failure(string component) =>
         Failures.Add(1, new KeyValuePair<string, object?>("component", component));

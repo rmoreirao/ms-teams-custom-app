@@ -41,7 +41,7 @@ function New-App([string]$Name, [string]$Role, [string[]]$Roles, [string]$Client
         '66666666-6666-6666-6666-666666666666', '77777777-7777-7777-7777-777777777777', '88888888-8888-8888-8888-888888888888'
     )
     $live = @{
-        authorityMode = 'DelegatedSynthetic'; readConsistency = 'SessionPrimary'; approvalReference = 'test-only-approval'
+        authorityMode = 'DelegatedSynthetic'; readConsistency = 'Session'; approvalReference = 'test-only-approval'
         writerEpoch = 7; hostedRoles = $Roles; syncClientId = $webClient; controlIdentityClientId = $apiClient
         synchronizationEnabled = $true; admissionEnabled = $true
         syntheticActorIds = $actors; syntheticNotBefore = '2026-01-01T00:00:00Z'

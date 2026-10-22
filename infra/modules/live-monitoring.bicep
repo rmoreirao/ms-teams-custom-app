@@ -9,7 +9,7 @@ resource deadLetters 'Microsoft.Insights/metricAlerts@2018-03-01' = {
   name: '${prefix}-graph-deadletters'
   location: 'global'
   properties: {
-    description: 'Graph notification or delivery dead letters require repair/retention investigation.'
+    description: 'Graph notification, delivery or read-refresh dead letters require recovery/retention investigation.'
     severity: 1
     enabled: true
     scopes: [busNamespaceId]
@@ -25,7 +25,7 @@ resource deadLetters 'Microsoft.Insights/metricAlerts@2018-03-01' = {
         operator: 'GreaterThan'
         threshold: 0
         timeAggregation: 'Maximum'
-        dimensions: [{ name: 'EntityName', operator: 'Include', values: ['graph-notifications', 'graph-delivery'] }]
+        dimensions: [{ name: 'EntityName', operator: 'Include', values: ['graph-notifications', 'graph-delivery', 'graph-read-refresh'] }]
         criterionType: 'StaticThresholdCriterion'
       }]
     }
@@ -52,7 +52,7 @@ resource backlog 'Microsoft.Insights/metricAlerts@2018-03-01' = {
         operator: 'GreaterThan'
         threshold: 1000
         timeAggregation: 'Minimum'
-        dimensions: [{ name: 'EntityName', operator: 'Include', values: ['graph-notifications', 'graph-delivery'] }]
+        dimensions: [{ name: 'EntityName', operator: 'Include', values: ['graph-notifications', 'graph-delivery', 'graph-read-refresh'] }]
         criterionType: 'StaticThresholdCriterion'
       }]
     }
@@ -82,6 +82,29 @@ resource failures 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = {
     actions: { actionGroups: empty(actionGroupId) ? [] : [actionGroupId] }
   }
 }
+resource refreshFailures 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = {
+  name: '${prefix}-read-refresh-stalled'
+  location: location
+  properties: {
+    displayName: 'Sustained Teams read refresh failures or aged work'
+    description: 'Work age, not last source message time. Isolated shared-budget deferrals are not failures. Verify action-group routing separately.'
+    severity: 2
+    enabled: true
+    evaluationFrequency: 'PT1M'
+    windowSize: 'PT5M'
+    scopes: [logsWorkspaceId]
+    autoMitigate: true
+    criteria: { allOf: [{
+      query: 'AppMetrics | where Name in ("teamsref_read_refresh_failures", "teamsref_read_refresh_age_ms", "teamsref_repair_stalled") | summarize Failures=sumif(Sum, Name == "teamsref_read_refresh_failures"), Oldest=maxif(Max, Name == "teamsref_read_refresh_age_ms"), Stalled=maxif(Max, Name == "teamsref_repair_stalled") by bin(TimeGenerated, 1m) | where Failures >= 3 or Oldest >= 120000 or Stalled > 0 | summarize UnhealthyMinutes=count()'
+      timeAggregation: 'Maximum'
+      metricMeasureColumn: 'UnhealthyMinutes'
+      operator: 'GreaterThanOrEqual'
+      threshold: 2
+      failingPeriods: { numberOfEvaluationPeriods: 1, minFailingPeriodsToAlert: 1 }
+    }] }
+    actions: { actionGroups: empty(actionGroupId) ? [] : [actionGroupId] }
+  }
+}
 resource workbook 'Microsoft.Insights/workbooks@2022-04-01' = {
   name: guid(resourceGroup().id, prefix, 'live-operations')
   location: location
@@ -95,7 +118,7 @@ resource workbook 'Microsoft.Insights/workbooks@2022-04-01' = {
       items: [
         {
           type: 1
-          content: { json: '# Live Teams operations\nBody-free counters and dependency timings. Broker acceptance is not Graph confirmation or client rendering. Review subscription/coverage, policy leases, queue/DLQ age and operation uncertainty alongside these charts.' }
+          content: { json: '# Live Teams operations\nBody-free counters and dependency timings. Broker acceptance is not Graph confirmation or client rendering. Review subscription/repair progress, policy leases, read-refresh work age, all three queues/DLQs and operation uncertainty. Retained authorized content is not proof of source freshness. An empty action group does not route support alerts.' }
           name: 'context'
         }
         {

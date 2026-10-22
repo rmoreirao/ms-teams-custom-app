@@ -19,7 +19,7 @@ $parameters = @{
         syncClientId = @{ value = '33333333-3333-3333-3333-333333333333' }
         eventsClientId = @{ value = '44444444-4444-4444-4444-444444444444' }
         trustedProxyCidr = @{ value = '10.40.0.0/23' }
-        liveConfig = @{ value = @{ approvalReference = 'synthetic-test-approval'; writerEpoch = 1 } }
+        liveConfig = @{ value = @{ approvalReference = 'synthetic-test-approval'; writerEpoch = 1; readConsistency = 'Session' } }
     }
 }
 function az {
@@ -68,15 +68,13 @@ try {
     Expect-Failure { & $command @arguments -EnableMonitoring } 'Monitoring requires'
     if ($state.calls.Count -ne $before) { throw 'Invalid admission contacted Azure.' }
     $state.consistency = 'Session'
-    Expect-Failure { & $command @arguments } 'Strong-consistency'
+    & $command @arguments
     $state.consistency = 'Strong'; $state.public = 'Enabled'
     Expect-Failure { & $command @arguments } 'disabled public access'
     $state.public = 'Disabled'
-    $parameters.parameters.liveConfig.value.readConsistency = 'SessionPrimary'
-    $parameters | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $parameterPath
     $state.consistency = 'Session'
     & $command @arguments
-    if ($state.writes) { throw 'SessionPrimary preview mutated the account or deployment.' }
+    if ($state.writes) { throw 'Session preview mutated the account or deployment.' }
     $state.regions = 2
     Expect-Failure { & $command @arguments } 'one Cosmos region'
     $state.regions = 1; $state.multiWrite = $true
@@ -84,12 +82,14 @@ try {
     $state.multiWrite = $false; $state.consistency = 'Eventual'
     Expect-Failure { & $command @arguments } 'Session or Strong'
     $state.consistency = 'Session'
-    $parameters.parameters.liveConfig.value.readConsistency = 'Unsupported'
-    $parameters | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $parameterPath
-    $before = $state.calls.Count
-    Expect-Failure { & $command @arguments } 'Strong or SessionPrimary'
-    if ($state.calls.Count -ne $before) { throw 'Unsupported storage profile contacted Azure.' }
-    $parameters.parameters.liveConfig.value.readConsistency = 'Strong'
+    foreach ($invalid in @('Unsupported', 'Strong', 'SessionPrimary', '')) {
+        $parameters.parameters.liveConfig.value.readConsistency = $invalid
+        $parameters | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $parameterPath
+        $before = $state.calls.Count
+        Expect-Failure { & $command @arguments } 'explicitly select Session'
+        if ($state.calls.Count -ne $before) { throw 'Unsupported storage profile contacted Azure.' }
+    }
+    $parameters.parameters.liveConfig.value.readConsistency = 'Session'
     $parameters | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $parameterPath
     $state.consistency = 'Strong'
     & $command @arguments -Apply -WhatIf
@@ -99,7 +99,7 @@ try {
     if ((Get-Content -Raw -LiteralPath $outputPath | ConvertFrom-Json).identityBindings.value[0].role -ne 'Api') {
         throw 'Identity outputs were not preserved.'
     }
-    Write-Output 'Passed live deployment checks: closed default gates, no-write what-if, Strong/SessionPrimary profile checks, single-region/single-writer refusal, early input/network guards, confirmed apply and private output export; no fixture/Graph operations.'
+    Write-Output 'Passed live deployment checks: closed default gates, no-write preview, explicit Session and legacy-profile refusal, single-region/single-writer refusal, early input/network guards, confirmed apply and private output export; no fixture/Graph operations.'
 } finally {
     foreach ($path in @($parameterPath, $outputPath)) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path } }
     Remove-Item -LiteralPath $temporary
