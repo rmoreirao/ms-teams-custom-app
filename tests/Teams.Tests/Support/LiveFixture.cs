@@ -18,13 +18,14 @@ public sealed class LiveFixture
     public Actor Alex { get; }
     public Actor Sam { get; }
     public Actor Jordan { get; }
-    public LiveFixture(string tenant = "tenant", string alex = "alex", string sam = "sam", string jordan = "jordan")
+    public LiveFixture(string tenant = "tenant", string alex = "alex", string sam = "sam", string jordan = "jordan",
+        IPartitionDocuments? documents = null, IRecentMessageCache? cache = null)
     {
         Tenant = tenant;
         Alex = new(tenant, alex, "Alex", "alex-session");
         Sam = new(tenant, sam, "Sam", "sam-session");
         Jordan = new(tenant, jordan, "Jordan", "jordan-session");
-        Store = new(new MemoryPartitionDocuments(), Clock);
+        Store = new(documents ?? new MemoryPartitionDocuments(), Clock, cache: cache);
         InitializeAsync().GetAwaiter().GetResult();
     }
     private async Task InitializeAsync()

@@ -129,6 +129,45 @@ public sealed class LiveStateTests
             "authority-1", true, true, 0), default));
     }
     [Fact]
+    public async Task ConnectionRevocationSurvivesAuthorityRenewalUntilAcknowledged()
+    {
+        await Prepare();
+        clock.Advance(TimeSpan.FromSeconds(1));
+        var denied = new Entitlement("tenant", "chat", actor.Id, actor.Name, clock.GetUtcNow().AddDays(-7),
+            clock.GetUtcNow(), clock.GetUtcNow().AddMinutes(1), "authority-2", false, false, 0);
+        var pending = Assert.IsType<Versioned<Entitlement>>(await store.SetEntitlementAsync(denied, default));
+        Assert.Equal(denied, pending.Value);
+        var restarted = new LiveStateStore(documents, clock);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        var renewed = denied with { VerifiedAt = clock.GetUtcNow(), FreshUntil = clock.GetUtcNow().AddMinutes(1),
+            AuthorityVersion = "authority-3" };
+        Assert.Equal(pending, await restarted.SetEntitlementAsync(renewed, default));
+        Assert.Empty((await restarted.CatalogAsync(actor, null, default)).Items);
+        await restarted.CompleteEntitlementRevocationAsync(pending, default);
+        Assert.Null(await restarted.SetEntitlementAsync(renewed, default));
+    }
+    [Fact]
+    public async Task StaleConnectionRevocationAcknowledgementCannotClearANewerRemoval()
+    {
+        await Prepare();
+        clock.Advance(TimeSpan.FromSeconds(1));
+        var denied = new Entitlement("tenant", "chat", actor.Id, actor.Name, clock.GetUtcNow().AddDays(-7),
+            clock.GetUtcNow(), clock.GetUtcNow().AddMinutes(1), "authority-2", false, false, 0);
+        var previous = Assert.IsType<Versioned<Entitlement>>(await store.SetEntitlementAsync(denied, default));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        Assert.Null(await store.SetEntitlementAsync(denied with { Active = true, CanSend = true,
+            VerifiedAt = clock.GetUtcNow(), FreshUntil = clock.GetUtcNow().AddMinutes(1), AuthorityVersion = "authority-3" }, default));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        var removedAgain = denied with { VerifiedAt = clock.GetUtcNow(), FreshUntil = clock.GetUtcNow().AddMinutes(1),
+            AuthorityVersion = "authority-4" };
+        var current = Assert.IsType<Versioned<Entitlement>>(await store.SetEntitlementAsync(removedAgain, default));
+        Assert.Equal("revocation_conflict", (await Assert.ThrowsAsync<AppError>(() =>
+            store.CompleteEntitlementRevocationAsync(previous, default))).Code);
+        Assert.Equal(current, await store.SetEntitlementAsync(removedAgain, default));
+        await store.CompleteEntitlementRevocationAsync(current, default);
+        Assert.Null(await store.SetEntitlementAsync(removedAgain, default));
+    }
+    [Fact]
     public async Task ChangesAreCommittedWithTheMessageAndLargeGapsRequireSnapshot()
     {
         await Prepare();

@@ -6,26 +6,38 @@ namespace Teams.Infrastructure;
 
 public sealed record PartitionDocument(string Id, string Pk, string Kind, string TenantId, string ConversationId,
     string ActorId, DateTimeOffset At, long Revision, int Ttl, string Json, bool Pending = false, string Parent = "",
-    string SortTime = "", string SourceId = "", int SchemaVersion = 1);
+    string SortTime = "", string SourceId = "", int SchemaVersion = 1)
+{
+    [Newtonsoft.Json.JsonProperty("_etag", NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore)]
+    public string? Etag { get; init; }
+}
 public sealed record DocumentPage(IReadOnlyList<Versioned<PartitionDocument>> Items, string? Cursor);
 public sealed record DocumentFilter(string TenantId, string Kind, string? Pk = null, string? ActorId = null,
     string? ConversationId = null, DateTimeOffset? Since = null, bool? Pending = null, string? Parent = null,
-    DateTimeOffset? Before = null, string? BeforeId = null, long? AfterRevision = null, bool OldestFirst = false);
+    DateTimeOffset? Before = null, string? BeforeId = null, long? AfterRevision = null, bool OldestFirst = false,
+    long? ThroughRevision = null);
 public sealed record DocumentWrite(PartitionDocument Value, string? ExpectedVersion);
+public sealed record DocumentDelete(string Pk, string Id, string ExpectedVersion);
 public interface IPartitionDocuments
 {
     Task<Versioned<PartitionDocument>?> ReadAsync(string pk, string id, CancellationToken ct);
     Task<Versioned<PartitionDocument>?> ReadCurrentAsync(string pk, string id, CancellationToken ct);
     Task<DocumentPage> QueryAsync(DocumentFilter filter, int limit, string? cursor, CancellationToken ct);
     Task<bool> WriteAsync(IReadOnlyList<DocumentWrite> writes, CancellationToken ct);
+    Task<bool> MutateAsync(IReadOnlyList<DocumentWrite> writes, IReadOnlyList<DocumentDelete> deletes, CancellationToken ct) =>
+        throw new NotSupportedException("Conditional deletion is not supported by this document adapter.");
 }
 
 public static class PartitionDocumentBatch
 {
-    public static void Validate(IReadOnlyList<DocumentWrite> writes)
+    public static void Validate(IReadOnlyList<DocumentWrite> writes, IReadOnlyList<DocumentDelete>? deletes = null)
     {
-        if (writes.Count is < 1 or > 100 || writes.Select(w => w.Value.Pk).Distinct().Count() != 1 ||
-            writes.Select(w => w.Value.Id).Distinct().Count() != writes.Count)
+        deletes ??= [];
+        var count = writes.Count + deletes.Count;
+        if (writes.Count < 1 || count > 100 ||
+            writes.Select(w => w.Value.Pk).Concat(deletes.Select(d => d.Pk)).Distinct().Count() != 1 ||
+            writes.Select(w => w.Value.Id).Concat(deletes.Select(d => d.Id)).Distinct().Count() != count ||
+            deletes.Any(d => string.IsNullOrWhiteSpace(d.ExpectedVersion)))
             throw new InvalidOperationException("A batch must have 1-100 unique items in one logical partition.");
     }
 }
@@ -72,17 +84,21 @@ public sealed class CosmosPartitionDocuments(Container container) : IPartitionDo
         catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound) { return null; }
     }
     public async Task<bool> WriteAsync(IReadOnlyList<DocumentWrite> writes, CancellationToken ct)
+        => await MutateAsync(writes, [], ct);
+    public async Task<bool> MutateAsync(IReadOnlyList<DocumentWrite> writes, IReadOnlyList<DocumentDelete> deletes, CancellationToken ct)
     {
-        PartitionDocumentBatch.Validate(writes);
+        PartitionDocumentBatch.Validate(writes, deletes);
         var batch = container.CreateTransactionalBatch(new(writes[0].Value.Pk));
         foreach (var write in writes)
         {
             if (write.ExpectedVersion is null) batch.CreateItem(write.Value);
             else batch.ReplaceItem(write.Value.Id, write.Value, new() { IfMatchEtag = write.ExpectedVersion });
         }
+        foreach (var delete in deletes)
+            batch.DeleteItem(delete.Id, new() { IfMatchEtag = delete.ExpectedVersion });
         using var response = await batch.ExecuteAsync(ct);
         if (response.IsSuccessStatusCode) return true;
-        if (Enumerable.Range(0, response.Count).Any(i => response[i].StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed))
+        if (Enumerable.Range(0, response.Count).Any(i => response[i].StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed or HttpStatusCode.NotFound))
             return false;
         throw new AppError(503, "projection_commit_unavailable", $"Projection transaction failed ({(int)response.StatusCode}).");
     }
@@ -100,6 +116,11 @@ public sealed class CosmosPartitionDocuments(Container container) : IPartitionDo
         Add("actorId", f.ActorId); Add("conversationId", f.ConversationId);
         Add("sortTime", f.Since?.ToUniversalTime().ToString("O"), ">="); Add("pending", f.Pending); Add("parent", f.Parent);
         Add("revision", f.AfterRevision, ">");
+        if (f.ThroughRevision is not null)
+        {
+            clauses.Add("c.revision <= @throughRevision");
+            parameters["@throughRevision"] = f.ThroughRevision.Value;
+        }
         if (f.Before is not null)
         {
             clauses.Add("(c.sortTime < @before OR (c.sortTime = @before AND c.sourceId > @beforeId))");
@@ -117,7 +138,7 @@ public sealed class CosmosPartitionDocuments(Container container) : IPartitionDo
         {
             var response = await iterator.ReadNextAsync(ct);
             if (response.Count != 0 || !iterator.HasMoreResults)
-                return new(response.Select(d => new Versioned<PartitionDocument>(d, "")).ToArray(), response.ContinuationToken);
+                return new(response.Select(d => new Versioned<PartitionDocument>(d, d.Etag ?? "")).ToArray(), response.ContinuationToken);
         }
         throw new AppError(503, "projection_query_budget", "The bounded query could not locate a usable page.");
     }

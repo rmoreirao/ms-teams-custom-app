@@ -379,6 +379,26 @@ The catalog is fetched in bounded authorized pages, with a protected continuatio
 
 The browser consumes `{conversationId, revision}` hints from Web PubSub, coalesces bursts for 100 ms and updates only the affected open conversation/thread. Known-conversation hints do not reload the catalog. A previously unknown conversation prompts an authorized catalog refresh. A jittered 4-6-minute reconciliation and foreground/reconnect reconciliation recover missed hints. There is no pilot polling transport, SSE application mode or automatic push-to-poll fallback.
 
+`Live` describes the browser's connected update transport, not proof that Graph
+source synchronization is healthy. `Reconnecting` means the SDK is still trying;
+when it stops, the browser shows `Synchronization unavailable` with an explicit
+Reconnect action. Initial connection uses one negotiation, fresh connections
+obtain fresh credentials, and both automatic and manual reconnects catch up
+missed changes without resending drafts. An offline browser waits for network
+recovery before negotiating.
+
+Control closes user-wide PubSub connections only after a persisted
+active-to-inactive resource-access transition, not for every inactive policy
+entry. Ordinary nonmembers of another approved pair must not be disconnected on
+each two-second policy pass. Access removal and a pending connection-revocation
+record commit atomically in the resource's authority partition; Control
+acknowledges that version only after the close succeeds. Failed closes or catalog
+updates remain retryable across worker restarts, while repeated cached/renewed
+denials do not close connections again after acknowledgement. Current read/send
+authorization, principal blocking and sign-out connection closure are unchanged.
+These source changes require a coordinated Api/Control image release; they are
+not evidence of deployed recovery.
+
 `GET /api/conversations/{id}/changes?after=<revision>&minimumRevision=<target>` returns authorized upserts/tombstones, reply context, the current history cutoff and a renewed command window. Thread requests include `parent` so its current eligibility is checked even during lag. Successful reads and `503 projection_behind` errors carry `access: { historyFrom, validUntil, epoch }`; the deadline is capped by the original authority lease, not coverage. A reader behind `after` or the target is not a journal reset. Changed documents older than their journal entries also report lag rather than claim catch-up.
 
 Genuine journal gaps/expiry, more than 100 entries or more than 256 KiB of upserts require an authorized snapshot. Hidden-parent replies are excluded. The browser never regresses its loaded revision, retains loaded pages on normal deltas, and rebuilds the loaded page count on a real reset. During lag or other operational failures, a still-valid same-epoch view can remain after current history/retention filtering; it expires locally at the verified deadline. Authorization/security failures clear it, and network failure does not renew access. Snapshot and older-page reads enforce the revision floor. Sending outcomes and unsent drafts are not replica progress.

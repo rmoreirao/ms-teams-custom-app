@@ -169,6 +169,7 @@ public static class TeamsApplication
                 context.Response.StatusCode = ex.Status;
                 if (ex.Status == 429) context.Response.Headers.RetryAfter = "2";
                 await context.Response.WriteAsJsonAsync(new { code = ex.Code, message = ex.Message, access = ex.Access,
+                    diagnostics = context.Items["cache-read-evidence"],
                     traceId = context.TraceIdentifier });
             }
             catch (Exception ex)
@@ -268,17 +269,48 @@ public static class TeamsApplication
                 c.Response.Headers["X-Next-Cursor"] = commands.Issue(actor, "catalog", "catalog-page", page.Cursor, TimeSpan.FromMinutes(5));
             return page.Items;
         });
-        api.MapGet("/conversations/{id}/messages", async (string id, string? cursor, string? parent, long? minimumRevision,
+        api.MapGet("/conversations/{id}/cache-diagnostics", async (string id, HttpContext c, ILiveStateStore state, CancellationToken ct) =>
+        {
+            var snapshot = await state.InspectCacheAsync(Current(c), id, ct);
+            if (snapshot.CosmosError is not null || snapshot.Redis.Status == "unavailable")
+                app.Logger.LogWarning("Cache inspection incomplete; cosmos={Cosmos}, redis={Redis}, trace={Trace}.",
+                    snapshot.CosmosError, snapshot.Redis.Status, c.TraceIdentifier);
+            return Results.Ok(snapshot);
+        });
+        api.MapPost("/conversations/{id}/cache-diagnostics/cleanup", async (string id, CacheCleanupCommand command,
+            HttpContext c, ILiveStateStore state, CancellationToken ct) =>
+        {
+            var result = await state.CleanCacheAsync(Current(c), id, command, ct);
+            if (result.CosmosError is not null || result.RedisError is not null)
+                app.Logger.LogWarning("Cache cleanup incomplete; cosmos={Cosmos}, redis={Redis}, trace={Trace}.",
+                    result.CosmosError, result.RedisError, c.TraceIdentifier);
+            else app.Logger.LogInformation("Cache cleanup progress; cosmos={Cosmos}, redis={Redis}, trace={Trace}.",
+                result.CosmosState, result.RedisState, c.TraceIdentifier);
+            return Results.Json(result, statusCode: result.Complete ? 200 : 202);
+        });
+        api.MapGet("/conversations/{id}/cache-diagnostics/cleanup/{operationId}", (string id, string operationId,
+            HttpContext c, ILiveStateStore state, CancellationToken ct) =>
+            state.CacheCleanupAsync(Current(c), id, operationId, ct));
+        api.MapGet("/conversations/{id}/messages", async (string id, string? cursor, string? parent, long? minimumRevision, bool? diagnostics,
             HttpContext c, Messaging service, CancellationToken ct) =>
         {
-            var page = await service.ReadAsync(Current(c), id, cursor, parent, minimumRevision ?? 0, ct);
-            if (!page.Pending) return Results.Ok(page);
+            var evidence = diagnostics == true || c.Request.Headers["X-Cache-Diagnostics"] == "true"
+                ? new ReadEvidence("page", c.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow()) : null;
+            c.Items["cache-read-evidence"] = evidence;
+            var page = await service.ReadAsync(Current(c), id, cursor, parent, minimumRevision ?? 0, ct, evidence);
+            if (!page.Pending) return Results.Ok(page with { Diagnostics = evidence });
             c.Response.Headers.RetryAfter = "1";
-            return Results.Json(new PendingRead("pending", 1000, page.Access), statusCode: 202);
+            return Results.Json(new PendingRead("pending", 1000, page.Access, evidence), statusCode: 202);
         });
-        api.MapGet("/conversations/{id}/changes", (string id, long? after, string? parent, long? minimumRevision,
+        api.MapGet("/conversations/{id}/changes", async (string id, long? after, string? parent, long? minimumRevision, bool? diagnostics,
             HttpContext c, Messaging service, CancellationToken ct) =>
-            service.ChangesAsync(Current(c), id, after ?? 0, ct, parent, minimumRevision ?? 0));
+        {
+            var evidence = diagnostics == true || c.Request.Headers["X-Cache-Diagnostics"] == "true"
+                ? new ReadEvidence("delta", c.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow()) : null;
+            c.Items["cache-read-evidence"] = evidence;
+            var page = await service.ChangesAsync(Current(c), id, after ?? 0, ct, parent, minimumRevision ?? 0, evidence);
+            return page with { Diagnostics = evidence };
+        });
         api.MapPost("/conversations/{id}/messages", async (string id, SendCommand command, HttpContext c, Messaging service, CancellationToken ct) =>
         {
             var result = await service.SendAsync(Current(c), id, command, ct);

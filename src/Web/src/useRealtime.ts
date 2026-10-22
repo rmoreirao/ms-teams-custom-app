@@ -26,7 +26,7 @@ export function useRealtime(session: Session | null, handlers: {
     let close: (() => void) | undefined;
     let timer: number | undefined;
     let batch: number | undefined;
-    let opened = false;
+    let opened = attempt > 0;
     let checking = false;
     const pending = new Map<string, number>();
     const controller = new AbortController();
@@ -44,7 +44,7 @@ export function useRealtime(session: Session | null, handlers: {
     };
     const connected = () => {
       if (stopped) return;
-      setStatus("Live");
+      setStatus(navigator.onLine ? "Live" : "Offline");
       if (opened) reconcile();
       opened = true;
     };
@@ -68,26 +68,30 @@ export function useRealtime(session: Session | null, handlers: {
       setStatus(navigator.onLine ? "Reconnecting" : "Offline");
       void checkSession();
     };
+    const unavailable = () => {
+      if (stopped) return;
+      setStatus(navigator.onLine ? "Synchronization unavailable" : "Offline");
+      if (navigator.onLine) callbacks.current.error("Live updates stopped reconnecting. Select Reconnect to try again.");
+      void checkSession();
+    };
     const start = async () => {
       const negotiate = () => post<{ transport: string; url?: string }>(
         "/api/realtime/negotiate", {}, session.csrf, controller.signal);
       try {
-        const endpoint = await negotiate();
-        if (stopped) return;
-        if (endpoint.transport !== "webpubsub") throw new Error("The service returned an unsupported live transport.");
-        if (!endpoint.url) throw new Error("The live service did not provide a connection address.");
         const client = new WebPubSubClient({ getClientAccessUrl: async () => {
           const next = await negotiate();
-          if (next.transport !== "webpubsub" || !next.url) throw new Error("The live transport changed. Reconnect to try again.");
+          controller.signal.throwIfAborted();
+          if (next.transport !== "webpubsub") throw new Error("The service returned an unsupported live transport.");
+          if (!next.url) throw new Error("The live service did not provide a connection address.");
           return next.url;
         } });
         client.on("connected", connected);
         client.on("server-message", event => hint(event.message.data));
         client.on("disconnected", disconnected);
-        client.on("stopped", disconnected);
+        client.on("stopped", unavailable);
         close = () => { void client.stop(); };
-        await client.start();
-        if (stopped) { await client.stop(); return; }
+        await client.start({ abortSignal: controller.signal });
+        if (stopped) { client.stop(); return; }
         // Reconcile missed hints without synchronizing every browser on the same timer.
         timer = window.setInterval(reconcile, 240_000 + Math.floor(Math.random() * 120_000));
       } catch (error) {
@@ -99,12 +103,12 @@ export function useRealtime(session: Session | null, handlers: {
         }
       }
     };
-    const onOnline = () => { setOnline(true); setAttempt(n => n + 1); reconcile(); };
+    const onOnline = () => { setOnline(true); setAttempt(n => n + 1); };
     const onOffline = () => { setOnline(false); setStatus("Offline"); };
     const onVisible = () => { if (!document.hidden) { reconcile(); void checkSession(); } };
     setStatus(navigator.onLine ? "Connecting" : "Offline");
     setOnline(navigator.onLine);
-    void start();
+    if (navigator.onLine) void start();
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", onOffline);
     document.addEventListener("visibilitychange", onVisible);

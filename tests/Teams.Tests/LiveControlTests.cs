@@ -15,6 +15,7 @@ public sealed class LiveControlTests
     private readonly Documents documents = new();
     private readonly Graph graph = new();
     private readonly Authority authority = new();
+    private readonly Realtime realtime = new();
     private readonly LiveOptions options = new()
     {
         SynchronizationEnabled = true, WriterEpoch = 1,
@@ -30,7 +31,7 @@ public sealed class LiveControlTests
         store = new(documents, clock);
         control = new(documents, clock, Tenant);
         worker = new(Tenant, options, store, control, new(graph, control, options, clock),
-            new(graph, store, control, clock), authority, new Realtime(), clock, NullLogger<LiveControlWorker>.Instance);
+            new(graph, store, control, clock), authority, realtime, clock, NullLogger<LiveControlWorker>.Instance);
     }
     private async Task Prepare(ApprovedResource resource, bool ready = false)
     {
@@ -50,6 +51,89 @@ public sealed class LiveControlTests
         {
             Pending = false, Verifying = true, Generation = generation, UpdatedAt = at ?? clock.GetUtcNow()
         } }, default));
+    }
+    private Entitlement Grant(bool active, string version) => new(Tenant, "chat", "alex", "Alex",
+        clock.GetUtcNow().AddDays(-1), clock.GetUtcNow(), clock.GetUtcNow().AddMinutes(2), version, active, active, 1);
+    [Fact]
+    public async Task InactiveNonmembersDoNotCloseExistingUserConnections()
+    {
+        await Prepare(options.Resources[0], ready: true);
+        authority.Entries = [Grant(false, "not-a-member")];
+        for (var pass = 0; pass < 10; pass++)
+        {
+            await worker.StepAsync(default);
+            clock.Advance(TimeSpan.FromSeconds(2));
+        }
+        authority.Entries = [Grant(false, "still-not-a-member")];
+        await worker.StepAsync(default);
+        Assert.Equal(0, realtime.Attempts);
+        Assert.Equal(404, (await Assert.ThrowsAsync<AppError>(() =>
+            store.GetMemberAsync(new(Tenant, "alex", "Alex"), "chat", false, default))).Status);
+    }
+    [Fact]
+    public async Task AccessRemovalClosesConnectionsOnceRatherThanOnEveryPolicyRefresh()
+    {
+        await Prepare(options.Resources[0], ready: true);
+        authority.Entries = [Grant(true, "member")];
+        await worker.StepAsync(default);
+        clock.Advance(TimeSpan.FromSeconds(2));
+        authority.Entries = [Grant(false, "removed")];
+        await worker.StepAsync(default);
+        Assert.Equal((Tenant, "alex"), Assert.Single(realtime.Revoked));
+        Assert.Equal(404, (await Assert.ThrowsAsync<AppError>(() =>
+            store.GetMemberAsync(new(Tenant, "alex", "Alex"), "chat", false, default))).Status);
+        await worker.StepAsync(default);
+        clock.Advance(TimeSpan.FromSeconds(2));
+        authority.Entries = [Grant(false, "still-removed")];
+        await worker.StepAsync(default);
+        Assert.Equal(1, realtime.Attempts);
+
+        clock.Advance(TimeSpan.FromSeconds(2));
+        authority.Entries = [Grant(true, "restored")];
+        await worker.StepAsync(default);
+        clock.Advance(TimeSpan.FromSeconds(2));
+        authority.Entries = [Grant(false, "removed-again")];
+        await worker.StepAsync(default);
+        Assert.Equal(2, realtime.Attempts);
+    }
+    [Fact]
+    public async Task FailedConnectionRevocationRemainsRetryableAfterWorkerRestart()
+    {
+        await Prepare(options.Resources[0], ready: true);
+        authority.Entries = [Grant(true, "member")];
+        await worker.StepAsync(default);
+        clock.Advance(TimeSpan.FromSeconds(2));
+        authority.Entries = [Grant(false, "removed")];
+        realtime.FailNext = true;
+        await worker.StepAsync(default);
+        Assert.Equal(1, realtime.Attempts);
+        Assert.Empty(realtime.Revoked);
+        Assert.Equal(404, (await Assert.ThrowsAsync<AppError>(() =>
+            store.GetMemberAsync(new(Tenant, "alex", "Alex"), "chat", false, default))).Status);
+
+        var restarted = new LiveControlWorker(Tenant, options, store, control, new(graph, control, options, clock),
+            new(graph, store, control, clock), authority, realtime, clock, NullLogger<LiveControlWorker>.Instance);
+        await restarted.StepAsync(default);
+        await restarted.StepAsync(default);
+        Assert.Equal(2, realtime.Attempts);
+        Assert.Single(realtime.Revoked);
+    }
+    [Fact]
+    public async Task FailedCatalogUpdateDoesNotLoseTheConnectionRevocation()
+    {
+        await Prepare(options.Resources[0], ready: true);
+        authority.Entries = [Grant(true, "member")];
+        await worker.StepAsync(default);
+        clock.Advance(TimeSpan.FromSeconds(2));
+        authority.Entries = [Grant(false, "removed")];
+        documents.FailNextCatalog = true;
+        await worker.StepAsync(default);
+        Assert.Equal(0, realtime.Attempts);
+        Assert.Equal(404, (await Assert.ThrowsAsync<AppError>(() =>
+            store.GetMemberAsync(new(Tenant, "alex", "Alex"), "chat", false, default))).Status);
+        await worker.StepAsync(default);
+        await worker.StepAsync(default);
+        Assert.Equal(1, realtime.Attempts);
     }
     [Fact]
     public async Task CoverageInspectionPreservesInvalidationReasonWithoutRenewingEvidence()
@@ -545,6 +629,7 @@ public sealed class LiveControlTests
     {
         private readonly MemoryPartitionDocuments inner = new();
         public bool FailNextCoverage;
+        public bool FailNextCatalog;
         public int FailedCoverageWrites;
         public Task<Versioned<PartitionDocument>?> ReadAsync(string pk, string id, CancellationToken ct) => inner.ReadAsync(pk, id, ct);
         public Task<Versioned<PartitionDocument>?> ReadCurrentAsync(string pk, string id, CancellationToken ct) => inner.ReadCurrentAsync(pk, id, ct);
@@ -552,6 +637,11 @@ public sealed class LiveControlTests
             inner.QueryAsync(filter, limit, cursor, ct);
         public Task<bool> WriteAsync(IReadOnlyList<DocumentWrite> writes, CancellationToken ct)
         {
+            if (FailNextCatalog && writes.Any(write => write.Value.Kind == "catalog"))
+            {
+                FailNextCatalog = false;
+                return Task.FromResult(false);
+            }
             if (FailNextCoverage && writes.Any(write => write.Value.Kind == "coverage"))
             {
                 FailNextCoverage = false; FailedCoverageWrites++;
@@ -584,16 +674,30 @@ public sealed class LiveControlTests
     private sealed class Authority : IEntitlementFeed
     {
         public Action? Checked;
+        public IReadOnlyList<Entitlement> Entries = [];
         public Task<AuthorityPage> ReadAsync(ApprovedResource resource, string? cursor, CancellationToken ct)
         {
             Checked?.Invoke();
-            return Task.FromResult(new AuthorityPage(Tenant, resource.Id, [], null));
+            return Task.FromResult(new AuthorityPage(Tenant, resource.Id, Entries, null));
         }
     }
     private sealed class Realtime : IRealtime
     {
+        public readonly ConcurrentQueue<(string Tenant, string Actor)> Revoked = [];
+        public int Attempts;
+        public bool FailNext;
         public Task PublishAsync(Conversation conversation, CancellationToken ct) => Task.CompletedTask;
-        public Task RevokeAsync(string tenant, string actorId, CancellationToken ct) => Task.CompletedTask;
+        public Task RevokeAsync(string tenant, string actorId, CancellationToken ct)
+        {
+            Attempts++;
+            if (FailNext)
+            {
+                FailNext = false;
+                throw new AppError(503, "realtime_unavailable", "Connection revocation is temporarily unavailable.");
+            }
+            Revoked.Enqueue((tenant, actorId));
+            return Task.CompletedTask;
+        }
     }
     private sealed class Clock : TimeProvider
     {

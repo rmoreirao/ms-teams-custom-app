@@ -147,3 +147,53 @@ test("reconnect catches up missed changes while retaining loaded history and an 
   await expect(page.getByRole("textbox", { name: "Write a message" })).toHaveValue("Keep this draft");
   expect(live.state.sendRequests).toHaveLength(0);
 });
+
+test("a server disconnect re-negotiates once and catches up without losing the draft", async ({ page, live }) => {
+  let negotiations = 0;
+  page.on("request", request => {
+    if (new URL(request.url()).pathname === "/api/realtime/negotiate") negotiations++;
+  });
+  await page.goto("/");
+  await expect(page.locator(".connection")).toHaveText("Live");
+  expect(negotiations).toBe(1);
+  await page.getByRole("button", { name: /Sam Rivera Chat/ }).click();
+  await page.getByRole("button", { name: "Load earlier messages" }).click();
+  await page.getByRole("textbox", { name: "Write a message" }).fill("Keep this draft after the socket closes.");
+  live.state.messages.get("chat-handover")!.push(message("204", "Recovered after the server disconnected."));
+  live.state.conversations[0].revision++;
+  live.disconnect();
+  await expect.poll(() => negotiations).toBe(2);
+  await expect(page.locator(".connection")).toHaveText("Live");
+  await expect(page.getByText("Recovered after the server disconnected.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Conversation context 10.", { exact: true })).toBeAttached();
+  await expect(page.getByRole("textbox", { name: "Write a message" })).toHaveValue("Keep this draft after the socket closes.");
+  await page.clock.install();
+  await page.clock.fastForward(30_000);
+  expect(negotiations).toBe(2);
+  expect(live.state.sendRequests).toHaveLength(0);
+});
+
+test("manual recovery clears the connection error and catches up without sending the draft", async ({ page, live }) => {
+  let ready = false;
+  await page.route("**/api/realtime/negotiate", async route => {
+    if (ready) await route.fallback();
+    else await route.fulfill({ status: 503, json: { code: "realtime_preparing", message: "Live updates are preparing." } });
+  });
+  await page.goto("/");
+  await expect(page.locator(".connection")).toHaveText("Synchronization unavailable");
+  await page.getByRole("button", { name: /Sam Rivera Chat/ }).click();
+  await page.getByRole("textbox", { name: "Write a message" }).fill("Do not send this on reconnect.");
+  live.state.messages.get("chat-handover")!.push(message("205", "Recovered through manual reconnect."));
+  live.state.conversations[0].revision++;
+  await page.getByRole("button", { name: "Reconnect", exact: true }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Live updates are preparing." })).toBeVisible();
+  ready = true;
+  await page.getByRole("button", { name: "Reconnect", exact: true }).click();
+  await expect(page.locator(".connection")).toHaveText("Live");
+  await expect(page.getByRole("button", { name: "Reconnect", exact: true })).toHaveCount(0);
+  await expect(page.getByText("Live updates are preparing.", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByText("Recovered through manual reconnect.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Write a message" })).toHaveValue("Do not send this on reconnect.");
+  expect(live.state.sendRequests).toHaveLength(0);
+});

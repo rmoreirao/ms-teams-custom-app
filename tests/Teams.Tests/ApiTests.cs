@@ -86,6 +86,43 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
         Assert.False(result.TryGetProperty("simulated", out _));
     }
     [Fact]
+    public async Task CacheDiagnosticsUsesAuthenticatedChatAccessCsrfAndRecoverableCleanupStatus()
+    {
+        using var isolated = new Factory();
+        using var anonymous = isolated.Client(false);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/conversations/chat-handover/cache-diagnostics")).StatusCode);
+        using var client = isolated.Client();
+        var session = await client.GetFromJsonAsync<JsonElement>("/api/session");
+        var snapshot = await client.GetFromJsonAsync<CacheSnapshot>("/api/conversations/chat-handover/cache-diagnostics");
+        Assert.Equal(45, snapshot!.CosmosMessages);
+        var plain = await client.GetFromJsonAsync<JsonElement>("/api/conversations/chat-handover/messages");
+        Assert.False(plain.TryGetProperty("diagnostics", out _));
+        var read = await client.GetFromJsonAsync<JsonElement>("/api/conversations/chat-handover/messages?diagnostics=true");
+        var evidence = read.GetProperty("diagnostics");
+        Assert.Equal("page", evidence.GetProperty("kind").GetString());
+        Assert.Contains(evidence.GetProperty("steps").EnumerateArray(), step =>
+            step.GetProperty("layer").GetString() == "cosmos" && step.GetProperty("outcome").GetString() == "content-query");
+        var command = new CacheCleanupCommand(Guid.NewGuid().ToString(), true, false);
+        var path = "/api/conversations/chat-handover/cache-diagnostics/cleanup";
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync(path, command)).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/conversations/channel-general/cache-diagnostics")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/conversations/unknown/cache-diagnostics")).StatusCode);
+        using var request = new HttpRequestMessage(HttpMethod.Post, path);
+        request.Headers.Add("X-CSRF-TOKEN", session.GetProperty("csrf").GetString());
+        request.Content = JsonContent.Create(command);
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<CacheCleanup>();
+        Assert.True(result!.Complete);
+        Assert.Equal(45, result.RemovedMessages);
+        Assert.Equal(result, await client.GetFromJsonAsync<CacheCleanup>($"{path}/{command.OperationId}"));
+        snapshot = await client.GetFromJsonAsync<CacheSnapshot>("/api/conversations/chat-handover/cache-diagnostics");
+        Assert.Equal(0, snapshot!.CosmosMessages);
+        Assert.Equal(result, snapshot.Cleanup);
+        Assert.False(snapshot.CoverageComplete);
+        Assert.False(snapshot.ReadViewComplete);
+    }
+    [Fact]
     public async Task RevisionLagIsExplicitAndIncludesOnlyVerifiedRetentionAuthority()
     {
         using var client = factory.Client();

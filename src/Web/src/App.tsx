@@ -2,13 +2,14 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
 import { api, ApiError, conversationPage, post } from "./api";
 import { TestMessages } from "./TestMessages";
+import { CacheDiagnostics } from "./CacheDiagnostics";
 import { PeopleDiscovery } from "./PeopleDiscovery";
 import { useRealtime } from "./useRealtime";
 import { useMessageFeed } from "./useMessageFeed";
 import { MessageList } from "./MessageList";
 import { MessageStatus } from "./MessageStatus";
 import { useSendQueue } from "./useSendQueue";
-import type { Session, Conversation, Message, Operation, Person } from "./api";
+import type { Session, Conversation, Message, Operation, Person, ReadObservation } from "./api";
 
 type Pending = {
   operation: Operation; body: string; parentId: string | null; conversationId: string;
@@ -237,7 +238,7 @@ export function App() {
     <a href="#conversation-main" className="skip-link">Skip to conversation</a>
     <header className="app-header"><span className="brand">Conversations</span><span className="environment">{session.environment} · {session.source}</span>
       <div className="header-tools"><span className="connection" role="status">{connected}</span>
-        {connected === "Synchronization unavailable" && <button onClick={reconnect}>Reconnect</button>}
+        {connected === "Synchronization unavailable" && <button onClick={() => { setError(""); reconnect(); }}>Reconnect</button>}
         <button onClick={theme} aria-label="Toggle light and dark theme">Theme</button><button onClick={logout}>Sign out</button></div></header>
     <div className="workspace">
       <nav className="navigation" aria-label="Conversations">
@@ -280,11 +281,11 @@ export function App() {
           loadMore={() => void loadMoreConversations()} retry={() => setRefresh(n => n + 1)}
           choose={c => choose(c, true)} close={closeDiscovery} /> : selected ? <>
           <Feed key={selected.id} {...feedProps} conversation={selected} parent={null} onThread={setParent} focusComposer={focusComposer}
-            header={testMessages => <header className="conversation-header"><button className="back" onClick={() => { setSelected(null); setParent(null); }}>Back</button>
+            header={(testMessages, cacheDiagnostics) => <header className="conversation-header"><button className="back" onClick={() => { setSelected(null); setParent(null); }}>Back</button>
             <span className={`avatar ${selected.kind === "channel" ? "channel" : ""}`} aria-hidden>{selected.kind === "channel" ? "#" : initials(selected.title)}</span>
             <div className="conversation-heading"><h1 ref={conversationTitle} tabIndex={-1}>{selected.title}</h1>
               <p>{recipients[selected.id]?.email ?? selected.team ?? "Chat"} · Teams content</p></div>
-            {selected.kind === "chat" && <div className="conversation-actions">{testMessages}
+            {selected.kind === "chat" && <div className="conversation-actions">{testMessages}{cacheDiagnostics}
               <button id="change-chat-button" className="recipient-action" onClick={e => openDiscovery(e.currentTarget)}>
                 {session.canStartDirectChats ? "Change person" : "Change chat"}</button></div>}</header>} />
         </> : <div className="state welcome"><h1>A little context goes a long way.</h1><p>Choose a conversation to read recent messages and keep the discussion moving.</p>
@@ -359,12 +360,14 @@ type FeedProps = {
   syncParent: (message: Message) => void;
   authenticationRequired: () => void;
   enqueueSend: ReturnType<typeof useSendQueue>;
-  header?: (testMessages: ReactNode) => ReactNode;
+  header?: (testMessages: ReactNode, cacheDiagnostics: ReactNode) => ReactNode;
   focusComposer?: boolean;
 };
 function Feed(props: FeedProps) {
   const { conversation, parent, session, refresh, drafts, setDrafts, pending, setPending, check, changed, online, onThread } = props;
   const [sendError, setError] = useState("");
+  const [diagnosing, setDiagnosing] = useState(false);
+  const [latestRead, setLatestRead] = useState<ReadObservation | null>(null);
   const submittedDraft = useRef<string | null>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -375,10 +378,11 @@ function Feed(props: FeedProps) {
   const key = `${conversation.id}:${parent?.id ?? ""}`;
   const current = pending.filter(p => p.conversationId === conversation.id && p.parentId === (parent?.id ?? null));
   const path = `/api/conversations/${conversation.id}/messages${parent ? `?parent=${encodeURIComponent(parent.id)}` : ""}`;
-  const { page, loading, syncing, loadingMore, error: readError, preparing, older: loadOlder, retry } = useMessageFeed({
+  const { page, loading, syncing, loadingMore, error: readError, preparing, older: loadOlder, retry, validate } = useMessageFeed({
     path, changesPath: `/api/conversations/${conversation.id}/changes`, parent: parent?.id ?? null,
     refresh, minimumRevision: props.minimumRevision,
     unavailable: props.unavailable, expired: props.authenticationRequired, syncParent: props.syncParent,
+    paused: diagnosing, observed: setLatestRead,
   });
   const error = readError || sendError;
   const showMessages = !error || !!page && preparing && !!readError && !sendError;
@@ -440,7 +444,10 @@ function Feed(props: FeedProps) {
   }))].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
   return <>
     {props.header?.(!parent && conversation.kind === "chat" && conversation.isDirect
-      ? <TestMessages recipient={conversation.title} available={!!page && !loading && !error && online} send={dispatch} /> : null)}
+      ? <TestMessages recipient={conversation.title} available={!!page && !loading && !error && online} send={dispatch} /> : null,
+    !parent && conversation.kind === "chat" ? <CacheDiagnostics conversationId={conversation.id} title={conversation.title}
+      csrf={session.csrf} online={online} retainedMessages={page?.messages.length ?? 0} latestRead={latestRead}
+      openChanged={setDiagnosing} validate={validate} authenticationRequired={props.authenticationRequired} /> : null)}
     <div className="messages" aria-busy={loading} ref={scrollRef} onScroll={event => {
       const element = event.currentTarget;
       atBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 96;

@@ -3,18 +3,28 @@ export interface Person { id: string; name: string; email: string | null }
 export interface Conversation { id: string; title: string; kind: "chat" | "channel"; team: string | null; revision: number; isDirect?: boolean }
 export interface Message { id: string; actorId: string; author: string; body: string; createdAt: string; modifiedAt: string; parentId: string | null; deleted: boolean; contentNotice?: string | null; teamsUrl?: string | null; htmlBody?: string | null }
 export interface ReadAccess { historyFrom: string; validUntil: string; epoch: number }
-export interface MessagePage { messages: Message[]; cursor: string | null; revision: number; window: string; parentMessage: Message | null; access?: ReadAccess }
-export interface PendingRead { state: "pending"; retryAfterMs: number; access: ReadAccess | null }
+export interface CacheReadEvidence { kind: "page" | "delta"; observedAt: string; hydrationRequested: boolean;
+  steps: { layer: string; outcome: string; count: number; milliseconds: number }[] }
+export interface ReadObservation { observedAt: string; kind: "page" | "delta"; outcome: "ready" | "pending" | "failed";
+  count: number | null; revision: number | null; diagnostics?: CacheReadEvidence; error?: string }
+export interface CacheCleanup { id: string; cosmos: boolean; redis: boolean; targetRevision: number; startedAt: string;
+  cosmosState: string; redisState: string; removedMessages: number; removedPages: number;
+  cosmosError: string | null; redisError: string | null; complete: boolean }
+export interface CacheSnapshot { observedAt: string; revision: number; generation: number; cosmosMessages: number | null;
+  cosmosCountComplete: boolean; coverageComplete: boolean; readViewComplete: boolean; cosmosError: string | null;
+  redis: { status: string; pages: number | null; maximumTtlSeconds: number | null; complete: boolean }; cleanup: CacheCleanup | null }
+export interface MessagePage { messages: Message[]; cursor: string | null; revision: number; window: string; parentMessage: Message | null; access?: ReadAccess; diagnostics?: CacheReadEvidence }
+export interface PendingRead { state: "pending"; retryAfterMs: number; access: ReadAccess | null; diagnostics?: CacheReadEvidence }
 export const isPendingRead = (value: unknown): value is PendingRead =>
   typeof value === "object" && value !== null && "state" in value;
-export interface ChangePage { changes: { revision: number; messageId: string; parentId: string | null }[]; revision: number; resetRequired: boolean; messages?: Message[]; historyFrom?: string; window?: string; access?: ReadAccess }
+export interface ChangePage { changes: { revision: number; messageId: string; parentId: string | null }[]; revision: number; resetRequired: boolean; messages?: Message[]; historyFrom?: string; window?: string; access?: ReadAccess; cacheReset?: boolean; diagnostics?: CacheReadEvidence }
 export interface RealtimeHint { conversationId: string; revision: number }
 export type DeliveryState = "pending" | "dispatching" | "confirmed" | "rejected" | "unknown";
 export interface Operation { id: string; state: DeliveryState; messageId: string | null; error: string | null;
   attempts?: number; throttles?: number; firstStatus?: number | null; retryAt?: string | null }
 export interface SendCommand { operationId: string; window: string; body: string; parentId: string | null }
 export class ApiError extends Error {
-  constructor(public status: number, public code: string, message: string, public access?: ReadAccess) { super(message); }
+  constructor(public status: number, public code: string, message: string, public access?: ReadAccess, public diagnostics?: CacheReadEvidence) { super(message); }
 }
 async function request<T>(path: string, init?: RequestInit): Promise<{ body: T; headers: Headers; status: number }> {
   const response = await fetch(path, { ...init, credentials: "same-origin", cache: "no-store" });
@@ -23,9 +33,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<{ body: T; 
   try { body = text ? JSON.parse(text) : undefined; }
   catch { throw new ApiError(response.status, "invalid_response", "The service returned an invalid response. Refresh the page."); }
   if (!response.ok) {
-    const error = body as { code?: string; message?: string; access?: ReadAccess } | undefined;
+    const error = body as { code?: string; message?: string; access?: ReadAccess; diagnostics?: CacheReadEvidence } | undefined;
     throw new ApiError(response.status, error?.code ?? "request_failed",
-      error?.message ?? (response.status === 401 ? "Sign in to continue." : "The request failed. Try again."), error?.access);
+      error?.message ?? (response.status === 401 ? "Sign in to continue." : "The request failed. Try again."), error?.access, error?.diagnostics);
   }
   return { body: body as T, headers: response.headers, status: response.status };
 }
@@ -33,7 +43,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return (await request<T>(path, init)).body;
 }
 export async function readMessages(path: string, signal?: AbortSignal): Promise<MessagePage | PendingRead> {
-  const response = await request<MessagePage | PendingRead>(path, { signal });
+  const response = await request<MessagePage | PendingRead>(path, { signal, headers: { "X-Cache-Diagnostics": "true" } });
   const value = response.body;
   if (response.status === 202 && value && isPendingRead(value) && value.state === "pending" &&
       Number.isInteger(value.retryAfterMs) && value.retryAfterMs >= 100 && value.retryAfterMs <= 30000 &&
@@ -41,6 +51,12 @@ export async function readMessages(path: string, signal?: AbortSignal): Promise<
   if (response.status === 200 && value && !isPendingRead(value) && Array.isArray(value.messages) &&
       Number.isSafeInteger(value.revision) && value.revision >= 0 && typeof value.window === "string") return value;
   throw new ApiError(response.status, "invalid_response", "History could not be loaded because the read response was invalid.");
+}
+export function readObservation(value: MessagePage | PendingRead | ChangePage, kind: "page" | "delta"): ReadObservation {
+  const pending = isPendingRead(value);
+  return { observedAt: value.diagnostics?.observedAt ?? new Date().toISOString(), kind,
+    outcome: pending ? "pending" : "ready", count: pending ? null : value.messages?.length ?? 0,
+    revision: pending ? null : value.revision, diagnostics: value.diagnostics };
 }
 export async function conversationPage(cursor?: string | null, signal?: AbortSignal): Promise<{ items: Conversation[]; cursor: string | null }> {
   const response = await request<Conversation[]>(`/api/conversations${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`, { signal });

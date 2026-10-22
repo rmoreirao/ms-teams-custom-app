@@ -63,7 +63,7 @@ public static class ReadRefreshValidation
     public static ApprovedResource Check(ReadRefreshRequest request, string tenant, LiveOptions options, DateTimeOffset now)
     {
         var resource = options.Resources.SingleOrDefault(value => value.Id == request.ConversationId);
-        if (request.SchemaVersion != 1 || request.TenantId != tenant || resource is null ||
+        if (request.SchemaVersion != 1 || request.CacheGeneration < 0 || request.TenantId != tenant || resource is null ||
             request.RequestedAt > now.AddMinutes(1) || request.RequestedAt < now.AddMinutes(-5) ||
             request.Parent is not null && (resource.Kind != "channel" || request.Parent.Length is < 1 or > 128 ||
                 request.Parent is "." or ".." || request.Parent.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('_' or '-' or '.'))) ||
@@ -87,6 +87,13 @@ public sealed class ReadRefreshHandler(string tenant, LiveOptions options, ILive
             throw new AppError(400, "read_refresh_invalid", "Refresh source mapping is not approved.");
         if (request.Epoch != options.WriterEpoch || metadata.Value.Epoch != request.Epoch)
             throw new AppError(409, "writer_fenced", "Refresh ownership changed.");
+        if (metadata.Value.CacheGeneration != request.CacheGeneration)
+        {
+            logger.LogInformation("Discarded a superseded cache-generation refresh; no hydration completion is claimed.");
+            return;
+        }
+        if (metadata.Value.ActiveCacheCleanup is not null)
+            throw new AppError(409, "cache_cleanup_in_progress", "Hydration is deferred until the shared cache cleanup finishes.");
         LiveTelemetry.ReadRefreshAge.Record(Math.Max(0, (now - request.RequestedAt).TotalMilliseconds));
         var previous = await control.ReadRefreshAsync(request.Key, ct);
         if (previous?.Value.CompletedThrough >= request.RequestedAt)
@@ -142,7 +149,7 @@ public sealed class ReadRefreshHandler(string tenant, LiveOptions options, ILive
     {
         var scoped = graph.ForResource(resource.Path);
         var previous = await store.ReadViewAsync(tenant, resource.Id, request.Parent, ct);
-        var state = previous?.Value.Epoch == request.Epoch ? previous.Value : null;
+        var state = previous?.Value.Epoch == request.Epoch && previous.Value.CacheGeneration == request.CacheGeneration ? previous.Value : null;
         if (state?.Complete == true && !state.ParentMissing) return;
         if (request.Parent is not null)
         {
@@ -161,13 +168,13 @@ public sealed class ReadRefreshHandler(string tenant, LiveOptions options, ILive
                 }
                 catch (AppError error) when (error.Code == "graph_404")
                 {
-                    await SaveAsync(new(request.Epoch, true, null, clock.GetUtcNow(), ParentMissing: true));
+                    await SaveAsync(new(request.Epoch, true, null, clock.GetUtcNow(), ParentMissing: true, CacheGeneration: request.CacheGeneration));
                     return;
                 }
             }
             if (root.Deleted || root.CreatedAt < clock.GetUtcNow().AddDays(-7))
             {
-                await SaveAsync(new(request.Epoch, true, null, clock.GetUtcNow(), ParentMissing: true));
+                await SaveAsync(new(request.Epoch, true, null, clock.GetUtcNow(), ParentMissing: true, CacheGeneration: request.CacheGeneration));
                 return;
             }
         }
@@ -195,7 +202,7 @@ public sealed class ReadRefreshHandler(string tenant, LiveOptions options, ILive
             var oldest = messages.Select(message => (DateTimeOffset?)message.CreatedAt).Min();
             if (state?.OldestAt is { } prior && (oldest is null || prior < oldest)) oldest = prior;
             if (resource.Kind == "chat" && oldest < clock.GetUtcNow().AddDays(-7)) next = null;
-            state = new(request.Epoch, next is null, next, clock.GetUtcNow(), oldest);
+            state = new(request.Epoch, next is null, next, clock.GetUtcNow(), oldest, CacheGeneration: request.CacheGeneration);
             await SaveAsync(state);
             if (next is null || messages.Any(message => message.CreatedAt >= clock.GetUtcNow().AddDays(-7) &&
                 (request.Before is null || message.CreatedAt < request.Before ||

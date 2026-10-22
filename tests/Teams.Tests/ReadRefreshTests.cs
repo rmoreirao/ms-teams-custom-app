@@ -67,6 +67,46 @@ public sealed class ReadRefreshTests
         Assert.False((await fixture.Store.GetAsync(fixture.Tenant, "chat-empty", default))!.Value.CoverageReady);
     }
     [Fact]
+    public async Task CleanupInvalidatesKnownEmptyAndRefreshCoalescingWithoutChangingWriterEpoch()
+    {
+        var old = Request();
+        var graph = new Graph(_ => Task.FromResult(Page([])));
+        await Handler(graph).HandleAsync(old, default);
+        Assert.True((await fixture.Store.ReadViewAsync(fixture.Tenant, "chat-empty", null, default))!.Value.Complete);
+        var cleanup = await fixture.Store.CleanCacheAsync(fixture.Alex, "chat-empty",
+            new(Guid.NewGuid().ToString(), true, false), default);
+        Assert.True(cleanup.Complete);
+        var generation = (await fixture.Store.GetAsync(fixture.Tenant, "chat-empty", default))!.Value.CacheGeneration;
+        var fresh = old with { CacheGeneration = generation };
+        Assert.NotEqual(old.Key, fresh.Key);
+        await Handler(graph).HandleAsync(old, default);
+        Assert.Single(graph.Paths);
+        var restored = new Graph(_ => Task.FromResult(Page([Source("restored")])));
+        var handler = Handler(restored);
+        var queue = new Queue((request, _, ct) => handler.HandleAsync(request, ct));
+        var evidence = new ReadEvidence("page", fixture.Clock.GetUtcNow());
+        var page = await Messaging(queue).ReadAsync(fixture.Alex, "chat-empty", null, null, 0, default, evidence);
+        Assert.Equal("restored", Assert.Single(page.Messages).Id);
+        Assert.True(evidence.HydrationRequested);
+        Assert.Equal(generation, Assert.Single(queue.Requests).Request.CacheGeneration);
+        Assert.Equal(generation, (await fixture.Store.ReadViewAsync(fixture.Tenant, "chat-empty", null, default))!.Value.CacheGeneration);
+    }
+    [Fact]
+    public async Task CleanupFencesAnInFlightHydratorsCompletionButPreservesItsLaterRefill()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var graph = new Graph(async _ => { entered.TrySetResult(); await release.Task; return Page([Source("late-refill")]); });
+        var hydration = Handler(graph).HandleAsync(Request(), default);
+        await entered.Task;
+        Assert.True((await fixture.Store.CleanCacheAsync(fixture.Alex, "chat-empty",
+            new(Guid.NewGuid().ToString(), true, false), default)).Complete);
+        release.SetResult();
+        Assert.Equal("cache_generation_changed", (await Assert.ThrowsAsync<AppError>(() => hydration)).Code);
+        Assert.False((await fixture.Store.ReadViewAsync(fixture.Tenant, "chat-empty", null, default))!.Value.Complete);
+        Assert.NotNull(await fixture.Store.CurrentMessageAsync(fixture.Tenant, "chat-empty", "late-refill", null, default));
+    }
+    [Fact]
     public async Task KnownEmptyIsSuccessButAcceptedColdWorkIsTypedPendingNotFabricatedEmptiness()
     {
         await Cold();
@@ -392,8 +432,11 @@ public sealed class ReadRefreshTests
     }
     private sealed class UpdatingCache(Func<Task> update, IReadOnlyList<Message> rows) : IRecentMessageCache
     {
-        public async Task<IReadOnlyList<Message>?> ReadAsync(string key, CancellationToken ct) { await update(); return rows; }
-        public Task WriteAsync(string key, IReadOnlyList<Message> messages, CancellationToken ct) => Task.CompletedTask;
+        public async Task<RecentCacheRead> ReadAsync(string scope, string page, CancellationToken ct)
+        { await update(); return new(rows, "hit", "0"); }
+        public Task<string> WriteAsync(string scope, string page, string generation, IReadOnlyList<Message> messages, CancellationToken ct) => Task.FromResult("stored");
+        public Task<RedisCacheSnapshot> InspectAsync(string scope, CancellationToken ct) => Task.FromResult(new RedisCacheSnapshot("available", 1, 15, true));
+        public Task<int> EvictAsync(string scope, string operationId, CancellationToken ct) => Task.FromResult(1);
     }
     private sealed class FailedSender : ServiceBusSender
     {

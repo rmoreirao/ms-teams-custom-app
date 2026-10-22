@@ -16,6 +16,8 @@ public static class LiveTelemetry
     public static readonly Counter<long> AcceptedNotifications = Meter.CreateCounter<long>("teamsref_notification_accepted");
     public static readonly Counter<long> FilteredNotifications = Meter.CreateCounter<long>("teamsref_notification_filtered");
     public static readonly Counter<long> ProjectionChanges = Meter.CreateCounter<long>("teamsref_projection_changes");
+    public static readonly Counter<long> CacheReads = Meter.CreateCounter<long>("teamsref_cache_reads");
+    public static readonly Counter<long> CacheCleanups = Meter.CreateCounter<long>("teamsref_cache_cleanups");
     public static readonly Counter<long> DeliveryPages = Meter.CreateCounter<long>("teamsref_delivery_pages");
     public static readonly Counter<long> DeliveryRecipients = Meter.CreateCounter<long>("teamsref_delivery_recipients");
     public static readonly Counter<long> WriteOutcomes = Meter.CreateCounter<long>("teamsref_write_outcomes");

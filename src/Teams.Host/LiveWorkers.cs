@@ -55,6 +55,8 @@ public sealed class ResourceHydrator(IGraphBackground graph, ILiveStateStore sto
         var value = state.Value;
         var current = await store.GetAsync(tenant, resource.Id, ct)
             ?? throw new AppError(503, "resource_preparing", "Repair awaits resource onboarding.");
+        if (current.Value.ActiveCacheCleanup is not null)
+            throw new AppError(409, "cache_cleanup_in_progress", "Repair hydration is deferred until cache cleanup finishes.");
         if (value.Generation is not null && value.Generation != current.Value.RepairGeneration)
         {
             if (!await control.RestartRepairAsync(resource, state, current.Value.RepairGeneration, "repair_generation_superseded", ct))
@@ -329,8 +331,12 @@ public sealed class LiveControlWorker(string tenant, LiveOptions options, ILiveS
                     await store.SetDirectChatAuthorityAsync(grants.DirectChat, resourceToken);
                 foreach (var grant in grants.Entries)
                 {
-                    await store.SetEntitlementAsync(grant, resourceToken);
-                    if (!grant.Active) await realtime.RevokeAsync(tenant, grant.ActorId, resourceToken);
+                    var revocation = await store.SetEntitlementAsync(grant, resourceToken);
+                    if (revocation is not null)
+                    {
+                        await realtime.RevokeAsync(tenant, revocation.Value.ActorId, resourceToken);
+                        await store.CompleteEntitlementRevocationAsync(revocation, resourceToken);
+                    }
                 }
                 if (grants.Cursor is null) authorityCursors.TryRemove(resource.Id, out _);
                 else authorityCursors[resource.Id] = grants.Cursor;

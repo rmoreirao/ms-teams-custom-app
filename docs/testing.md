@@ -52,6 +52,7 @@ Windows tests use installed Edge; Linux/CI uses the configured Playwright Chromi
 | Service-authenticated policy | No retained-user context in normal Control; explicit app-only resource/policy scopes; current direct app assignment, enabled/member account state, history and exact pairs; unsupported/missing source evidence denied |
 | Isolated service release | Five distinct workloads/identities; API cannot attach Control; reviewed read-only authority access; draft/extra compact privileges refused; no-write plan/WhatIf, exact full rollout, partial-failure preservation and idempotent reapply |
 | Personal-chat test messages | Verified one-to-one header action; default count/concurrency 30, editable text and exact numbered bodies; immediate overlapping requests, preserved drafts, initial throttle/retry/final counts and cancellation only before submission |
+| Cache Diagnostics | Non-warming snapshots; actual page/delta attribution; independently confirmed chat-scoped Redis/Cosmos cleanup; bounded original-operation recovery; generation-fenced hydration, reset and refill; preserved drafts, access expiry and send status |
 | Realtime/reconnect | Web PubSub and targeted changes; no 30-second catalog polling or SSE fallback |
 | UX and safety | Desktop/mobile focus/navigation, drafts in memory, offline send disabled, no business browser storage, sanitized rich content, virtualization |
 | Release | All selected targets preflighted before mutation; five-role queue properties/exact scoped grants checked read-only; image-only preservation; exact readiness; explicit partial-rollout errors |
@@ -86,6 +87,51 @@ without hot polling, explicit critical-guard failures and expiry. The compiled
 browser covers first-open loading and source-outage history/draft retention
 without a blocking synchronization alert. These controlled tests prove neither
 real Service Bus access nor Graph recovery timing.
+
+### Cache Diagnostics validation
+
+`CacheDiagnosticsTests`, `RedisRecentMessagesTests`, `ReadRefreshTests`, and
+`ApiTests` cover scoped cleanup, cache hit versus empty hit/miss/unavailability,
+content-query versus delta paths, independent selections, bounded batches,
+post-start refill preservation, original-operation recovery, no store-selection
+changes on retry, membership/tenant/channel/CSRF boundaries, and generation-fenced
+hydration/coalescing. Redis adapter tests use controlled command responses, not a
+real Redis server; they do not establish deployed Lua/cluster acceptance.
+`CacheDiagnostics.test.tsx` covers the popup, confirmation, partial/lost responses,
+fresh-page validation, pause/resume, cache-reset replacement and authority expiry.
+`e2e/cache-diagnostics.spec.ts` runs the three store selections in the compiled
+shell, including desktop/light and mobile/dark layout, focus, Escape and drafts.
+Browser fixtures model hydration; they do not call real Cosmos, Redis or Teams.
+
+For separately approved deployed-service acceptance, use one approved synthetic
+chat and record count/status evidence only:
+
+1. Open **Cache Diagnostics**, inspect storage, and note the existing browser
+   history, current revision/generation and Redis TTL. Inspection must not create
+   a normal message read, hydration request or cache write.
+2. Select **Redis recent pages** only and confirm cleanup. Check the original
+   operation if its response is lost. Cosmos message copies must remain; a fresh
+   **Reload and validate** should show a Redis miss and Cosmos content read, and
+   a repeat can show a Redis hit before TTL/revision changes.
+3. Select **Cosmos message copies** only. Resume the original operation if more
+   batches are needed. Verify the deleted-message count, new revision/generation
+   and invalidated completeness. Physical Redis pages may remain but must not
+   serve the old generation. Explicit validation should show pending/accepted
+   hydration or newly observed projected content, not a guaranteed empty chat.
+4. Select both stores and repeat. Require separate store outcomes, cold-read
+   evidence, observed refill, and a subsequent warm read when available.
+   A store outage must remain an unavailable/partial outcome, never zero or full
+   cleanup success.
+5. Keep another authorized tab open to confirm reset-compatible convergence and
+   retained drafts/send statuses. Recheck unrelated chats and Teams originals.
+   Other workers may refill storage at any point; do not infer which worker
+   caused a refill without matching request/generation evidence.
+
+Do not pause global workers, change cloud permissions, send source messages,
+or clear live caches as part of ordinary automated checks. Deployment, a real
+Redis execution/cluster check, and each live destructive validation need their
+own authorized target/scope. Closing the popup cannot undo an already requested
+cleanup.
 
 ### Session storage checks
 

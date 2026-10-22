@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError, isPendingRead, readMessages } from "./api";
-import type { ChangePage, Message, MessagePage, PendingRead, ReadAccess } from "./api";
+import { api, ApiError, isPendingRead, readMessages, readObservation } from "./api";
+import type { ChangePage, Message, MessagePage, PendingRead, ReadAccess, ReadObservation } from "./api";
 
 function mergeMessages(previous: Message[], incoming: Message[], parent: string | null, cutoff?: string) {
   const oldest = previous[0] ? Date.parse(previous[0].createdAt) : null;
@@ -38,6 +38,7 @@ const behind = (access?: ReadAccess) =>
 export function useMessageFeed(input: {
   path: string; changesPath: string; parent: string | null; refresh: number; minimumRevision: number;
   unavailable: () => void; expired: () => void; syncParent: (message: Message) => void;
+  paused?: boolean; observed?: (observation: ReadObservation) => void;
 }) {
   const callbacks = useRef(input);
   callbacks.current = input;
@@ -86,6 +87,12 @@ export function useMessageFeed(input: {
       setLoading(true);
     }
     target.current = Math.max(target.current, input.minimumRevision, current.current?.revision ?? 0);
+    if (input.paused) {
+      requestSync.current = null;
+      olderController.current?.abort();
+      setLoadingMore(false); setSyncing(false); setLoading(false);
+      return;
+    }
     const controller = new AbortController();
     let active = true;
     let running = false;
@@ -96,12 +103,20 @@ export function useMessageFeed(input: {
     setSyncing(true);
     const read = async (): Promise<MessagePage | PendingRead> => {
       const previous = current.current;
-      const minimum = target.current;
+      let minimum = target.current;
       if (previous) {
         const parameters = new URLSearchParams({ after: String(previous.revision), minimumRevision: String(minimum) });
         if (input.parent) parameters.set("parent", input.parent);
-        const changes = await api<ChangePage>(`${input.changesPath}?${parameters}`, { signal: controller.signal });
+        const changes = await api<ChangePage>(`${input.changesPath}?${parameters}`, {
+          signal: controller.signal, headers: { "X-Cache-Diagnostics": "true" },
+        });
+        if (!active || controller.signal.aborted) throw new DOMException("Read cancelled.", "AbortError");
+        callbacks.current.observed?.(readObservation(changes, "delta"));
         if (changes.revision < minimum) throw behind(changes.access);
+        if (changes.cacheReset) {
+          current.current = null; setPage(null); pages.current = 1; setLoading(true);
+          target.current = Math.max(target.current, changes.revision); minimum = target.current;
+        }
         if (!changes.resetRequired && changes.messages) {
           let parentMessage = previous.parentMessage;
           if (input.parent) {
@@ -124,6 +139,8 @@ export function useMessageFeed(input: {
         if (minimum) parameters.set("minimumRevision", String(minimum));
         const value = await readMessages(`${input.path.split("?")[0]}${parameters.size ? `?${parameters}` : ""}`,
           controller.signal);
+        if (!active || controller.signal.aborted) throw new DOMException("Read cancelled.", "AbortError");
+        callbacks.current.observed?.(readObservation(value, "page"));
         if (isPendingRead(value)) return value;
         if (value.revision < Math.max(minimum, latest?.revision ?? 0)) throw behind(value.access);
         if (!latest) latest = value;
@@ -177,6 +194,9 @@ export function useMessageFeed(input: {
         if (value.parentMessage) callbacks.current.syncParent(value.parentMessage);
       }).catch(error => {
         if (!active || generation.current !== version) return;
+        callbacks.current.observed?.({ observedAt: new Date().toISOString(), kind: current.current ? "delta" : "page",
+          outcome: "failed", count: null, revision: null, error: error instanceof Error ? error.message : "Read failed.",
+          diagnostics: error instanceof ApiError ? error.diagnostics : undefined });
         fail(error);
         if (isPreparing(error)) schedule(0, error instanceof ApiError && error.code === "projection_behind"
           ? 0.9 + Math.random() * 0.1 : 1);
@@ -188,7 +208,7 @@ export function useMessageFeed(input: {
     requestSync.current = synchronize;
     synchronize();
     return () => { active = false; requestSync.current = null; clearTimeout(retryTimer); controller.abort(); };
-  }, [input.path, input.changesPath, input.parent, input.refresh, attempt]);
+  }, [input.path, input.changesPath, input.parent, input.refresh, input.paused, attempt]);
   useEffect(() => {
     target.current = Math.max(target.current, input.minimumRevision);
     if (!current.current || target.current > current.current.revision) requestSync.current?.();
@@ -226,7 +246,7 @@ export function useMessageFeed(input: {
   useEffect(() => () => { olderController.current?.abort(); }, []);
   const older = async () => {
     const previous = current.current;
-    if (!previous?.cursor || loadingMore || syncing || olderController.current) return;
+    if (callbacks.current.paused || !previous?.cursor || loadingMore || syncing || olderController.current) return;
     const controller = new AbortController();
     olderController.current = controller;
     const version = generation.current;
@@ -238,6 +258,8 @@ export function useMessageFeed(input: {
       do {
         value = await readMessages(`${input.path}${input.path.includes("?") ? "&" : "?"}cursor=${encodeURIComponent(previous.cursor)}&minimumRevision=${Math.max(previous.revision, target.current)}`,
           controller.signal);
+        if (controller.signal.aborted || version !== generation.current) return;
+        callbacks.current.observed?.(readObservation(value, "page"));
         if (!isPendingRead(value)) break;
         if (current.current && value.access) commit(restrict(current.current, value.access));
         const remaining = recoveryLimit - (Date.now() - started);
@@ -268,7 +290,27 @@ export function useMessageFeed(input: {
       if (version === generation.current) setLoadingMore(false);
     }
   };
-  return { page, loading, syncing, loadingMore, error, preparing, older, retry: () => {
+  return { page, loading, syncing, loadingMore, error, preparing, older, validate: async (signal: AbortSignal) => {
+    olderController.current?.abort();
+    generation.current++;
+    current.current = null; setPage(null); pages.current = 1; setError(""); setPreparing(false);
+    recovery.current = { started: 0, retries: 0, next: 0, exhausted: false };
+    const parameters = new URLSearchParams(input.path.split("?")[1]);
+    if (target.current) parameters.set("minimumRevision", String(target.current));
+    try {
+      const value = await readMessages(`${input.path.split("?")[0]}${parameters.size ? `?${parameters}` : ""}`, signal);
+      if (signal.aborted) throw new DOMException("Read cancelled.", "AbortError");
+      callbacks.current.observed?.(readObservation(value, "page"));
+      if (!isPendingRead(value)) {
+        if (value.revision < target.current) throw behind(value.access);
+        commit(value.access ? restrict(value, value.access) : value);
+      }
+      return value;
+    } catch (error) {
+      if (!signal.aborted) fail(error);
+      throw error;
+    }
+  }, retry: () => {
     recovery.current = { started: 0, retries: 0, next: 0, exhausted: false };
     setLoading(!current.current); setAttempt(n => n + 1);
   } };

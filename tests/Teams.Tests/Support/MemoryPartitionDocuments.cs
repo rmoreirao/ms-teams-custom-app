@@ -16,15 +16,20 @@ public sealed class MemoryPartitionDocuments : IPartitionDocuments
         lock (gate) return Task.FromResult(values.GetValueOrDefault($"{pk}/{id}"));
     }
     public Task<bool> WriteAsync(IReadOnlyList<DocumentWrite> writes, CancellationToken ct)
+        => MutateAsync(writes, [], ct);
+    public Task<bool> MutateAsync(IReadOnlyList<DocumentWrite> writes, IReadOnlyList<DocumentDelete> deletes, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        PartitionDocumentBatch.Validate(writes);
+        PartitionDocumentBatch.Validate(writes, deletes);
         lock (gate)
         {
             if (writes.Any(w => values.GetValueOrDefault($"{w.Value.Pk}/{w.Value.Id}")?.Version != w.ExpectedVersion))
                 return Task.FromResult(false);
+            if (deletes.Any(d => values.GetValueOrDefault($"{d.Pk}/{d.Id}")?.Version != d.ExpectedVersion))
+                return Task.FromResult(false);
             foreach (var write in writes)
                 values[$"{write.Value.Pk}/{write.Value.Id}"] = new(write.Value, (++version).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            foreach (var delete in deletes) values.Remove($"{delete.Pk}/{delete.Id}");
             return Task.FromResult(true);
         }
     }
@@ -40,6 +45,7 @@ public sealed class MemoryPartitionDocuments : IPartitionDocuments
                 (f.Since is null || v.Value.At >= f.Since) && (f.Pending is null || v.Value.Pending == f.Pending) &&
                 (f.Parent is null || v.Value.Parent == f.Parent) &&
                 (f.AfterRevision is null || v.Value.Revision > f.AfterRevision) &&
+                (f.ThroughRevision is null || v.Value.Revision <= f.ThroughRevision) &&
                 (f.Before is null || v.Value.At < f.Before || v.Value.At == f.Before &&
                     string.CompareOrdinal(v.Value.SourceId, f.BeforeId) > 0));
             var ordered = f.OldestFirst

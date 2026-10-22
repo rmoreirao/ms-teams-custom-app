@@ -12,7 +12,8 @@ public sealed record Conversation(string Id, string TenantId, string Title, stri
     string? Team, List<Member> Members, List<Message> Messages, List<Change> Changes,
     long Revision = 0, long PublishedRevision = 0, bool CoverageReady = true,
     string? GraphChatId = null, string? GraphTeamId = null, string? GraphChannelId = null,
-    long Epoch = 0, List<Tombstone>? Tombstones = null, DateTimeOffset? CoverageUntil = null, long RepairGeneration = 0);
+    long Epoch = 0, List<Tombstone>? Tombstones = null, DateTimeOffset? CoverageUntil = null, long RepairGeneration = 0,
+    long CacheGeneration = 0, long CacheResetRevision = 0, string? ActiveCacheCleanup = null, string? LastCacheCleanup = null);
 public enum OperationState { Pending, Dispatching, Confirmed, Rejected, Unknown }
 public sealed record SendOperation(string Id, string TenantId, string ConversationId, string ActorId,
     string Fingerprint, string Body, string? ParentId, OperationState State, DateTimeOffset CreatedAt,
@@ -39,10 +40,14 @@ public sealed record ReadAccess(DateTimeOffset HistoryFrom, DateTimeOffset Valid
 public sealed record MessagePage(IReadOnlyList<Message> Messages, string? Cursor, long Revision, string Window,
     Message? ParentMessage = null, ReadAccess? Access = null,
     [property: System.Text.Json.Serialization.JsonIgnore] ReadRefreshRequest? Refresh = null,
-    [property: System.Text.Json.Serialization.JsonIgnore] bool Pending = false);
-public sealed record PendingRead(string State, int RetryAfterMs, ReadAccess? Access);
+    [property: System.Text.Json.Serialization.JsonIgnore] bool Pending = false,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] ReadEvidence? Diagnostics = null);
+public sealed record PendingRead(string State, int RetryAfterMs, ReadAccess? Access,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] ReadEvidence? Diagnostics = null);
 public sealed record ChangePage(IReadOnlyList<Change> Changes, long Revision, bool ResetRequired,
-    IReadOnlyList<Message>? Messages = null, DateTimeOffset? HistoryFrom = null, string? Window = null, ReadAccess? Access = null);
+    IReadOnlyList<Message>? Messages = null, DateTimeOffset? HistoryFrom = null, string? Window = null, ReadAccess? Access = null,
+    bool CacheReset = false,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] ReadEvidence? Diagnostics = null);
 
 public sealed class AppError(int status, string code, string message, ReadAccess? access = null) : Exception(message)
 {

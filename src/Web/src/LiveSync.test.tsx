@@ -11,8 +11,10 @@ const sdk = vi.hoisted(() => ({
 }));
 vi.mock("@azure/web-pubsub-client", () => ({
   WebPubSubClient: class {
+    private readonly options: { getClientAccessUrl: () => Promise<string> };
+    constructor(options: { getClientAccessUrl: () => Promise<string> }) { this.options = options; }
     on(name: string, callback: (event?: unknown) => void) { sdk.handlers.set(name, callback); }
-    start() { return sdk.start(); }
+    async start() { await this.options.getClientAccessUrl(); return sdk.start(); }
     stop() { return sdk.stop(); }
   },
 }));

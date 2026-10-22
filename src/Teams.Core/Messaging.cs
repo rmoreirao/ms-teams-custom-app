@@ -37,7 +37,7 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
     }
 
     public async Task<MessagePage> ReadAsync(Actor actor, string id, string? cursor, string? parent,
-        long minimumRevision, CancellationToken ct)
+        long minimumRevision, CancellationToken ct, ReadEvidence? evidence = null)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), clock);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
@@ -45,21 +45,27 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
         var accepted = false;
         try
         {
-            pending = await ReadPageAsync(actor, id, cursor, parent, minimumRevision, linked.Token);
+            pending = await ReadPageAsync(actor, id, cursor, parent, minimumRevision, linked.Token, evidence);
             if (pending.Refresh is null) return pending;
             if (!pending.Pending)
             {
-                if (refresh is not null) await refresh.RequestAsync(pending.Refresh, false, linked.Token);
+                if (refresh is not null)
+                {
+                    await refresh.RequestAsync(pending.Refresh, false, linked.Token);
+                    // Best-effort submission does not provide an acceptance guarantee.
+                    evidence?.Record("hydration", "requested-best-effort", 0, System.Diagnostics.Stopwatch.GetTimestamp());
+                }
                 return pending with { Refresh = null };
             }
             if (refresh is null)
                 throw new AppError(503, "read_refresh_unavailable", "History could not be loaded. Refresh is currently unavailable.");
             await refresh.RequestAsync(pending.Refresh, true, linked.Token);
+            if (evidence is not null) evidence.HydrationRequested = true;
             accepted = true;
             foreach (var delay in new[] { 0, 100, 300, 800, 1600 })
             {
                 if (delay > 0) await Task.Delay(TimeSpan.FromMilliseconds(delay), clock, linked.Token);
-                var page = await ReadPageAsync(actor, id, cursor, parent, minimumRevision, linked.Token);
+                var page = await ReadPageAsync(actor, id, cursor, parent, minimumRevision, linked.Token, evidence);
                 if (!page.Pending) return page with { Refresh = null };
                 pending = page;
             }
@@ -76,7 +82,7 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
     }
 
     private async Task<MessagePage> ReadPageAsync(Actor actor, string id, string? cursor, string? parent,
-        long minimumRevision, CancellationToken ct)
+        long minimumRevision, CancellationToken ct, ReadEvidence? evidence)
     {
         if (minimumRevision < 0)
             throw new AppError(400, "invalid_revision", "Revision cannot be negative.");
@@ -85,10 +91,12 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
         var boundary = cursor is null ? null
             : JsonSerializer.Deserialize<PageBoundary>(tokens.Validate(actor, id, $"page:{conversation.Epoch}:{parent}", cursor));
         var access = ReadAccess.Create(member, conversation, Now);
+        if (conversation.ActiveCacheCleanup is not null)
+            throw new AppError(503, "cache_cleanup_in_progress", "Shared cache cleanup is in progress. Resume or check the original operation.", access);
         if (parent is not null && conversation.Kind != "channel")
             throw new AppError(404, "access_denied", "Thread is not available.");
         var observed = await store.ReadViewAsync(actor.TenantId, id, parent, ct);
-        var view = observed?.Value.Epoch == conversation.Epoch ? observed.Value : null;
+        var view = observed?.Value.Epoch == conversation.Epoch && observed.Value.CacheGeneration == conversation.CacheGeneration ? observed.Value : null;
         var parentMessage = parent is null ? null : await store.CurrentMessageAsync(actor.TenantId, id, parent, null, ct);
         if (parentMessage is not null && (parentMessage.Deleted || parentMessage.CreatedAt < access.HistoryFrom) ||
             parent is not null && parentMessage is null && view?.ParentMissing == true)
@@ -96,14 +104,17 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
         if (conversation.Revision < minimumRevision)
             throw new AppError(503, "projection_behind", "The reader has not reached the requested revision. Synchronizing recent context.",
                 parent is not null && parentMessage is null ? null : access);
-        var request = new ReadRefreshRequest(actor.TenantId, id, conversation.Epoch, parent, boundary?.At, boundary?.Id, Now);
+        var request = new ReadRefreshRequest(actor.TenantId, id, conversation.Epoch, parent, boundary?.At, boundary?.Id, Now,
+            CacheGeneration: conversation.CacheGeneration);
         MessagePage Pending() => new([], null, conversation.Revision, "",
             Access: parent is not null && parentMessage is null ? null : access, Refresh: request, Pending: true);
         if (parent is not null && parentMessage is null) return Pending();
-        var loaded = await store.MessagesAsync(actor, id, parent, member.HistoryFrom, boundary?.At, boundary?.Id, ct);
+        var loaded = await store.MessagesAsync(actor, id, parent, member.HistoryFrom, boundary?.At, boundary?.Id, ct, evidence);
         var current = (await GetAuthorizedAsync(actor, id, ct)).Value;
         if (current.Epoch != conversation.Epoch)
             throw new AppError(503, "writer_fenced", "Conversation ownership changed during the read.");
+        if (current.CacheGeneration != conversation.CacheGeneration || current.ActiveCacheCleanup is not null)
+            throw new AppError(503, "cache_generation_changed", "Cache cleanup changed this view. Reload recent context.", access);
         access = ReadAccess.Create(Authorize(actor, current), current, Now);
         if (parent is not null)
         {
@@ -127,7 +138,7 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
     }
 
     public async Task<ChangePage> ChangesAsync(Actor actor, string id, long after, CancellationToken ct,
-        string? parent = null, long minimumRevision = 0)
+        string? parent = null, long minimumRevision = 0, ReadEvidence? evidence = null)
     {
         if (after < 0 || minimumRevision < 0) throw new AppError(400, "invalid_revision", "Revision cannot be negative.");
         var conversation = (await GetAuthorizedAsync(actor, id, ct)).Value;
@@ -142,7 +153,7 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
         var access = ReadAccess.Create(member, conversation, Now);
         if (conversation.Revision < minimumRevision)
             throw new AppError(503, "projection_behind", "The reader has not reached the requested revision. Synchronizing recent context.", access);
-        var page = await store.ChangesAsync(actor, id, after, ct);
+        var page = await store.ChangesAsync(actor, id, after, ct, evidence);
         return page with
         {
             HistoryFrom = page.HistoryFrom ?? cutoff,

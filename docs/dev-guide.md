@@ -68,6 +68,65 @@ The popup reports confirmed, not-sent, and pending/uncertain counts separately, 
 
 These are real Teams messages in normal runs. Only send them to the approved test recipient within the authorized development scope; use offline test fixtures for automated checks.
 
+## Cache Diagnostics
+
+**Cache Diagnostics** appears in the header of an authorized direct or group chat.
+It inspects shared application copies, not the original Microsoft Teams messages.
+Any signed-in user with current access to that chat may inspect or clean its
+copies; channels and all-chat cleanup are excluded.
+
+The popup separates three different things:
+
+- **Browser memory:** loaded messages can remain visible without a fresh storage
+  page read. An ordinary update usually fetches Cosmos deltas, not Redis pages.
+- **Redis:** at most 21 messages per recent page, cached for up to 15 seconds and
+  bounded by message retention. A hit can avoid a Cosmos content-page query, but
+  current authorization and conversation metadata still require Cosmos reads.
+- **Cosmos:** the shared seven-day message projection. A genuinely cold read
+  requests bounded, Control-owned Teams hydration through `graph-read-refresh`;
+  accepted work is not evidence that Graph or hydration has already succeeded.
+
+Opening the popup pauses this tab's automatic content reads. **Inspect storage**
+collects sampled, timestamped counts, completeness, revision/generation and Redis
+TTL evidence without warming Redis or requesting hydration. Other tabs, sends and
+background workers continue running. Incomplete counts and unavailable stores are
+reported explicitly; a sampled zero is not proof that storage will remain empty.
+
+Neither cleanup option is selected by default. Select Cosmos, Redis, or both,
+then confirm **Clean selected caches**. Redis-only cleanup leaves Cosmos content
+available. Cosmos-only cleanup physically deletes message documents and
+invalidates old cached page generations, but leaves Redis keys to expire unless
+Redis is also selected. Conversation identity, permissions, source mappings,
+tombstones, delivery records, writer epoch, original send/idempotency status and
+composer drafts are preserved. Both selections affect other app users of this
+chat; neither selection deletes or changes anything in Teams.
+
+Cleanup is bounded to four batches of at most 50 messages per request. **Resume
+original cleanup** continues larger projections or failed store operations;
+**Check original operation** recovers progress after a lost response without
+requesting another deletion. The original target revision is retained, so later
+synchronization writes are treated as refill rather than deleted again.
+Per-store partial/unknown outcomes are not full success. Content-free operation
+records and Redis eviction receipts are retained for fourteen days.
+An unfinished operation past that retry window cannot be resumed. Inspect the
+current storage and explicitly confirm a new cleanup instead; its expired
+active marker does not prevent a replacement operation.
+
+**Reload and validate** deliberately replaces this tab's loaded page and runs the
+normal authorized first-page read. Its evidence distinguishes Redis hit/miss,
+unavailability, Cosmos content queries, cache writes, and accepted hydration.
+Pending hydration uses bounded retries, never a fabricated empty chat. Repeat
+the explicit read to observe a warm Redis page if its revision/TTL still permits
+it. Observation history holds only the latest twelve count/status observations
+in page memory; it does not log message bodies, credentials, or raw cache keys.
+
+This source feature is not evidence of deployment or real-service acceptance.
+Rebuild and release the coordinated API/worker image under the existing approval
+process. New chat-scoped `recent:v2:` keys do not read old opaque `recent:v1:`
+pages; legacy pages expire within their existing maximum 15-second TTL. No Redis
+flush, broad key scan, cloud permission change or source-message write is needed.
+See the [cache validation procedure](testing.md#cache-diagnostics-validation).
+
 ## GitHub Actions
 
 `CI` builds/tests without Azure credentials or Graph writes. **Deploy dev** is a manually dispatched `main` release to the existing GitHub `dev` environment. Configure required reviewers and the main-only policy outside the workflow.
