@@ -1,5 +1,32 @@
 # Dev functional validation report
 
+## Chat message presentation release (2026-10-23)
+
+**Deployed to all five existing Development roles.** Ordinary text and supported
+formatted messages no longer show the app-added **Open in Teams** link;
+attachments and embedded content retain it. **Concurrent messages** defaults to
+**1**, independently of the unchanged default message count of **30**.
+
+ACR `dt19` built the uncommitted workspace based on
+`07fe4cecd16c66a050d0cf96233a5fa00f2bcd09`, with workspace SHA-256
+`1be616f525b7d75cda2f63a7f2e1199bb9e7511ca8d8849dd737a4ddc07e0437`,
+into immutable image
+`sha256:ef6e8f74694dd1dd76ea4d0080518209f6a756894554c28fcf0de622e4d4e6ae`.
+The workspace matched that source during the build and public acceptance,
+before this evidence-only documentation update.
+
+The guarded image-only rollout verified exact healthy Api, Receiver, Projector,
+Delivery and Control revisions, preserving configuration, identities, grants,
+networking, scale, admission and data. Public readiness, anonymous API denial and
+the canonical Entra redirect passed. Public JavaScript and stylesheet bytes match
+the verified local production build. All 126 frontend tests, production
+build/type-check and offline deployment safety contracts passed.
+
+No signed-in journey, live Teams send, cache cleanup, Git commit, Git push or
+GitHub Actions dispatch was performed. Existing source-health and authenticated
+acceptance boundaries remain separate. Exact revisions, recovery identities,
+source manifest and release proofs remain private outside the repository.
+
 ## Nonblocking cache cleanup release (2026-10-23)
 
 **Deployed to all five existing Development roles; normal cache-read acceptance

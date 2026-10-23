@@ -15,7 +15,7 @@ export function TestMessages({ recipient, available, send }: {
   const latest = useRef({ available, send });
   latest.current = { available, send };
   const [count, setCount] = useState("30");
-  const [concurrency, setConcurrency] = useState<string | null>(null);
+  const [concurrency, setConcurrency] = useState("1");
   const [message, setMessage] = useState("Test message");
   const [running, setRunning] = useState(false);
   const [scheduling, setScheduling] = useState(false);
@@ -23,7 +23,7 @@ export function TestMessages({ recipient, available, send }: {
   const [error, setError] = useState("");
   const total = Number(count);
   const valid = Number.isSafeInteger(total) && total > 0;
-  const parallel = Number(concurrency ?? count);
+  const parallel = Number(concurrency);
   const validConcurrency = Number.isSafeInteger(parallel) && parallel > 0 && parallel <= total;
   const messageLimit = 4096 - ` - ${valid ? total : 30}`.length;
   const validMessage = !!message.trim() && message.length <= messageLimit;
@@ -35,7 +35,7 @@ export function TestMessages({ recipient, available, send }: {
     if (!available) { controller.current?.abort(); setScheduling(false); }
   }, [available]);
   const open = () => {
-    if (!controller.current) { setCount("30"); setConcurrency(null); setMessage("Test message"); setProgress(null); setError(""); }
+    if (!controller.current) { setCount("30"); setConcurrency("1"); setMessage("Test message"); setProgress(null); setError(""); }
     dialog.current?.showModal();
   };
   const submit = async (event: FormEvent) => {
@@ -100,7 +100,7 @@ export function TestMessages({ recipient, available, send }: {
           {!valid && <p id="test-message-count-error" role="alert">Enter a positive whole number.</p>}
           <label htmlFor="test-message-concurrency">Concurrent messages</label>
           <input id="test-message-concurrency" type="number" min="1" max={valid ? total : undefined} step="1" required
-            value={concurrency ?? count} aria-invalid={!validConcurrency} aria-describedby="test-message-concurrency-help"
+            value={concurrency} aria-invalid={!validConcurrency} aria-describedby="test-message-concurrency-help"
             onChange={event => setConcurrency(event.target.value)} />
           <p id="test-message-concurrency-help">{validConcurrency
             ? "Starts this many messages immediately, with no pacing or ramp-up."

@@ -25,6 +25,7 @@ it("preserves supported formatting but strips active content, styles, forms and 
 
 it("allows only safe HTTPS links and prevents opener/referrer access", () => {
   const { container } = render(<MessageContent message={{ ...message,
+    teamsUrl: "https://teams.microsoft.com/l/message/approved",
     htmlBody: `<a href="https://example.test/path">Safe</a><a href="javascript:alert(1)">Unsafe</a>
       <a href="http://example.test">Insecure</a><a href="data:text/html,unsafe">Data</a>
       <a href="https://user:password@example.test">Credentials</a>`,
@@ -34,6 +35,20 @@ it("allows only safe HTTPS links and prevents opener/referrer access", () => {
   expect(link).toHaveAttribute("rel", "noopener noreferrer");
   expect(link).toHaveAttribute("target", "_blank");
   expect(container.querySelectorAll("a[href]")).toHaveLength(1);
+});
+
+it.each([undefined, null, ""])("hides the source link on ordinary text with content notice %j", contentNotice => {
+  render(<MessageContent message={{ ...message, contentNotice, teamsUrl: "https://teams.microsoft.com/l/message/approved" }} />);
+  expect(screen.getByText("Plain text fallback")).toBeVisible();
+  expect(screen.queryByRole("link", { name: "Open in Teams" })).not.toBeInTheDocument();
+});
+
+it("hides the source link on supported formatted messages", () => {
+  render(<MessageContent message={{ ...message, htmlBody: "<p>Formatted <strong>message</strong></p>",
+    teamsUrl: "https://teams.microsoft.com/l/message/approved",
+  }} />);
+  expect(screen.getByText("message", { selector: "strong" })).toBeVisible();
+  expect(screen.queryByRole("link", { name: "Open in Teams" })).not.toBeInTheDocument();
 });
 
 it("keeps plain user-authored markup literal and exposes attachment notices without fetching files", () => {
@@ -46,6 +61,21 @@ it("keeps plain user-authored markup literal and exposes attachment notices with
   expect(screen.getByRole("link", { name: "Open in Teams" })).toHaveAttribute("href", "https://teams.microsoft.com/l/message/approved");
 });
 
+it("keeps a source link for embedded content that must be viewed in Teams", () => {
+  const { container, rerender } = render(<MessageContent message={{ ...message,
+    htmlBody: '<p>Shared image</p><img src="https://example.test/image.png">',
+    contentNotice: "Embedded content is available in Teams.", teamsUrl: "https://teams.cloud.microsoft/l/message/approved",
+  }} />);
+  expect(screen.getByText("Embedded content is available in Teams.")).toBeVisible();
+  expect(container.querySelector("img")).toBeNull();
+  const link = screen.getByRole("link", { name: "Open in Teams" });
+  expect(link).toHaveAttribute("href", "https://teams.cloud.microsoft/l/message/approved");
+  expect(link).toHaveAttribute("target", "_blank");
+  expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  rerender(<MessageContent message={{ ...message, teamsUrl: "https://teams.cloud.microsoft/l/message/approved" }} />);
+  expect(screen.queryByRole("link", { name: "Open in Teams" })).not.toBeInTheDocument();
+});
+
 it("never renders deleted HTML, attachment notices or source links", () => {
   const { container } = render(<MessageContent message={{ ...message, deleted: true,
     htmlBody: "<strong>Deleted secret</strong>", contentNotice: "Deleted attachment", teamsUrl: "https://teams.microsoft.com/l/message/deleted",
@@ -56,6 +86,8 @@ it("never renders deleted HTML, attachment notices or source links", () => {
 });
 
 it("rejects a source URL outside the approved Teams hosts even if supplied by a faulty API", () => {
-  render(<MessageContent message={{ ...message, teamsUrl: "https://teams.microsoft.com.evil.invalid/" }} />);
+  render(<MessageContent message={{ ...message, contentNotice: "Attachments are available in Teams.",
+    teamsUrl: "https://teams.microsoft.com.evil.invalid/",
+  }} />);
   expect(screen.queryByRole("link")).not.toBeInTheDocument();
 });

@@ -71,7 +71,7 @@ afterEach(() => {
 });
 
 describe("personal-chat test messages", () => {
-  it("opens with 30 messages and editable default text, and cancellation sends nothing", async () => {
+  it("opens with 30 messages, concurrency 1 and editable default text, and cancellation sends nothing", async () => {
     const requests = mockApi();
     await openChat();
     const composer = screen.getByLabelText("Write a message");
@@ -79,7 +79,7 @@ describe("personal-chat test messages", () => {
     openPopup();
     expect(screen.getByRole("dialog", { name: "Send test messages" })).toHaveTextContent("Sam Rivera");
     expect(screen.getByLabelText("Number of messages")).toHaveValue(30);
-    expect(screen.getByLabelText("Concurrent messages")).toHaveValue(30);
+    expect(screen.getByLabelText("Concurrent messages")).toHaveValue(1);
     expect(screen.getByLabelText("Number of messages")).toHaveFocus();
     expect(screen.getByLabelText("Test Message")).toHaveValue("Test message");
     expect(screen.getByRole("button", { name: "Send test messages" }).closest("header")).toContainElement(
@@ -91,6 +91,38 @@ describe("personal-chat test messages", () => {
   });
 
   describe("parallel batch controls", () => {
+    it("keeps default concurrency independent of the message count and resets it on reopening", () => {
+      const send = vi.fn();
+      render(<TestMessages recipient="Sam Rivera" available send={send} />);
+      openPopup("5");
+      expect(screen.getByLabelText("Concurrent messages")).toHaveValue(1);
+      fireEvent.change(screen.getByLabelText("Concurrent messages"), { target: { value: "2" } });
+      expect(screen.getByLabelText("Concurrent messages")).toHaveValue(2);
+      fireEvent.click(within(document.querySelector("dialog")!).getByText("Cancel", { selector: "button" }));
+      openPopup();
+      expect(screen.getByLabelText("Number of messages")).toHaveValue(30);
+      expect(screen.getByLabelText("Concurrent messages")).toHaveValue(1);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it("sends one message at a time by default", async () => {
+      const completions: (() => void)[] = [];
+      const send = vi.fn((body: string) => new Promise<Operation>(resolve => {
+        completions.push(() => resolve({ id: body, state: "confirmed", messageId: body, error: null }));
+      }));
+      render(<TestMessages recipient="Sam Rivera" available send={send} />);
+      openPopup("3");
+      await submit();
+      expect(send).toHaveBeenCalledTimes(1);
+      for (let index = 0; index < 3; index++) {
+        expect(send.mock.calls[index][0]).toBe(`Test message - ${index + 1}`);
+        await act(async () => { completions[index](); });
+        expect(send).toHaveBeenCalledTimes(Math.min(3, index + 2));
+      }
+      expect(within(document.querySelector("dialog")!).getByRole("status")).toHaveTextContent(
+        "3 of 3 attempted. 3 confirmed, 0 not sent, 0 pending or uncertain.");
+    });
+
     it.each(["", "0", "-1", "1.5", "31"])("rejects invalid concurrency %j without dispatch", async concurrency => {
       const send = vi.fn();
       render(<TestMessages recipient="Sam Rivera" available send={send} />);
@@ -130,11 +162,11 @@ describe("personal-chat test messages", () => {
     });
   });
 
-  it("sends exactly 30 immediate, uniquely identified numbered messages to the other person's chat", async () => {
+  it("sends exactly 30 immediate, uniquely identified numbered messages when concurrency is set to 30", async () => {
     const requests = mockApi();
     await openChat();
     fireEvent.change(screen.getByRole("textbox", { name: "Write a message" }), { target: { value: "Keep this draft" } });
-    openPopup();
+    openPopup(undefined, undefined, "30");
     await submit();
     expect(requests).toHaveLength(30);
     expect(requests.map(item => item.command.body)).toEqual(Array.from({ length: 30 }, (_, index) => `Test message - ${index + 1}`));
@@ -268,7 +300,7 @@ describe("personal-chat test messages", () => {
       finish.push(() => resolve(json({ id: command.operationId, state: "confirmed", messageId: command.operationId, error: null }, 201)));
     }));
     await openChat();
-    openPopup("3", "Independent");
+    openPopup("3", "Independent", "3");
     await submit();
     expect(requests.map(item => item.command.body)).toEqual(["Independent - 1", "Independent - 2", "Independent - 3"]);
     expect(within(screen.getByRole("dialog")).getByRole("status")).toHaveTextContent(

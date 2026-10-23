@@ -41,6 +41,6 @@ export function MessageContent({ message }: { message: Message }) {
       html ? <div className="message-text rich-message" dangerouslySetInnerHTML={{ __html: html }} /> :
         <p className="message-text">{message.body}</p>}
     {!message.deleted && message.contentNotice && <p className="composer-note">{message.contentNotice}</p>}
-    {source && <a href={source} target="_blank" rel="noopener noreferrer">Open in Teams</a>}
+    {source && message.contentNotice && <a href={source} target="_blank" rel="noopener noreferrer">Open in Teams</a>}
   </>;
 }
