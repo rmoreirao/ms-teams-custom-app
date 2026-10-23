@@ -133,7 +133,7 @@ it("requires store selection and confirmation, then validates a fresh Redis miss
   expect(dialog.getAllByText("hit").length).toBeGreaterThan(0);
   expect(screen.getByRole("textbox", { name: "Write a message" })).toHaveValue("Keep my draft");
 });
-it.each([{ unknown: true }, { partial: true }])("checks and resumes only the original operation after %j", async options => {
+it.each([{ unknown: true }, { partial: true }])("allows fresh reads without repeating cleanup after %j", async options => {
   const state = fixture(options);
   const dialog = await openApp();
   fireEvent.click(dialog.getByRole("checkbox", { name: "Cosmos message copies" }));
@@ -142,11 +142,16 @@ it.each([{ unknown: true }, { partial: true }])("checks and resumes only the ori
   fireEvent.click(dialog.getByRole("button", { name: "Confirm cleanup" }));
   await waitFor(() => expect(dialog.getByRole("button", { name: "Check original operation" })).toBeEnabled());
   expect(dialog.getByRole("button", { name: "Clean selected caches" })).toBeDisabled();
-  expect(dialog.getByRole("button", { name: "Reload and validate" })).toBeDisabled();
-  fireEvent.click(dialog.getByRole("button", { name: "Check original operation" }));
-  await waitFor(() => expect(dialog.getByRole("button", { name: "Inspect storage" })).toBeEnabled());
+  expect(dialog.getByRole("button", { name: "Reload and validate" })).toBeEnabled();
+  fireEvent.click(dialog.getByRole("button", { name: "Reload and validate" }));
+  await waitFor(() => expect(state.reads).toHaveLength(2));
+  await waitFor(() => expect(dialog.getByRole("button", { name: "Reload and validate" })).toBeEnabled());
+  expect(state.commands).toHaveLength(1);
+  expect(screen.getByRole("textbox", { name: "Write a message" })).toHaveValue("Keep my draft");
   expect(state.commands).toHaveLength(1);
   if (options.partial) {
+    fireEvent.click(dialog.getByRole("button", { name: "Check original operation" }));
+    await waitFor(() => expect(dialog.getByRole("button", { name: "Inspect storage" })).toBeEnabled());
     fireEvent.click(dialog.getByRole("button", { name: "Resume original cleanup" }));
     await waitFor(() => expect(state.commands).toHaveLength(2));
     expect(state.commands[1]).toEqual(state.commands[0]);

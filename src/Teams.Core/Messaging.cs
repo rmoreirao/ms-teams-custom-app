@@ -84,6 +84,20 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
     private async Task<MessagePage> ReadPageAsync(Actor actor, string id, string? cursor, string? parent,
         long minimumRevision, CancellationToken ct, ReadEvidence? evidence)
     {
+        for (;;)
+        {
+            ct.ThrowIfCancellationRequested();
+            try { return await ReadPageAttemptAsync(actor, id, cursor, parent, minimumRevision, ct, evidence); }
+            catch (AppError error) when (error.Code == "cache_generation_changed")
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(10), clock, ct);
+            }
+        }
+    }
+
+    private async Task<MessagePage> ReadPageAttemptAsync(Actor actor, string id, string? cursor, string? parent,
+        long minimumRevision, CancellationToken ct, ReadEvidence? evidence)
+    {
         if (minimumRevision < 0)
             throw new AppError(400, "invalid_revision", "Revision cannot be negative.");
         var conversation = (await GetAuthorizedAsync(actor, id, ct)).Value;
@@ -91,8 +105,6 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
         var boundary = cursor is null ? null
             : JsonSerializer.Deserialize<PageBoundary>(tokens.Validate(actor, id, $"page:{conversation.Epoch}:{parent}", cursor));
         var access = ReadAccess.Create(member, conversation, Now);
-        if (conversation.ActiveCacheCleanup is not null)
-            throw new AppError(503, "cache_cleanup_in_progress", "Shared cache cleanup is in progress. Resume or check the original operation.", access);
         if (parent is not null && conversation.Kind != "channel")
             throw new AppError(404, "access_denied", "Thread is not available.");
         var observed = await store.ReadViewAsync(actor.TenantId, id, parent, ct);
@@ -110,20 +122,18 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
             Access: parent is not null && parentMessage is null ? null : access, Refresh: request, Pending: true);
         if (parent is not null && parentMessage is null) return Pending();
         var loaded = await store.MessagesAsync(actor, id, parent, member.HistoryFrom, boundary?.At, boundary?.Id, ct, evidence);
+        if (parent is not null)
+            parentMessage = await store.CurrentMessageAsync(actor.TenantId, id, parent, null, ct);
+        var coverage = view is null ? await store.ReadCoverageAsync(actor.TenantId, id, ct) : null;
         var current = (await GetAuthorizedAsync(actor, id, ct)).Value;
         if (current.Epoch != conversation.Epoch)
             throw new AppError(503, "writer_fenced", "Conversation ownership changed during the read.");
-        if (current.CacheGeneration != conversation.CacheGeneration || current.ActiveCacheCleanup is not null)
-            throw new AppError(503, "cache_generation_changed", "Cache cleanup changed this view. Reload recent context.", access);
+        if (current.CacheGeneration != conversation.CacheGeneration)
+            throw new AppError(503, "cache_generation_changed", "The cached view changed during the read.", access);
         access = ReadAccess.Create(Authorize(actor, current), current, Now);
-        if (parent is not null)
-        {
-            parentMessage = await store.CurrentMessageAsync(actor.TenantId, id, parent, null, ct);
-            if (parentMessage is null || parentMessage.Deleted || parentMessage.CreatedAt < access.HistoryFrom)
-                throw new AppError(404, "access_denied", "Thread is not available.");
-        }
+        if (parent is not null && (parentMessage is null || parentMessage.Deleted || parentMessage.CreatedAt < access.HistoryFrom))
+            throw new AppError(404, "access_denied", "Thread is not available.");
         var messages = loaded.Where(message => message.CreatedAt >= access.HistoryFrom).ToArray();
-        var coverage = view is null ? await store.ReadCoverageAsync(actor.TenantId, id, ct) : null;
         var complete = view is { Complete: true, ParentMissing: false } || current.CoverageReady ||
             coverage is { Ready: true, VerifiedAt: not null } ||
             boundary?.At < access.HistoryFrom ||

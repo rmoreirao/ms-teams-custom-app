@@ -55,8 +55,6 @@ public sealed class ResourceHydrator(IGraphBackground graph, ILiveStateStore sto
         var value = state.Value;
         var current = await store.GetAsync(tenant, resource.Id, ct)
             ?? throw new AppError(503, "resource_preparing", "Repair awaits resource onboarding.");
-        if (current.Value.ActiveCacheCleanup is not null)
-            throw new AppError(409, "cache_cleanup_in_progress", "Repair hydration is deferred until cache cleanup finishes.");
         if (value.Generation is not null && value.Generation != current.Value.RepairGeneration)
         {
             if (!await control.RestartRepairAsync(resource, state, current.Value.RepairGeneration, "repair_generation_superseded", ct))

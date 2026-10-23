@@ -13,7 +13,8 @@ public sealed record Conversation(string Id, string TenantId, string Title, stri
     long Revision = 0, long PublishedRevision = 0, bool CoverageReady = true,
     string? GraphChatId = null, string? GraphTeamId = null, string? GraphChannelId = null,
     long Epoch = 0, List<Tombstone>? Tombstones = null, DateTimeOffset? CoverageUntil = null, long RepairGeneration = 0,
-    long CacheGeneration = 0, long CacheResetRevision = 0, string? ActiveCacheCleanup = null, string? LastCacheCleanup = null);
+    long CacheGeneration = 0, long CacheResetRevision = 0, string? ActiveCacheCleanup = null, string? LastCacheCleanup = null,
+    long? CacheInvalidationRevision = null);
 public enum OperationState { Pending, Dispatching, Confirmed, Rejected, Unknown }
 public sealed record SendOperation(string Id, string TenantId, string ConversationId, string ActorId,
     string Fingerprint, string Body, string? ParentId, OperationState State, DateTimeOffset CreatedAt,

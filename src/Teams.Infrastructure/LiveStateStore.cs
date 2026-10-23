@@ -37,6 +37,9 @@ public sealed partial class LiveStateStore(IPartitionDocuments documents, TimePr
         var value = await documents.ReadCurrentAsync(Partition(tenant, id), "conversation", ct);
         if (value is null) return null;
         var conversation = Decode<Conversation>(value.Value);
+        // Legacy unfinished cleanups placed their reset immediately after the invalidated revision.
+        if (conversation.CacheInvalidationRevision is null && conversation.ActiveCacheCleanup is not null)
+            conversation = conversation with { CacheInvalidationRevision = Math.Max(0, conversation.CacheResetRevision - 1) };
         if (resourceRegistry is not null &&
             (!resourceRegistry.TryGetValue(id, out var approved) || !approved.Matches(conversation)))
             throw new AppError(503, "resource_mapping_changed", "Resource mapping changed; explicit migration or a new logical ID is required.");
@@ -191,7 +194,6 @@ public sealed partial class LiveStateStore(IPartitionDocuments documents, TimePr
         var metadata = await GetAsync(actor.TenantId, conversation, ct);
         if (metadata is null)
             throw new AppError(404, "access_denied", "Conversation is not available.");
-        EnsureCacheReadable(metadata.Value);
         var scope = CacheScope(actor.TenantId, conversation);
         var key = Key(JsonSerializer.Serialize(new { metadata.Value.Epoch, metadata.Value.Revision,
             metadata.Value.CacheGeneration, parent, before, beforeId }));
@@ -206,7 +208,8 @@ public sealed partial class LiveStateStore(IPartitionDocuments documents, TimePr
         {
             started = Stopwatch.GetTimestamp();
             var result = await documents.QueryAsync(new(actor.TenantId, "message", Partition(actor.TenantId, conversation),
-                ConversationId: conversation, Since: Now.AddDays(-7), Parent: parent ?? "", Before: before, BeforeId: beforeId),
+                ConversationId: conversation, Since: Now.AddDays(-7), Parent: parent ?? "", Before: before, BeforeId: beforeId,
+                AfterRevision: metadata.Value.CacheInvalidationRevision),
                 21 - messages.Count, cursor, ct);
             evidence?.Record("cosmos", "content-query", result.Items.Count, started);
             messages.AddRange(result.Items.Select(d => Decode<Message>(d.Value)));
@@ -226,18 +229,27 @@ public sealed partial class LiveStateStore(IPartitionDocuments documents, TimePr
     }
     public async Task<Message?> MessageAsync(string tenant, string conversation, string id, string? parent, CancellationToken ct)
     {
+        var metadata = await GetAsync(tenant, conversation, ct);
+        if (metadata is null) return null;
         var value = await documents.ReadAsync(Partition(tenant, conversation), MessageId(id, parent), ct);
-        return value is null ? null : Decode<Message>(value.Value);
+        return value is null || !MessageVisible(value.Value, metadata.Value) ? null : Decode<Message>(value.Value);
     }
     public async Task<Message?> CurrentMessageAsync(string tenant, string conversation, string id, string? parent, CancellationToken ct)
     {
+        var metadata = await GetAsync(tenant, conversation, ct);
+        if (metadata is null) return null;
         var value = await documents.ReadCurrentAsync(Partition(tenant, conversation), MessageId(id, parent), ct);
-        return value is null ? null : Decode<Message>(value.Value);
+        return value is null || !MessageVisible(value.Value, metadata.Value) ? null : Decode<Message>(value.Value);
     }
+    private static bool MessageVisible(PartitionDocument message, Conversation conversation) =>
+        conversation.CacheInvalidationRevision is not { } cutoff || message.Revision > cutoff;
     public async Task<ProjectionScan> ScanAsync(string tenant, string conversation, string? parent, string? cursor, CancellationToken ct)
     {
+        var metadata = await GetAsync(tenant, conversation, ct)
+            ?? throw new AppError(404, "resource_unknown", "Resource is not onboarded.");
         var page = await documents.QueryAsync(new(tenant, "message", Partition(tenant, conversation),
-            ConversationId: conversation, Since: Now.AddDays(-7), Parent: parent), 1, cursor, ct);
+            ConversationId: conversation, Since: Now.AddDays(-7), Parent: parent,
+            AfterRevision: metadata.Value.CacheInvalidationRevision), 1, cursor, ct);
         return new(page.Items.Select(v => Decode<Message>(v.Value)).ToArray(), page.Cursor);
     }
     public async Task<ChangePage> ChangesAsync(Actor actor, string conversation, long after, CancellationToken ct, ReadEvidence? evidence = null)
@@ -250,12 +262,11 @@ public sealed partial class LiveStateStore(IPartitionDocuments documents, TimePr
         async Task<ChangePage?> ResetIfCleanupAsync()
         {
             var current = (await GetAsync(actor.TenantId, conversation, ct))!.Value;
-            return current.CacheGeneration != metadata.CacheGeneration || current.ActiveCacheCleanup is not null
+            return current.CacheGeneration != metadata.CacheGeneration
                 ? new([], current.Revision, true, [], cutoff, Access: access, CacheReset: true) : null;
         }
         if (after < metadata.CacheResetRevision)
             return new([], metadata.Revision, true, [], cutoff, Access: access, CacheReset: true);
-        EnsureCacheReadable(metadata);
         if (after > metadata.Revision)
             throw new AppError(503, "projection_behind", "The reader has not reached the requested revision. Synchronizing recent context.", access);
         var started = Stopwatch.GetTimestamp();
@@ -277,7 +288,7 @@ public sealed partial class LiveStateStore(IPartitionDocuments documents, TimePr
                 var document = await documents.ReadAsync(Partition(actor.TenantId, conversation),
                     MessageId(change.MessageId, change.ParentId), ct);
                 evidence?.Record("cosmos", "changed-content-read", document is null ? 0 : 1, started);
-                if (document is null || document.Value.Revision < change.Revision)
+                if (document is null || document.Value.Revision < change.Revision || !MessageVisible(document.Value, metadata))
                     return await ResetIfCleanupAsync() ?? throw new AppError(503, "projection_behind",
                         "The changed content is not yet visible. Synchronizing recent context.", access);
                 var message = Decode<Message>(document.Value);
@@ -360,20 +371,22 @@ public sealed partial class LiveStateStore(IPartitionDocuments documents, TimePr
             var same = old is not null && (old.SourceVersion == incoming.SourceVersion ||
                 old with { SourceVersion = incoming.SourceVersion } == incoming);
             var older = old is not null && incoming.ModifiedAt < old.ModifiedAt;
-            if (!same && !older && (incoming.Deleted || tombstone is null))
+            var invalidated = previous is not null && !MessageVisible(previous.Value, current.Value);
+            if ((!same || invalidated) && !older && (incoming.Deleted || tombstone is null))
             {
-                if (old is not null && old.ModifiedAt == incoming.ModifiedAt && old.Deleted != incoming.Deleted && !incoming.Deleted)
+                if (!same && old is not null && old.ModifiedAt == incoming.ModifiedAt && old.Deleted != incoming.Deleted && !incoming.Deleted)
                 { ready = false; generation++; }
-                else if (verifiedAgainst is null && old is not null && old.ModifiedAt == incoming.ModifiedAt && !incoming.Deleted &&
+                else if (!same && verifiedAgainst is null && old is not null && old.ModifiedAt == incoming.ModifiedAt && !incoming.Deleted &&
                     (old.Body != incoming.Body || old.ParentId != incoming.ParentId))
                 { ready = false; generation++; }
                 else
                 {
                     revision++;
-                    var clean = incoming.Deleted ? incoming with { Body = "", ContentNotice = null, TeamsUrl = null, HtmlBody = null } : incoming;
-                    var ttl = Math.Max(1, (int)(incoming.CreatedAt.AddDays(7) - Now).TotalSeconds);
+                    var accepted = same && old is not null ? old : incoming;
+                    var clean = accepted.Deleted ? accepted with { Body = "", ContentNotice = null, TeamsUrl = null, HtmlBody = null } : accepted;
+                    var ttl = Math.Max(1, (int)(accepted.CreatedAt.AddDays(7) - Now).TotalSeconds);
                     writes.Add(new(Wrap(id, pk, "message", value.TenantId, value.Id, clean, ttl,
-                        at: incoming.CreatedAt, revision: revision, parent: incoming.ParentId ?? "", sourceId: incoming.Id), previous?.Version));
+                        at: accepted.CreatedAt, revision: revision, parent: accepted.ParentId ?? "", sourceId: accepted.Id), previous?.Version));
                     if (incoming.Deleted && tombstone is null)
                         writes.Add(new(Wrap($"tombstone:{MessageKey(incoming.Id, incoming.ParentId)}", pk, "tombstone",
                             value.TenantId, value.Id, incoming.Id, 14 * 86400), null));
@@ -427,7 +440,7 @@ public sealed partial class LiveStateStore(IPartitionDocuments documents, TimePr
         if (metadata is null || Decode<Conversation>(metadata.Value).Epoch != next.Epoch)
             throw new AppError(503, "writer_fenced", "Conversation ownership changed during read refresh.");
         var conversationState = Decode<Conversation>(metadata.Value);
-        if (conversationState.CacheGeneration != next.CacheGeneration || conversationState.ActiveCacheCleanup is not null)
+        if (conversationState.CacheGeneration != next.CacheGeneration)
             throw new AppError(409, "cache_generation_changed", "Cache cleanup superseded this hydration checkpoint.");
         return await documents.WriteAsync([
             new(Wrap(ReadViewId(parent), pk, "read-view", tenant, conversation, next), previous?.Version),
@@ -436,8 +449,7 @@ public sealed partial class LiveStateStore(IPartitionDocuments documents, TimePr
     public async Task SetCoverageAsync(Coverage coverage, CancellationToken ct)
     {
         var current = await GetAsync(coverage.TenantId, coverage.ConversationId, ct) ?? throw new AppError(404, "resource_unknown", "Resource is not onboarded.");
-        if (coverage.Ready && (current.Value.ActiveCacheCleanup is not null ||
-            current.Value.CacheGeneration > 0 && coverage.RepairGeneration is null))
+        if (coverage.Ready && current.Value.CacheGeneration > 0 && coverage.RepairGeneration is null)
             throw new AppError(409, "cache_generation_changed", "Coverage must be verified after cache cleanup.");
         if (coverage.Ready && (coverage.VerifiedAt is null || coverage.VerifiedAt > Now ||
             (coverage.FreshUntil ?? coverage.VerifiedAt?.AddMinutes(5)) <= Now ||

@@ -7,11 +7,6 @@ public sealed partial class LiveStateStore
 {
     private bool CleanupExpired(CacheCleanup cleanup) =>
         !cleanup.Complete && cleanup.StartedAt.AddSeconds(CacheCleanup.RetentionSeconds) <= Now;
-    private static void EnsureCacheReadable(Conversation conversation)
-    {
-        if (conversation.ActiveCacheCleanup is not null)
-            throw new AppError(503, "cache_cleanup_in_progress", "Shared cache cleanup is in progress. Check or resume its original operation.");
-    }
     private async Task<Versioned<Conversation>> DiagnosticChatAsync(Actor actor, string id, CancellationToken ct)
     {
         await GetMemberAsync(actor, id, false, ct);
@@ -65,8 +60,8 @@ public sealed partial class LiveStateStore
         var cleanup = cleanupId is null ? null : await CleanupRecordAsync(actor.TenantId, conversation, cleanupId, ct);
         await GetMemberAsync(actor, conversation, false, ct);
         return new(Now, metadata.Revision, metadata.CacheGeneration, count, complete,
-            metadata.ActiveCacheCleanup is null && (metadata.CoverageReady || coverage?.Ready == true),
-            metadata.ActiveCacheCleanup is null && view?.Value.CacheGeneration == metadata.CacheGeneration &&
+            metadata.CoverageReady || coverage?.Ready == true,
+            view?.Value.CacheGeneration == metadata.CacheGeneration &&
                 view.Value.Epoch == metadata.Epoch && view.Value.Complete,
             redis, cleanup is not null && !CleanupExpired(cleanup.Value) ? cleanup.Value : null, error);
     }
@@ -105,6 +100,7 @@ public sealed partial class LiveStateStore
                 {
                     CacheGeneration = metadata.Value.CacheGeneration + 1, ActiveCacheCleanup = cleanup.Id, LastCacheCleanup = cleanup.Id,
                     Revision = metadata.Value.Revision + 1, CacheResetRevision = metadata.Value.Revision + 1,
+                    CacheInvalidationRevision = cleanup.TargetRevision,
                     CoverageReady = false, CoverageUntil = null, RepairGeneration = metadata.Value.RepairGeneration + 1
                 };
                 var coverage = await documents.ReadCurrentAsync(pk, "coverage", ct);
@@ -196,9 +192,7 @@ public sealed partial class LiveStateStore
             List<DocumentWrite> writes = [new(CleanupDocument(actor.TenantId, conversation, next), current.Version)];
             if (page.Items.Count == 0)
             {
-                state = state with { ActiveCacheCleanup = null, Revision = state.Revision + 1,
-                    CacheResetRevision = state.Revision + 1, RepairGeneration = state.RepairGeneration + 1 };
-                writes.Add(ResetOutbox(state));
+                state = state with { ActiveCacheCleanup = null };
             }
             writes.Add(new(Wrap("conversation", pk, "conversation", actor.TenantId, conversation, state), metadata.Version));
             var deletes = page.Items.Select(item => new DocumentDelete(pk, item.Value.Id, item.Version)).ToArray();

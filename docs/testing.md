@@ -97,10 +97,14 @@ post-start refill preservation, original-operation recovery, no store-selection
 changes on retry, membership/tenant/channel/CSRF boundaries, and generation-fenced
 hydration/coalescing. Redis adapter tests use controlled command responses, not a
 real Redis server; they do not establish deployed Lua/cluster acceptance.
+Regression coverage includes logical invalidation with unfinished, failed and
+expired cleanup, unchanged source-message refill, normal and concurrent reads,
+background repair, legacy cleanup boundaries, and preserving refill on resume.
 `CacheDiagnostics.test.tsx` covers the popup, confirmation, partial/lost responses,
 fresh-page validation, pause/resume, cache-reset replacement and authority expiry.
 `e2e/cache-diagnostics.spec.ts` runs the three store selections in the compiled
-shell, including desktop/light and mobile/dark layout, focus, Escape and drafts.
+shell, including desktop/light and mobile/dark layout, focus, Escape, drafts and
+cold-to-warm reads without resuming an unfinished Cosmos cleanup.
 Browser fixtures model hydration; they do not call real Cosmos, Redis or Teams.
 
 For separately approved deployed-service acceptance, use one approved synthetic
@@ -113,11 +117,14 @@ chat and record count/status evidence only:
    operation if its response is lost. Cosmos message copies must remain; a fresh
    **Reload and validate** should show a Redis miss and Cosmos content read, and
    a repeat can show a Redis hit before TTL/revision changes.
-3. Select **Cosmos message copies** only. Resume the original operation if more
-   batches are needed. Verify the deleted-message count, new revision/generation
-   and invalidated completeness. Physical Redis pages may remain but must not
-   serve the old generation. Explicit validation should show pending/accepted
-   hydration or newly observed projected content, not a guaranteed empty chat.
+3. Select **Cosmos message copies** only. Verify immediate invalidation and the
+   new revision/generation even if physical deletion needs more batches.
+   **Reload and validate** and ordinary message reads must work without resuming
+   deletion. Physical Redis pages and invalidated Cosmos rows may remain, but
+   neither may be served as current content. Validation should show pending/
+   accepted hydration or newly observed projected content, not a guaranteed
+   empty chat. Resume physical cleanup separately if needed; it must preserve
+   refill, including unchanged Teams messages, without another browser reset.
 4. Select both stores and repeat. Require separate store outcomes, cold-read
    evidence, observed refill, and a subsequent warm read when available.
    A store outage must remain an unavailable/partial outcome, never zero or full

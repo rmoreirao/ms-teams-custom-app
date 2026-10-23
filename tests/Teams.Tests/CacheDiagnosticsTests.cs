@@ -1,4 +1,6 @@
+using Microsoft.AspNetCore.DataProtection;
 using Teams.Core;
+using Teams.Host;
 using Teams.Infrastructure;
 
 namespace Teams.Tests;
@@ -119,6 +121,124 @@ public sealed class CacheDiagnosticsTests
         Assert.Equal(245, final.RemovedMessages);
         Assert.Equal("refilled", (await fixture.Store.CurrentMessageAsync(fixture.Tenant, "chat-handover", "new-refill", null, default))!.Body);
     }
+    [Fact]
+    public async Task FailedDeletionInvalidatesAllReadSurfacesAndUnchangedSourceRefillSurvivesResume()
+    {
+        var documents = new InterceptingDocuments();
+        var cache = new MemoryRecentMessageCache();
+        var fixture = new LiveFixture(documents: documents, cache: cache);
+        var store = fixture.Store;
+        var now = fixture.Clock.GetUtcNow();
+        var original = (await store.CurrentMessageAsync(fixture.Tenant, "chat-handover", "message-00", null, default))!;
+        await store.MessagesAsync(fixture.Alex, "chat-handover", null, now.AddDays(-7), null, null, default);
+        documents.AfterQuery = (filter, _) =>
+        {
+            if (filter.ThroughRevision is null) return Task.CompletedTask;
+            documents.AfterQuery = null;
+            throw new AppError(503, "test_delete_unavailable", "Deletion interrupted.");
+        };
+        var command = new CacheCleanupCommand(Guid.NewGuid().ToString(), true, false);
+        var cleanup = await store.CleanCacheAsync(fixture.Alex, "chat-handover", command, default);
+        Assert.Equal("failed", cleanup.CosmosState);
+        Assert.Equal(0, cleanup.RemovedMessages);
+        Assert.Equal(45, (await store.InspectCacheAsync(fixture.Alex, "chat-handover", default)).CosmosMessages);
+        Assert.Empty(await store.MessagesAsync(fixture.Alex, "chat-handover", null, now.AddDays(-7), null, null, default));
+        Assert.Null(await store.MessageAsync(fixture.Tenant, "chat-handover", original.Id, null, default));
+        Assert.Null(await store.CurrentMessageAsync(fixture.Tenant, "chat-handover", original.Id, null, default));
+        Assert.Empty((await store.ScanAsync(fixture.Tenant, "chat-handover", null, null, default)).Items);
+
+        await store.ApplyAsync(fixture.Tenant, "chat-handover",
+            original with { ModifiedAt = original.ModifiedAt.AddSeconds(-1), SourceVersion = "older" }, default);
+        Assert.Null(await store.CurrentMessageAsync(fixture.Tenant, "chat-handover", original.Id, null, default));
+        await store.ApplyAsync(fixture.Tenant, "chat-handover", original, default);
+        var refilled = (await store.GetAsync(fixture.Tenant, "chat-handover", default))!.Value;
+        Assert.True(refilled.Revision > cleanup.TargetRevision);
+        Assert.Equal(cleanup.TargetRevision, refilled.CacheInvalidationRevision);
+        var trace = new ReadEvidence("page", now);
+        Assert.Equal(original, Assert.Single(await store.MessagesAsync(fixture.Alex, "chat-handover", null,
+            now.AddDays(-7), null, null, default, trace)));
+        Assert.Contains(trace.Steps, step => step.Layer == "cosmos" && step.Count == 1);
+        trace = new("page", now);
+        Assert.Single(await store.MessagesAsync(fixture.Alex, "chat-handover", null, now.AddDays(-7), null, null, default, trace));
+        Assert.Contains(trace.Steps, step => step.Layer == "redis" && step.Outcome == "hit");
+        var delta = await store.ChangesAsync(fixture.Alex, "chat-handover", refilled.CacheResetRevision, default);
+        Assert.False(delta.ResetRequired);
+        Assert.Equal(original, Assert.Single(delta.Messages!));
+
+        var view = await store.ReadViewAsync(fixture.Tenant, "chat-handover", null, default);
+        Assert.True(await store.SaveReadViewAsync(fixture.Tenant, "chat-handover", null, view,
+            new(1, true, null, now, CacheGeneration: refilled.CacheGeneration), default));
+        await store.SetCoverageAsync(new(fixture.Tenant, "chat-handover", true, now, null, null,
+            now.AddMinutes(5), refilled.RepairGeneration), default);
+        var snapshot = await store.InspectCacheAsync(fixture.Alex, "chat-handover", default);
+        Assert.True(snapshot.ReadViewComplete);
+        Assert.True(snapshot.CoverageComplete);
+        Assert.False(snapshot.Cleanup!.Complete);
+
+        Assert.True((await store.CleanCacheAsync(fixture.Alex, "chat-handover", command, default)).Complete);
+        var completed = (await store.GetAsync(fixture.Tenant, "chat-handover", default))!.Value;
+        Assert.Equal(refilled.Revision, completed.Revision);
+        Assert.Equal(refilled.CacheResetRevision, completed.CacheResetRevision);
+        Assert.Equal(refilled.RepairGeneration, completed.RepairGeneration);
+        Assert.Equal(original, await store.CurrentMessageAsync(fixture.Tenant, "chat-handover", original.Id, null, default));
+        Assert.Single(await store.MessagesAsync(fixture.Alex, "chat-handover", null, now.AddDays(-7), null, null, default));
+    }
+    [Theory]
+    [InlineData("cache-hit")]
+    [InlineData("content-query")]
+    [InlineData("coverage-read")]
+    public async Task CleanupDuringAReadRetriesWithoutReturningInvalidatedContent(string interruption)
+    {
+        var documents = new InterceptingDocuments();
+        var cache = new MemoryRecentMessageCache();
+        var fixture = new LiveFixture(documents: documents, cache: cache);
+        var now = fixture.Clock.GetUtcNow();
+        async Task Clean(CancellationToken ct)
+        {
+            documents.AfterQuery = null; documents.AfterRead = null; cache.AfterRead = null;
+            Assert.True((await fixture.Store.CleanCacheAsync(fixture.Alex, "chat-handover",
+                new(Guid.NewGuid().ToString(), true, false), ct)).Complete);
+            await fixture.Store.ApplyAsync(fixture.Tenant, "chat-handover",
+                new("new-view", "sam", "Sam", "After invalidation", now, now), ct);
+        }
+        if (interruption == "cache-hit")
+        {
+            await fixture.Store.MessagesAsync(fixture.Alex, "chat-handover", null, now.AddDays(-7), null, null, default);
+            cache.AfterRead = Clean;
+        }
+        else if (interruption == "content-query")
+            documents.AfterQuery = async (filter, ct) => { if (filter.Kind == "message") await Clean(ct); };
+        else documents.AfterRead = async (id, ct) => { if (id == "coverage") await Clean(ct); };
+        var messaging = new Messaging(fixture.Store, new GraphResultStub(fixture.Clock), new MemoryBudget(fixture.Clock),
+            new CommandTokens(new EphemeralDataProtectionProvider(), fixture.Clock), fixture.Clock);
+        var page = await messaging.ReadAsync(fixture.Alex, "chat-handover", null, null, 0, default);
+        Assert.False(page.Pending);
+        Assert.Equal("new-view", Assert.Single(page.Messages).Id);
+    }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LegacyCleanupGenerationsPreserveCompletedViewsAndInvalidateUnfinishedOnes(bool unfinished)
+    {
+        var fixture = new LiveFixture();
+        var metadata = (await fixture.Store.GetAsync(fixture.Tenant, "chat-handover", default))!;
+        var original = (await fixture.Store.CurrentMessageAsync(fixture.Tenant, "chat-handover", "message-00", null, default))!;
+        Assert.True(await fixture.Store.SaveAsync(metadata with { Value = metadata.Value with
+        {
+            CacheGeneration = 3, Revision = metadata.Value.Revision + 1,
+            CacheResetRevision = metadata.Value.Revision + 1,
+            ActiveCacheCleanup = unfinished ? Guid.NewGuid().ToString() : null
+        } }, default));
+        var observed = await fixture.Store.CurrentMessageAsync(fixture.Tenant, "chat-handover", "message-00", null, default);
+        Assert.Equal(unfinished ? null : original, observed);
+        Assert.Equal(unfinished ? 0 : 21, (await fixture.Store.MessagesAsync(fixture.Alex, "chat-handover", null,
+            fixture.Clock.GetUtcNow().AddDays(-7), null, null, default)).Count);
+        if (unfinished)
+        {
+            await fixture.Store.ApplyAsync(fixture.Tenant, "chat-handover", original, default);
+            Assert.Equal(original, await fixture.Store.CurrentMessageAsync(fixture.Tenant, "chat-handover", original.Id, null, default));
+        }
+    }
     [Theory]
     [InlineData("empty-delta")]
     [InlineData("change-query")]
@@ -233,8 +353,12 @@ public sealed class CacheDiagnosticsTests
         private readonly MemoryPartitionDocuments inner = new();
         public Func<DocumentFilter, CancellationToken, Task>? AfterQuery { get; set; }
         public Func<string, CancellationToken, Task>? AfterRead { get; set; }
-        public Task<Versioned<PartitionDocument>?> ReadCurrentAsync(string pk, string id, CancellationToken ct) =>
-            inner.ReadCurrentAsync(pk, id, ct);
+        public async Task<Versioned<PartitionDocument>?> ReadCurrentAsync(string pk, string id, CancellationToken ct)
+        {
+            var result = await inner.ReadCurrentAsync(pk, id, ct);
+            if (AfterRead is { } action) await action(id, ct);
+            return result;
+        }
         public async Task<Versioned<PartitionDocument>?> ReadAsync(string pk, string id, CancellationToken ct)
         {
             var result = await inner.ReadAsync(pk, id, ct);

@@ -112,10 +112,21 @@ explicitly reviewed recovery. Existing broader repair remains in place.
 ### Cache and change feed
 
 Cache keys include the committed projection revision. A newer revision cannot
-read an older key as current; old entries expire normally. No synchronous cache
-invalidation or extra read-barrier service is needed. Change feed dispatches
+read an older key as current; old entries expire normally. Ordinary projection
+writes need no synchronous cache invalidation or extra read-barrier service. Change feed dispatches
 committed outbox work, delivery publishes body-free revision hints, and clients
 fetch authorized deltas/snapshots. Hydration enters this same path after merge.
+
+Explicit diagnostic Cosmos cleanup advances the cache generation and atomically
+persists its target revision as a message-visibility cutoff. All message reads
+ignore rows at or below that cutoff while normal Teams hydration and repair can
+refill the view. Source-confirmed unchanged rows are promoted to a new projection
+revision; tombstones and newer source versions still win. Physical deletion stays
+bounded, conditional and resumable, targeting only pre-cleanup revisions.
+`ActiveCacheCleanup` tracks physical work, not read availability. Finishing that
+work neither resets readers again nor supersedes current-generation repair.
+Legacy records have no cutoff until explicit invalidation; an unfinished legacy
+cleanup's original reset revision supplies its existing boundary.
 
 ## Release, support and verification
 

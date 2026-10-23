@@ -92,8 +92,6 @@ public sealed class ReadRefreshHandler(string tenant, LiveOptions options, ILive
             logger.LogInformation("Discarded a superseded cache-generation refresh; no hydration completion is claimed.");
             return;
         }
-        if (metadata.Value.ActiveCacheCleanup is not null)
-            throw new AppError(409, "cache_cleanup_in_progress", "Hydration is deferred until the shared cache cleanup finishes.");
         LiveTelemetry.ReadRefreshAge.Record(Math.Max(0, (now - request.RequestedAt).TotalMilliseconds));
         var previous = await control.ReadRefreshAsync(request.Key, ct);
         if (previous?.Value.CompletedThrough >= request.RequestedAt)

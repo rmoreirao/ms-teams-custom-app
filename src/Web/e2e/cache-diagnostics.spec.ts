@@ -2,14 +2,15 @@ import { test, expect } from "./live-fixture";
 import type { CacheCleanup, CacheSnapshot } from "../src/api";
 
 for (const scenario of [
-  { name: "desktop both stores", width: 1280, height: 900, dark: false, cosmos: true, redis: true, capture: true },
-  { name: "mobile both stores", width: 390, height: 844, dark: true, cosmos: true, redis: true, capture: true },
-  { name: "Redis only", width: 1280, height: 900, dark: false, cosmos: false, redis: true, capture: false },
-  { name: "Cosmos only", width: 1280, height: 900, dark: false, cosmos: true, redis: false, capture: false },
+  { name: "desktop both stores", width: 1280, height: 900, dark: false, cosmos: true, redis: true, capture: true, incomplete: false },
+  { name: "mobile both stores", width: 390, height: 844, dark: true, cosmos: true, redis: true, capture: true, incomplete: false },
+  { name: "Redis only", width: 1280, height: 900, dark: false, cosmos: false, redis: true, capture: false, incomplete: false },
+  { name: "Cosmos only", width: 1280, height: 900, dark: false, cosmos: true, redis: false, capture: false, incomplete: false },
+  { name: "unfinished Cosmos cleanup", width: 1280, height: 900, dark: false, cosmos: true, redis: true, capture: false, incomplete: true },
 ]) {
   test(`cache inspection, deliberate cleanup, and fresh-read validation: ${scenario.name}`, async ({ page, live }, testInfo) => {
     let operation: CacheCleanup | null = null;
-    let cosmosMessages = 30;
+    let cosmosMessages = scenario.incomplete ? 245 : 30;
     let pages = 1;
     let generation = 0;
     let revision = 1;
@@ -28,13 +29,13 @@ for (const scenario of [
       const command = route.request().postDataJSON();
       expect(route.request().headers()["x-csrf-token"]).toBe(live.state.session!.csrf);
       commands.push(command);
-      if (command.cosmos) { cosmosMessages = 0; generation++; revision += 2; cold = true; pending = true; warm = false; }
+      if (command.cosmos) { cosmosMessages = scenario.incomplete ? 45 : 0; generation++; revision++; cold = true; pending = true; warm = false; }
       if (command.redis) { pages = 0; warm = false; }
       operation = { id: command.operationId, cosmos: command.cosmos, redis: command.redis, targetRevision: 1,
-        startedAt: new Date().toISOString(), cosmosState: command.cosmos ? "completed" : "not-selected",
-        redisState: command.redis ? "completed" : "not-selected", removedMessages: command.cosmos ? 30 : 0,
-        removedPages: command.redis ? 1 : 0, cosmosError: null, redisError: null, complete: true };
-      await route.fulfill({ json: operation });
+        startedAt: new Date().toISOString(),         cosmosState: command.cosmos ? scenario.incomplete ? "in-progress" : "completed" : "not-selected",
+        redisState: command.redis ? "completed" : "not-selected", removedMessages: command.cosmos ? scenario.incomplete ? 200 : 30 : 0,
+        removedPages: command.redis ? 1 : 0, cosmosError: null, redisError: null, complete: !scenario.incomplete };
+      await route.fulfill({ status: operation.complete ? 200 : 202, json: operation });
     });
     await page.route("**/api/conversations/chat-handover/messages**", async route => {
       if (route.request().method() !== "GET") return route.fallback();
@@ -48,7 +49,7 @@ for (const scenario of [
         pending = false;
         return route.fulfill({ status: 202, json: { state: "pending", retryAfterMs: 1000, access, diagnostics } });
       }
-      cold = false; cosmosMessages = 30; warm = true; pages = 1;
+      cold = false; cosmosMessages = scenario.incomplete ? 75 : 30; warm = true; pages = 1;
       return route.fulfill({ json: { messages: live.state.messages.get("chat-handover")!.slice(-20),
         cursor: null, revision, window: "test-command-window", parentMessage: null, access, diagnostics } });
     });
@@ -93,7 +94,7 @@ for (const scenario of [
     await dialog.getByRole("button", { name: "Confirm cleanup" }).click();
     await expect(dialog.getByRole("button", { name: "Reload and validate" })).toBeEnabled();
     expect(commands).toEqual([{ operationId: expect.any(String), cosmos: scenario.cosmos, redis: scenario.redis }]);
-    expect(cosmosMessages).toBe(scenario.cosmos ? 0 : 30);
+    expect(cosmosMessages).toBe(scenario.cosmos ? scenario.incomplete ? 45 : 0 : 30);
     expect(pages).toBe(scenario.redis ? 0 : 1);
     await dialog.getByRole("button", { name: "Reload and validate" }).click();
     await expect(dialog.getByRole("button", { name: "Reload and validate" })).toBeEnabled({ timeout: 15000 });
@@ -105,8 +106,15 @@ for (const scenario of [
     await dialog.getByRole("button", { name: "Reload and validate" }).click();
     await expect(dialog.getByRole("button", { name: "Reload and validate" })).toBeEnabled();
     await expect(history.getByText("hit", { exact: true }).first()).toBeVisible();
+    if (scenario.incomplete) {
+      await expect(dialog.getByRole("button", { name: "Resume original cleanup" })).toBeEnabled();
+      expect(snapshot().cleanup?.complete).toBe(false);
+      expect(commands).toHaveLength(1);
+    }
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
     await expect(composer).toHaveValue("Keep my diagnostic draft");
+    await expect(page.getByRole("heading", { name: "Synchronizing recent context", exact: true })).toHaveCount(0);
+    await expect(page.getByText("Conversation context 30.", { exact: true })).toBeVisible();
     expect(live.state.sendRequests).toHaveLength(0);
   });
 }

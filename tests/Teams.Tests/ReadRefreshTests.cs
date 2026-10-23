@@ -106,6 +106,67 @@ public sealed class ReadRefreshTests
         Assert.False((await fixture.Store.ReadViewAsync(fixture.Tenant, "chat-empty", null, default))!.Value.Complete);
         Assert.NotNull(await fixture.Store.CurrentMessageAsync(fixture.Tenant, "chat-empty", "late-refill", null, default));
     }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ColdReadFetchesTeamsWithoutResumingUnfinishedOrExpiredCleanup(bool expired)
+    {
+        var now = fixture.Clock.GetUtcNow();
+        for (var index = 0; index < 200; index++)
+            await fixture.Store.ApplyAsync(fixture.Tenant, "chat-handover",
+                new($"extra-{index}", "sam", "Sam", "Old cached content", now, now), default);
+        var command = new CacheCleanupCommand(Guid.NewGuid().ToString(), true, false);
+        var cleanup = await fixture.Store.CleanCacheAsync(fixture.Alex, "chat-handover", command, default);
+        Assert.False(cleanup.Complete);
+        Assert.Equal(200, cleanup.RemovedMessages);
+        if (expired)
+        {
+            fixture.Clock.Advance(TimeSpan.FromSeconds(CacheCleanup.RetentionSeconds + 1));
+            await fixture.RenewAsync();
+        }
+        Assert.Empty(await fixture.Store.MessagesAsync(fixture.Alex, "chat-handover", null,
+            fixture.Clock.GetUtcNow().AddDays(-7), null, null, default));
+        var graph = new Graph(_ => Task.FromResult(Page([Source("teams-refill")])));
+        var handler = Handler(graph);
+        var queue = new Queue((request, _, ct) => handler.HandleAsync(request, ct));
+        var page = await Messaging(queue).ReadAsync(fixture.Alex, "chat-handover", null, null, 0, default);
+        Assert.False(page.Pending);
+        Assert.Equal("teams-refill", Assert.Single(page.Messages).Id);
+        Assert.Single(graph.Paths);
+        Assert.True(Assert.Single(queue.Requests).Required);
+        var state = (await fixture.Store.GetAsync(fixture.Tenant, "chat-handover", default))!.Value;
+        Assert.Equal(command.OperationId, state.ActiveCacheCleanup);
+        Assert.True((await fixture.Store.InspectCacheAsync(fixture.Alex, "chat-handover", default)).ReadViewComplete);
+        Assert.Equal("teams-refill", Assert.Single((await Messaging(queue).ReadAsync(fixture.Alex,
+            "chat-handover", null, null, 0, default)).Messages).Id);
+        Assert.Single(queue.Requests);
+        var delta = await fixture.Store.ChangesAsync(fixture.Alex, "chat-handover", state.CacheResetRevision, default);
+        Assert.False(delta.ResetRequired);
+        Assert.Equal("teams-refill", Assert.Single(delta.Messages!).Id);
+    }
+    [Fact]
+    public async Task BackgroundRepairCanFetchAndVerifyRefillWhilePhysicalCleanupIsUnfinished()
+    {
+        var now = fixture.Clock.GetUtcNow();
+        for (var index = 0; index < 200; index++)
+            await fixture.Store.ApplyAsync(fixture.Tenant, "chat-handover",
+                new($"extra-{index}", "sam", "Sam", "Old cached content", now, now), default);
+        Assert.False((await fixture.Store.CleanCacheAsync(fixture.Alex, "chat-handover",
+            new(Guid.NewGuid().ToString(), true, false), default)).Complete);
+        var resource = Options.Resources.Single(resource => resource.Id == "chat-handover");
+        await Control.EnqueueRepairAsync(resource, null, null, default);
+        var pending = (await Control.RepairAsync(resource.Id, null, default))!.Value;
+        var graph = new Graph(path => Task.FromResult(path.Contains('?', StringComparison.Ordinal)
+            ? Page([Source("repair-refill")]) : Source("repair-refill")));
+        var hydrator = new ResourceHydrator(graph, fixture.Store, Control, fixture.Clock);
+        await hydrator.StepAsync(fixture.Tenant, resource, pending, default);
+        Assert.Equal("repair-refill", Assert.Single(await fixture.Store.MessagesAsync(fixture.Alex, resource.Id,
+            null, now.AddDays(-7), null, null, default)).Id);
+        await hydrator.StepAsync(fixture.Tenant, resource, pending, default);
+        Assert.False((await Control.RepairAsync(resource.Id, null, default))!.Value.Pending);
+        Assert.Equal(2, graph.Paths.Count);
+        Assert.NotNull((await fixture.Store.GetAsync(fixture.Tenant, resource.Id, default))!.Value.ActiveCacheCleanup);
+    }
     [Fact]
     public async Task KnownEmptyIsSuccessButAcceptedColdWorkIsTypedPendingNotFabricatedEmptiness()
     {

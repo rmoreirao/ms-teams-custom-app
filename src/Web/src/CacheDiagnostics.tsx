@@ -204,7 +204,7 @@ export function CacheDiagnostics({ conversationId, title, csrf, online, retained
             Redis pages may belong to older, ineligible revisions.</p>
         </> : <p>No storage snapshot yet. Inspection does not warm caches or request Teams hydration.</p>}
         <div className="cache-actions"><button type="button" disabled={!!busy || !online} onClick={() => void inspect()}>Inspect storage</button>
-          <button type="button" disabled={!!busy || !online || unresolved} onClick={() => void reload()}>Reload and validate</button></div>
+          <button type="button" disabled={!!busy || !online} onClick={() => void reload()}>Reload and validate</button></div>
       </section>
       <section aria-labelledby="cache-cleanup-title"><h3 id="cache-cleanup-title">Clean shared app copies</h3>
         <p>Cleanup affects everyone using this chat in the app. Chat access, drafts, and original send-status records are preserved.

@@ -1,12 +1,112 @@
 # Dev functional validation report
 
-## Direct Graph concurrency and reactive retries (2026-10-22)
+## Nonblocking cache cleanup release (2026-10-23)
+
+**Deployed to all five existing Development roles; normal cache-read acceptance
+passed, including reads through the existing unfinished cleanup.** Strict source
+health and a signed-in new cleanup cycle remain separate acceptance boundaries.
+ACR `dt16` built the uncommitted workspace based on
+`58bf22708e216a8517ba69869223e9d1b529233b`, not that unchanged commit alone.
+The recorded workspace SHA-256 is
+`d65aca20d8e107147f448f6277e2ed77ee49a2a16adbf72a4b30ac0ddabbbada`;
+the immutable image digest is
+`sha256:e0964477a7ffd7e961deb4bdd9a7e88e4bc9fadcc7a7be203c390ee047e4fbc2`.
+The workspace matched the recorded build source during the build and at
+post-deployment acceptance, before this evidence-only documentation update.
+
+The image separates logical cache invalidation from bounded physical deletion.
+Unfinished cleanup no longer locks reads, Teams refill, repair or coverage writes.
+Refill receives a current projection revision, and completing deletion does not
+invalidate it again. Existing unfinished cleanup is recognized without a bulk
+data migration.
+
+| Evidence | Result / boundary |
+| --- | --- |
+| Guarded image-only release | Exact healthy Api, Receiver, Projector, Delivery and Control revisions verified; configuration, identities, grants, networking, scale, admission and approved scope preserved |
+| Public application | Readiness, anonymous API denial and canonical Entra redirect passed; Cache Diagnostics denies anonymous access with `401` |
+| Served frontend | Public JavaScript and stylesheet are byte-identical to the verified production build |
+| Installed-Edge public check | Real deployed Microsoft sign-in screen rendered without page errors; no credentials entered or session fabricated |
+| Local regressions | 334 backend passes and one explicit real-Cosmos opt-in skip; all 119 frontend tests, production build/type-check and five compiled installed-Edge Cache Diagnostics scenarios passed, including unfinished Cosmos cleanup |
+| Offline release safety | Deployment contract, Development deployment and five-role service release suites passed |
+| Real normal read service | 24 content-bearing reads across three admitted actors passed through the unchanged deployed `Messaging` service; three excluded-pair reads were denied |
+| Real cache-aside evidence | Five Redis misses fell back to five Cosmos content queries and five successful Redis writes; nineteen reads hit Redis |
+| Existing unfinished cleanup | Four reads returned 20 messages each while the original cleanup and invalidation cutoff were present and source coverage was false. The first observed Redis miss queried Cosmos and refilled Redis; the following read hit Redis. No cleanup was resumed or started |
+| Read-only Control inspections | Both samples verified expected current memberships and all five exact remote rich subscription bindings; the persistent manual job definition was unchanged |
+| Strict Api `ProjectionCheck` | Failed its completed-source-reconciliation precondition; this is not a passing projected-read acceptance result |
+| Bounded recovery observation | Four of five resources remained coverage-ready in both samples. The same direct chat retained a reauthorization reconciliation gap and `graph_429` repair evidence; its repair advanced but was not complete. The follow-up did not rerun projection acceptance while coverage remained incomplete |
+| Signed-in cleanup/refill acceptance | Not performed: scoped destructive-cleanup approval and normal authenticated user participation were unavailable |
+| Final workload recheck | All five original `dt16` revisions remained exact, active and healthy after the read-service probe |
+
+The read-service check used a diagnostic-only ACR `dt18` image based on the exact
+immutable `dt16` application image. Only the small probe entry assembly and its
+runtime/dependency manifests were added; the deployed Host, Core and Infrastructure
+assemblies were copied unchanged, not rebuilt. Their loaded hashes and body-free
+read evidence were recorded. This image ran once under the already attached Api
+identity on the existing manual job; it was never deployed to the five workloads.
+The persistent job definition was verified unchanged. A preceding diagnostic
+`dt17` build failed because it selected the repository Dockerfile instead of the
+probe Dockerfile; the corrected-context build passed. The failed build is not
+application release evidence.
+
+The probe waited for normal page expiry rather than evicting any cache. It also
+observed best-effort background refresh requests for the incomplete source view;
+it does not claim that an initially empty Cosmos view was hydrated from Teams
+during this probe. The existing unfinished cleanup provided a real, non-destructive
+acceptance case, so no new live cache deletion was necessary to verify the reported
+read blocker.
+
+The final frontend run used the direct Vitest runner with one worker and unchanged
+test timeouts/assertions, after initial parallel invocations timed out. The final
+browser rerun used a private runner override with an explicit installed Vite path
+and a longer preview-startup allowance; test assertions were unchanged. Earlier
+failed invocations are not represented as passing runs.
+
+Diagnostics used one-off execution-template overrides on the existing manual
+job with already attached role identities and automatic job retries disabled.
+The failed projection attempt and both inspection samples are retained privately;
+no manual repair, subscription reauthorization, cache cleanup, Teams message
+write, permission/configuration change, Git commit, Git push or GitHub Actions
+deployment dispatch was performed. Generated execution payloads were removed
+after recording body-free evidence. Exact revisions, prior-image recovery
+identities, source manifest, build/release logs and validation proofs remain
+private outside the repository.
+
+Normal read-service acceptance establishes that the existing unfinished cleanup
+does not block authorized content or Redis/Cosmos fallback. It does not close
+the separate strict source-health or signed-in new cleanup/full source-refill
+acceptance gates, and it is Api-identity evidence rather than browser authentication.
+
+## Cache Diagnostics release (2026-10-23)
+
+**Deployed to the five existing Development roles; no live cache cleanup was
+performed.** Source commit `58bf22708e216a8517ba69869223e9d1b529233b` was built
+as ACR `dt15`, digest
+`sha256:a0aec6f6ab7d85e21b7f655a3364daae11c6365b82cea5adea667f802f54b768`.
+The image-only release verified exact healthy Api, Receiver, Projector, Delivery
+and Control revisions while preserving configuration, identities, grants,
+networking, scale, admission and approved user/resource scope.
+
+Public readiness, anonymous API denial and the canonical Entra redirect passed.
+The publicly served script and stylesheet are byte-identical to the verified
+production build, including the Cache Diagnostics popup, cleanup selections,
+observation history and explicit reload/validation controls. Anonymous access
+to the cache diagnostics endpoint returns `401`.
+
+Release-source CI, the registry build and offline deployment safety contracts
+passed. Signed-in inspection, actual Redis Lua execution and destructive
+Cosmos/Redis cleanup acceptance remain separate, unperformed live checks.
+No cache cleanup requests, Teams message writes, permission changes, Git commits,
+Git pushes or GitHub Actions deployment dispatch occurred in this release.
+Exact revisions, prior-image recovery identities, build/release logs and the
+body-free verification proof remain private outside the repository.
+
+## Prior direct Graph concurrency and reactive retries (2026-10-22)
 
 **Deployed and validated within the agreed release scope. Real Graph send
 capacity was not measured.**
 ACR `dt14`, digest
 `sha256:6c1918ec94775aee5e0d40b7c06f70d8c6394e743923bd2d4e898918439fc388`,
-runs on all five existing Api/Receiver/Projector/Delivery/Control workloads.
+then ran on all five existing Api/Receiver/Projector/Delivery/Control workloads.
 The release verified each exact healthy revision and preserved configuration,
 identities, grants, networking, scale, admission and approved user/resource scope.
 This was an image-only release, not a new platform or identity deployment.

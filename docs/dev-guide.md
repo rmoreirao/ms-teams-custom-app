@@ -94,18 +94,25 @@ reported explicitly; a sampled zero is not proof that storage will remain empty.
 
 Neither cleanup option is selected by default. Select Cosmos, Redis, or both,
 then confirm **Clean selected caches**. Redis-only cleanup leaves Cosmos content
-available. Cosmos-only cleanup physically deletes message documents and
-invalidates old cached page generations, but leaves Redis keys to expire unless
-Redis is also selected. Conversation identity, permissions, source mappings,
+available. Cosmos cleanup immediately invalidates the old message projection and
+Redis page generation, then physically deletes old message documents in bounded
+batches. Redis keys remain until expiry unless Redis is also selected.
+Conversation identity, permissions, source mappings,
 tombstones, delivery records, writer epoch, original send/idempotency status and
 composer drafts are preserved. Both selections affect other app users of this
 chat; neither selection deletes or changes anything in Teams.
 
-Cleanup is bounded to four batches of at most 50 messages per request. **Resume
-original cleanup** continues larger projections or failed store operations;
+Physical deletion is bounded to four batches of at most 50 messages per request.
+**Resume original cleanup** continues larger projections or failed store operations;
 **Check original operation** recovers progress after a lost response without
 requesting another deletion. The original target revision is retained, so later
 synchronization writes are treated as refill rather than deleted again.
+Reads do not wait for physical deletion or require resuming it. They ignore
+message revisions at or below the invalidation cutoff, then follow the normal
+Redis -> Cosmos -> Teams hydration/refill path. Source-confirmed unchanged
+messages also receive a new projection revision when refilled. Cleanup completion
+does not invalidate that refill or reset the browser again. Sampled Cosmos counts
+can include invalidated copies still awaiting physical deletion.
 Per-store partial/unknown outcomes are not full success. Content-free operation
 records and Redis eviction receipts are retained for fourteen days.
 An unfinished operation past that retry window cannot be resumed. Inspect the
@@ -120,9 +127,24 @@ the explicit read to observe a warm Redis page if its revision/TTL still permits
 it. Observation history holds only the latest twelve count/status observations
 in page memory; it does not log message bodies, credentials, or raw cache keys.
 
-This source feature is not evidence of deployment or real-service acceptance.
-Rebuild and release the coordinated API/worker image under the existing approval
-process. New chat-scoped `recent:v2:` keys do not read old opaque `recent:v1:`
+The nonblocking cleanup update was deployed to all five Development roles on
+2026-10-23 as ACR `dt16`; see the
+[release evidence and validation limits](dev-validation.md#nonblocking-cache-cleanup-release-2026-10-23).
+No bulk data migration is needed: legacy completed views remain readable, and
+unfinished legacy cleanup derives its cutoff from its original reset revision.
+Do not mix older writers that omit the new cutoff with the updated runtime.
+
+The earlier [Cache Diagnostics release](dev-validation.md#cache-diagnostics-release-2026-10-23)
+is historical `dt15` evidence, not deployment of the nonblocking behavior.
+Live normal-read acceptance passed using the unchanged deployed assemblies and
+the existing Api identity: 24 reads, including four through an existing unfinished
+cleanup, with real Redis misses, Cosmos queries/cache writes and warm Redis hits.
+Those four reads returned content despite incomplete source coverage.
+Signed-in browser cleanup acceptance was not performed. The stricter source-health
+check remains separate and incomplete: a bounded follow-up still observed one
+direct chat awaiting reconciliation with Graph `429` responses. Future updates
+must retain the coordinated API/worker approval process.
+New chat-scoped `recent:v2:` keys do not read old opaque `recent:v1:`
 pages; legacy pages expire within their existing maximum 15-second TTL. No Redis
 flush, broad key scan, cloud permission change or source-message write is needed.
 See the [cache validation procedure](testing.md#cache-diagnostics-validation).

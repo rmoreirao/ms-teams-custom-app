@@ -9,14 +9,17 @@ public sealed class MemoryRecentMessageCache : IRecentMessageCache
     private readonly Dictionary<(string Scope, string Operation), int> evictions = [];
     public bool FailEvictions { get; set; }
     public bool Unavailable { get; set; }
+    public Func<CancellationToken, Task>? AfterRead { get; set; }
     public int Reads { get; private set; }
     public int Writes { get; private set; }
-    public Task<RecentCacheRead> ReadAsync(string scope, string page, CancellationToken ct)
+    public async Task<RecentCacheRead> ReadAsync(string scope, string page, CancellationToken ct)
     {
         Reads++;
         var generation = generations.GetValueOrDefault(scope, "0");
         var rows = Unavailable ? null : pages.GetValueOrDefault((scope, generation, page));
-        return Task.FromResult(new RecentCacheRead(rows, Unavailable ? "unavailable" : rows is null ? "miss" : "hit", generation));
+        var result = new RecentCacheRead(rows, Unavailable ? "unavailable" : rows is null ? "miss" : "hit", generation);
+        if (AfterRead is { } action) await action(ct);
+        return result;
     }
     public Task<string> WriteAsync(string scope, string page, string generation, IReadOnlyList<Message> messages, CancellationToken ct)
     {
