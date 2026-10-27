@@ -81,6 +81,11 @@ try {
         throw 'Infrastructure evaluation did not preserve Sweden location or leaked incomplete fixture identities.'
     }
     if ($testState.accountCalls.Count -ne $calls + 3) { throw 'Infrastructure evaluation performed unexpected Azure operations.' }
+    & (Join-Path $root 'scripts\New-DevPlatform.ps1') -SubscriptionId $subscription -InventoryPath $inventory `
+        -ExistingServiceBusName 'existing-standard'
+    if ($testState.platformParameters.parameters.existingServiceBusName.value -cne 'existing-standard') {
+        throw 'Infrastructure evaluation did not preserve the selected existing Standard namespace.'
+    }
     $calls = $testState.accountCalls.Count
     $testState.networkFeature = 'NotRegistered'
     try {

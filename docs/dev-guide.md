@@ -275,6 +275,96 @@ Use incremental, reviewed provisioning; removal of old template definitions is n
 
 The private topology has significant fixed costs (Front Door Premium, Service Bus Premium, Redis, PubSub, private endpoints and other services). Check current Sweden Central prices, quotas and actual what-if results; historical capacity attempts or compiled templates do not establish deployability or cost approval.
 
+## Development Service Bus Standard cutover
+
+The Development PoC can replace Service Bus Premium with a **new Standard
+namespace** using public TLS and the existing Entra managed identities. This is
+not an in-place SKU downgrade. All other services, private endpoints, Front Door
+origins and the five isolated roles remain unchanged. Public access is an
+intentional Development exception, not a production recommendation. Local/SAS
+authentication stays disabled; no new NAT gateway or assumed stable-egress IP
+allowlist is introduced.
+
+Use `infra\service-dev-bus.bicep` with a private parameters file containing the new
+`namespaceName`, existing five `principals` and `provisionAccess: true`. It creates
+only the Standard namespace, `graph-notifications`, `graph-delivery`,
+`graph-read-refresh` and their queue-scoped grants. It does not recreate the
+historical `notifications` queue. Review the scoped preview before applying:
+
+```powershell
+$subscription = '<approved-subscription-guid>'
+$group = '<existing-development-group>'
+$parameters = '<private>\bus.parameters.json'
+az deployment group what-if --subscription $subscription --resource-group $group `
+    --template-file infra\service-dev-bus.bicep --parameters "@$parameters"
+# After provisioning/public-endpoint/access approval:
+az deployment group create --subscription $subscription --resource-group $group `
+    --name service-dev-standard-bus --template-file infra\service-dev-bus.bicep `
+    --parameters "@$parameters" --output none
+```
+
+For the simple PoC interruption, save current app/job definitions privately,
+pause traffic and producers, and confirm the old namespace has no unaccounted
+active, deferred, locked, scheduled, transfer or dead-letter work. Do not purge
+unexpected messages. Switch only `Azure__ServiceBus` on the five existing apps
+and the manual diagnostic job to `<new-name>.servicebus.windows.net`. Preserve
+their immutable images, identities, other environment settings, scale, callback
+bindings, subscription journals and Cosmos checkpoints. Verify exact healthy
+revisions, all queue contracts and actual role-specific access before retiring
+the old namespace. No test Teams message is sent by default.
+
+For Single-mode Container Apps, use the supported resource `stop`/`start`
+operations rather than changing revision mode or replica limits:
+
+```powershell
+# $appId comes from the reviewed current app inventory.
+az rest --subscription $subscription --method post `
+    --url "https://management.azure.com${appId}/stop?api-version=2025-07-01" `
+    --output none
+# Wait for runningStatus=Stopped before patching the saved template.
+# After all five endpoints and the idle manual job are updated:
+az rest --subscription $subscription --method post `
+    --url "https://management.azure.com${appId}/start?api-version=2025-07-01" `
+    --output none
+```
+
+Stop Api, Receiver and Control producers first, let Projector/Delivery drain,
+then stop those consumers too. With all workloads stopped and no job execution
+running, wait beyond the one-minute queue lock duration and recheck every queue's
+total and detailed counts. Resume consumers before producers. Compare complete
+preserved configurations and exact healthy revisions, not just a successful
+update response. Keep recovery snapshots and migration evidence private.
+
+Persist `serviceBusName` in the reviewed private service-targets contract and, if
+configured, the protected `AZURE_SERVICE_TARGETS_JSON` release input. Image-only
+releases require every workload's endpoint to match this contract. Historical
+service-target files need the explicit field added from verified inventory;
+agreement among apps alone is not sufficient. `New-ServiceDevPlan.ps1` records the
+inventoried namespace; when two namespaces exist, select it explicitly with
+`-ServiceBusName`.
+
+For future platform previews, pass `-ExistingServiceBusName '<new-name>'` to
+`New-DevPlatform.ps1`, `existingServiceBusName` to the platform parameters, or
+`TEAMS_SERVICE_BUS_NAME` when using `infra\parameters\dev.bicepparam`. Selecting
+the existing namespace skips provisioning the default Premium namespace and
+its private endpoint. Omitting the selection retains the historical Premium
+bootstrap path. Do not broadly redeploy the old compact workload template over
+the five-role platform as part of this change.
+
+Standard limits each **encoded message and batch to 256 KB**, including broker
+properties and the base64-encrypted notification envelope. Batches are
+SDK-negotiated; a single oversized notification fails durable acceptance with
+`notification_too_large` rather than being truncated or acknowledged. Graph may
+retry it; an oversize event can still require authoritative repair. This PoC
+accepts the lower transport ceiling and variable shared-tier latency; it does not
+add payload offloading. Watch oversize errors, throttling, backlog and DLQs.
+
+Before retirement, rollback restores the saved endpoints/revisions only after
+accounting for any work accepted by Standard. Deleting Premium removes that
+rollback option. Obtain separate approval to remove the exact old namespace
+and its obsolete Service Bus private endpoint; leave shared private DNS zones
+and other services untouched. **Premium continues charging until deleted.**
+
 ## Validation, retention and cleanup
 
 Use `Test-DeployedApp.ps1 -PublicOrigin ... -TenantId ... -WebClientId ... -ExpectedMode Live -ExpectAdmission` for an admitted API, omitting `-ExpectAdmission` only for a deliberately fenced rollout. It checks the shell/assets, Live API readiness, anonymous denial, absence of local sign-in and canonical Entra redirect. No message is sent.

@@ -1,0 +1,201 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mxfile host="Electron" version="32.6.1" type="device" agent="draw.io Desktop">
+  <diagram id="send-operation-status" name="Check the original send; never infer a safe resend">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" background="#FFFFFF" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="page" value="" style="rounded=0;arcSize=8;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=none;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
+          <mxGeometry x="0" y="0" width="1600" height="900" as="geometry" />
+        </mxCell>
+        <mxCell id="header-tag" value="TEAMS / AZURE POC     |     03" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=18;fontColor=#0078D4;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="48" y="22" width="1500" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="title" value="Check the original send; never infer a safe resend" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=38;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="48" y="61" width="1500" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="Operation status records evidence. The Live resolver does not automatically resolve an unknown outcome." style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=22;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="48" y="118" width="1500" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="header-rule" value="" style="edgeStyle=none;rounded=0;html=0;strokeColor=#C9D5E2;strokeWidth=2.5;dashed=0;dashPattern=8 5;endArrow=none;endFill=1;endSize=9;startArrow=none;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="48" y="167" as="sourcePoint" />
+            <mxPoint x="1552" y="167" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pending" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#F1F7FD;strokeColor=#0078D4;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
+          <mxGeometry x="70" y="280" width="290" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="pending-title" value="Pending" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=28;fontColor=#0078D4;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="pending">
+          <mxGeometry x="18" y="12" width="254" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="pending-detail" value="Recorded; not yet&#10;committed to dispatch" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=21;fontColor=#172B4D;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="pending">
+          <mxGeometry x="18" y="58" width="254" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="dispatching" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#F1F7FD;strokeColor=#0078D4;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
+          <mxGeometry x="520" y="280" width="300" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="dispatching-title" value="Dispatching" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=28;fontColor=#0078D4;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="dispatching">
+          <mxGeometry x="18" y="12" width="264" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="dispatching-detail" value="Attempt claimed;&#10;Graph may receive it" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=21;fontColor=#172B4D;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="dispatching">
+          <mxGeometry x="18" y="58" width="264" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="confirmed" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#F0F8F7;strokeColor=#0D7C78;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="230" width="392" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="confirmed-title" value="Confirmed" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=28;fontColor=#0D7C78;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="confirmed">
+          <mxGeometry x="18" y="12" width="356" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="confirmed-detail" value="Known Graph creation&#10;and recorded confirmation" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=21;fontColor=#172B4D;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="confirmed">
+          <mxGeometry x="18" y="58" width="356" height="54" as="geometry" />
+        </mxCell>
+        <mxCell id="rejected" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#FFF3F3;strokeColor=#A13D3D;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="410" width="392" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="rejected-title" value="Rejected" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=28;fontColor=#A13D3D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="rejected">
+          <mxGeometry x="18" y="12" width="356" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="rejected-detail" value="Definitive no-send /&#10;rejection evidence" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=21;fontColor=#172B4D;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="rejected">
+          <mxGeometry x="18" y="58" width="356" height="54" as="geometry" />
+        </mxCell>
+        <mxCell id="unknown" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#FFF7EC;strokeColor=#9A5813;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="590" width="392" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="unknown-title" value="Unknown" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=28;fontColor=#9A5813;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="unknown">
+          <mxGeometry x="18" y="12" width="356" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="unknown-detail" value="Commitment not proven.&#10;Do not auto-resend." style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=21;fontColor=#172B4D;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="unknown">
+          <mxGeometry x="18" y="58" width="356" height="54" as="geometry" />
+        </mxCell>
+        <mxCell id="pre-rejected" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#FFF3F3;strokeColor=#A13D3D;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
+          <mxGeometry x="70" y="480" width="290" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="pre-rejected-title" value="Rejected" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=28;fontColor=#A13D3D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="pre-rejected">
+          <mxGeometry x="18" y="12" width="254" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="pre-rejected-detail" value="Denied or expired&#10;before dispatch" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=21;fontColor=#172B4D;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="pre-rejected">
+          <mxGeometry x="18" y="58" width="254" height="54" as="geometry" />
+        </mxCell>
+        <mxCell id="claim" value="" style="edgeStyle=none;rounded=0;html=0;strokeColor=#0078D4;strokeWidth=2.5;dashed=0;dashPattern=8 5;endArrow=block;endFill=1;endSize=9;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="pending" target="dispatching">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="claim-label" value="Claim attempt" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=center;verticalAlign=middle;fontFamily=Arial;fontSize=19;fontColor=#0078D4;fontStyle=0;spacing=0;strokeColor=none;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="367" y="303" width="150" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="retry" value="" style="edgeStyle=none;rounded=0;html=0;strokeColor=#0078D4;strokeWidth=2.5;dashed=0;dashPattern=8 5;endArrow=block;endFill=1;endSize=9;startArrow=none;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="dispatching" target="pending">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="670" y="218" />
+              <mxPoint x="215" y="218" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="retry-label" value="Definite 429 + retry budget remains" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=center;verticalAlign=middle;fontFamily=Arial;fontSize=20;fontColor=#0078D4;fontStyle=0;spacing=0;strokeColor=none;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="265" y="181" width="520" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="confirmed-transition" value="" style="edgeStyle=none;rounded=0;html=0;strokeColor=#0078D4;strokeWidth=2.5;dashed=0;dashPattern=8 5;endArrow=block;endFill=1;endSize=9;startArrow=none;exitX=1;exitY=0.15;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="dispatching" target="confirmed">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1000" y="299.5" />
+              <mxPoint x="1000" y="290" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="confirmed-label" value="Graph 201 + local commit" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=center;verticalAlign=middle;fontFamily=Arial;fontSize=20;fontColor=#0078D4;fontStyle=0;spacing=0;strokeColor=none;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="830" y="244" width="325" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="rejected-transition" value="" style="edgeStyle=none;rounded=0;html=0;strokeColor=#0078D4;strokeWidth=2.5;dashed=0;dashPattern=8 5;endArrow=block;endFill=1;endSize=9;startArrow=none;exitX=1;exitY=0.65;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="dispatching" target="rejected">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="850" y="364.5" />
+              <mxPoint x="850" y="470" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="rejected-label" value="Definite reject / 429 exhausted" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=center;verticalAlign=middle;fontFamily=Arial;fontSize=19;fontColor=#0078D4;fontStyle=0;spacing=0;strokeColor=none;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="866" y="431" width="286" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="pre-dispatch-rejection" value="" style="edgeStyle=none;rounded=0;html=0;strokeColor=#0078D4;strokeWidth=2.5;dashed=0;dashPattern=8 5;endArrow=block;endFill=1;endSize=9;startArrow=none;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="pending" target="pre-rejected">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pre-rejection-label" value="Denied / expired" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=center;verticalAlign=middle;fontFamily=Arial;fontSize=20;fontColor=#0078D4;fontStyle=0;spacing=0;strokeColor=none;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="247" y="430" width="260" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="unknown-transition" value="" style="edgeStyle=none;rounded=0;html=0;strokeColor=#0078D4;strokeWidth=2.5;dashed=0;dashPattern=8 5;endArrow=block;endFill=1;endSize=9;startArrow=none;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="dispatching" target="unknown">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="670" y="650" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="unknown-label" value="Timeout / lost dispatch evidence" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=center;verticalAlign=middle;fontFamily=Arial;fontSize=20;fontColor=#9A5813;fontStyle=0;spacing=0;strokeColor=none;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="700" y="609" width="440" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="same-state" value="Both Rejected boxes denote the same state." style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=19;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="70" y="617" width="520" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="check-inset" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#F6F9FC;strokeColor=none;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
+          <mxGeometry x="48" y="725" width="1504" height="101" as="geometry" />
+        </mxCell>
+        <mxCell id="check-heading" value="USER-TRIGGERED CHECK  /  separate HTTP status request" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=20;fontColor=#0078D4;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="69" y="733" width="800" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="check-button" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#C9D5E2;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
+          <mxGeometry x="70" y="770" width="285" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="check-button-text" value="Check original send" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=center;verticalAlign=middle;fontFamily=Arial;fontSize=22;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="check-button">
+          <mxGeometry x="8" y="4" width="269" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="check-authorize" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#C9D5E2;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
+          <mxGeometry x="390" y="770" width="285" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="check-authorize-text" value="Api authorizes" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=center;verticalAlign=middle;fontFamily=Arial;fontSize=22;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="check-authorize">
+          <mxGeometry x="8" y="4" width="269" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="check-record" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#C9D5E2;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
+          <mxGeometry x="710" y="770" width="285" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="check-record-text" value="Read same operation" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=center;verticalAlign=middle;fontFamily=Arial;fontSize=22;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="check-record">
+          <mxGeometry x="8" y="4" width="269" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="check-api" value="" style="edgeStyle=none;rounded=0;html=0;strokeColor=#0078D4;strokeWidth=2.5;dashed=0;dashPattern=8 5;endArrow=block;endFill=1;endSize=9;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="check-button" target="check-authorize">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="check-store" value="" style="edgeStyle=none;rounded=0;html=0;strokeColor=#0078D4;strokeWidth=2.5;dashed=0;dashPattern=8 5;endArrow=block;endFill=1;endSize=9;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="check-authorize" target="check-record">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="check-caption" value="No new Graph POST.&#10;Unknown can remain unknown." style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=22;fontColor=#9A5813;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="754" width="475" height="63" as="geometry" />
+        </mxCell>
+        <mxCell id="footer-rule" value="" style="edgeStyle=none;rounded=0;html=0;strokeColor=#C9D5E2;strokeWidth=2.5;dashed=0;dashPattern=8 5;endArrow=none;endFill=1;endSize=9;startArrow=none;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="48" y="842" as="sourcePoint" />
+            <mxPoint x="1552" y="842" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="legend-sync" value="" style="edgeStyle=none;rounded=0;html=0;strokeColor=#0078D4;strokeWidth=2.5;dashed=0;dashPattern=8 5;endArrow=block;endFill=1;endSize=9;startArrow=none;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="50" y="872" as="sourcePoint" />
+            <mxPoint x="95" y="872" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="legend-sync-label" value="Synchronous / control" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=18;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="108" y="857" width="230" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-async" value="" style="edgeStyle=none;rounded=0;html=0;strokeColor=#0D7C78;strokeWidth=2.5;dashed=1;dashPattern=8 5;endArrow=block;endFill=1;endSize=9;startArrow=none;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="355" y="872" as="sourcePoint" />
+            <mxPoint x="400" y="872" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="legend-async-label" value="Asynchronous work" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=18;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="414" y="857" width="230" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="footer-message" value="Local evidence is not an exactly-once Graph guarantee" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=right;verticalAlign=middle;fontFamily=Arial;fontSize=18;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="720" y="857" width="832" height="30" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -1,5 +1,84 @@
 # Dev functional validation report
 
+## Development Service Bus Standard cutover (2026-10-26)
+
+**The five Development roles and existing manual diagnostic job now reference
+the new Standard namespace. Following explicit user approval, the old Premium
+namespace and its obsolete Service Bus private endpoint were deleted on
+2026-10-26; independent post-deletion checks passed.**
+This was an endpoint-only infrastructure cutover: all deployed immutable images,
+identities, other environment settings, scale, ingress, callback bindings and
+admission policy were verified unchanged. No application image was rebuilt.
+
+| Evidence | Result / boundary |
+| --- | --- |
+| Scoped infrastructure deployment | Created only `teamsrefdev-unc3jasrpkgbo-bus-standard`, three active queues and seven exact queue-scoped sender/receiver grants; old Premium and unrelated resources were untouched |
+| Standard security and contracts | Standard SKU, public access, TLS 1.2 and local/SAS authentication disabled; TTL, lock, retry count, duplicate detection, capacity and dead-letter-on-expiry match the three active old queues |
+| Container Apps connectivity and access | One-off executions under the already attached Api, Control and Projector identities opened permitted sender/receiver links and rejected cross-role/cross-queue operations; permitted sender links negotiated exactly 262,144-byte batches. These probes sent and consumed no messages |
+| Maintenance cutover | Stopped producers, then consumers using app-level stop/start without changing Single mode or replica limits. After every workload stopped, waited 75 seconds, observed all four old queues empty, and repeated the empty check before switching; no purge or automatic transfer occurred |
+| Exact workload acceptance | All five new revisions active and healthy; full preserved-state comparison allowed only the Service Bus endpoint and revision suffix to change. The idle manual job changed only its endpoint |
+| Public application | Readiness, shell loading, anonymous API denial and canonical Entra redirect passed after the switch |
+| Normal read service | Twelve content-bearing reads across all three admitted actors passed through the existing deployed `Messaging` service; three excluded-pair reads were denied. This uses the Api managed identity and approved actor context, not browser authentication |
+| Bounded refresh transport | One explicit refresh of an already complete approved view was accepted through Standard and completed by the normal Control worker in about 2.5 seconds, with zero retry attempts. This proves Api-to-Control transport and checkpoint completion, not a new full Teams history hydration |
+| Local compatibility | All 76 targeted transport, notification, read-refresh and outbox tests passed; affected PowerShell safety tests and Bicep compilations passed |
+| Future deployment inputs | Private service-target and both existing Development platform parameter files pin Standard. The image-only release guard now requires the exact selected endpoint. GitHub reports zero configured environments and zero repository variables, so no existing protected target input was changed |
+| Approved Premium retirement | Reconfirmed all four old queues empty and no active app/job or private provisioning input targeting Premium. Deleted only `teamsrefdev-unc3jasrpkgbo-bus` and `teamsrefdev-unc3jasrpkgbo-bus-pe`; verified both absent, with all four unrelated private endpoints and five shared private DNS zones preserved |
+| Post-retirement acceptance | All five exact revisions remained healthy with unchanged preserved configuration; Standard security, all three queue contracts and seven exact queue grants passed. Public checks, twelve content-bearing reads and three excluded-pair denials passed again; a new Standard refresh completed in about 2.7 seconds with zero retry attempts |
+
+Diagnostics used execution-only overrides on the existing manual job with
+automatic retries disabled and its already attached identities. The read probe
+loaded the current deployed Host/Core/Infrastructure assemblies without rebuilding
+or replacing them. Persistent job configuration was verified unchanged by these
+executions. Recovery snapshots, exact revision/image identities, cutover journal,
+body-free read results and refresh receipts remain private outside the repository.
+
+No signed-in browser journey, Teams message creation, fresh rich-notification
+round trip, end-to-end Web PubSub delivery test, cache cleanup, Git commit or Git
+push was performed. Full notification/projection/delivery acceptance is not
+claimed. All three new queues were empty after the public check, and sampled
+runtime logs across all five roles showed no Service Bus authorization, oversize
+or transport-failure indicators. These bounded checks are not a load/SLA test.
+
+A follow-up on 2026-10-26 at approximately 13:18 local time reconfirmed all five
+current Standard revisions healthy, the diagnostic-job endpoint and passing
+public checks, but found **one dead-lettered `graph-notifications` message**.
+A non-consuming Projector-identity peek reported `projection_failed` for a
+message enqueued at 12:28 local time. Its underlying application error has not
+been isolated; this does not establish a Standard transport or size failure.
+No message was consumed, purged or replayed by the inspection. Notification
+processing therefore was not clean end-to-end acceptance.
+
+The subsequent read-only inspection identified that item as a
+`reauthorizationRequired` lifecycle event, with no encrypted message content.
+At approximately 13:28, the existing worker's normal retention policy durably
+scheduled scope repairs and removed the expired dead letter; this was not a
+manual purge or replay. All three Standard queues were empty afterward. Control
+inspection confirmed all five recovery signals handled and all five subscriptions
+registered with future expirations. Four resource views were coverage-ready; one
+still had a progressing repair deferred by `graph_429`. This does not establish
+completed source reconciliation.
+
+The preceding 24-hour logs contained seven notification application failures
+before the cutover and six afterward, all recorded only as `AppError`; the exact
+historical application code is not available. The error class therefore predates
+Standard, but its precise root cause is not claimed to be resolved. Standard
+metrics from 11:00 to 12:30 UTC reported incoming/outgoing message activity and
+zero `UserErrors`, `ServerErrors` and `ThrottledRequests`. Message operations
+include retries and dead-letter handling, not unique end-to-end deliveries.
+The final follow-up again passed public checks and all five preserved workload
+contracts. These observations support the infrastructure cutover while retaining
+the separate source-health and signed-in/end-to-end acceptance boundaries.
+
+Standard's 256 KB encoded message/batch ceiling is an accepted PoC limitation:
+individual oversized notifications fail durable acceptance explicitly; no payload
+offloading or truncation was introduced. The approximately $667/month retail
+difference remains an estimate before Standard operation charges; actual billing
+was not retrieved. Premium namespace deletion completed at approximately 13:45
+local time, removing the resource responsible for its ongoing fixed charge;
+billing totals and proration have not been measured. The old-endpoint rollback
+option no longer exists. Recovery snapshots and retirement evidence remain
+private; shared DNS zones, unrelated endpoints and application state were retained.
+
 ## Chat message presentation release (2026-10-23)
 
 **Deployed to all five existing Development roles.** Ordinary text and supported

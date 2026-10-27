@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$InventoryPath,
-    [Parameter(Mandatory)][string]$OutputDirectory
+    [Parameter(Mandatory)][string]$OutputDirectory,
+    [ValidatePattern('^$|^[a-z][a-z0-9-]{4,48}[a-z0-9]$')][string]$ServiceBusName = ''
 )
 $ErrorActionPreference='Stop'
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))+[IO.Path]::DirectorySeparatorChar
@@ -75,6 +76,9 @@ $live|Add-Member graphPolicy @{
 foreach($scope in $live.subscriptionScopes){$scope.id='service-'+$scope.id}
 $permissions=@('Application.Read.All','Channel.ReadBasic.All','ChannelMessage.Read.All','Chat.Read.All','Team.ReadBasic.All','TeamMember.Read.All','User.Read.All')
 $cosmos=@($inventory.platform|Where-Object{$_.type -eq 'Microsoft.DocumentDB/databaseAccounts'})
+$buses=@($inventory.platform|Where-Object{$_.type -eq 'Microsoft.ServiceBus/namespaces' -and
+    (-not $ServiceBusName -or $_.name -ceq $ServiceBusName)})
+if($buses.Count -ne 1){throw 'Inventory one reviewed Service Bus namespace, or select its exact ServiceBusName from the inventory.'}
 $reader=@($inventory.cosmosRoleDefinitions|Where-Object{$_.properties.roleName -eq 'synthetic-live-primary-reader-v1'})
 if($cosmos.Count -ne 1 -or $reader.Count -ne 1){throw 'Inventory the existing Cosmos account and primary-reader definition before preparing the access diff.'}
 $matrix=@{Api=@{'live-state'=$true;'live-authority'=$false};Receiver=@{'live-control'=$false};Projector=@{'live-state'=$true;'live-control'=$true};
@@ -102,7 +106,8 @@ foreach($assignment in $inventory.cosmosRoleAssignments){
 $targets=@{schemaVersion=1;tenantId=$inventory.tenantId;subscriptionId=$inventory.subscriptionId;resourceGroup=$inventory.resourceGroup;
     environmentId=$inventory.apps[0].environmentId;publicOrigin=$inventory.apps[0].publicOrigin;
     webClientId=$web[0].application.appId;webServicePrincipalId=$web[0].servicePrincipal.id;syncClientId=$sync[0].application.appId;
-    dedicatedTestTenant=$true;roleBindings=$bindings;liveConfig=$live;cosmosAccountName=$cosmos[0].name;primaryReaderRoleId=$reader[0].id}
+    dedicatedTestTenant=$true;roleBindings=$bindings;liveConfig=$live;cosmosAccountName=$cosmos[0].name;primaryReaderRoleId=$reader[0].id;
+    serviceBusName=$buses[0].name}
 $approval=@{
     schemaVersion=1;status='APPROVAL-REQUIRED';tenantId=$inventory.tenantId;subscriptionId=$inventory.subscriptionId
     initialUsers=$users;initialResources=@($live.resources.id);publicOrigin=$inventory.apps[0].publicOrigin

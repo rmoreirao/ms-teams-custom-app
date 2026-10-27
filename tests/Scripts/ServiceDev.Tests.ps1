@@ -36,6 +36,7 @@ $contract=Clone @{
     webServicePrincipalId='55555555-5555-5555-5555-555555555555';publicOrigin=$origin;
     environmentId="$scope/providers/Microsoft.App/managedEnvironments/existing";roleBindings=$bindings;
     cosmosAccountName='existing-cosmos';primaryReaderRoleId="$scope/providers/Microsoft.DocumentDB/databaseAccounts/existing-cosmos/sqlRoleDefinitions/custom-reader";
+    serviceBusName='existing';
     liveConfig=@{authorityMode='Policy';entitlementProvider='Graph';readConsistency='Session';approvalReference='reviewed';
         syncClientId='44444444-4444-4444-4444-444444444444';controlIdentityClientId=$clients.Control;writerEpoch=1;
         roleIdentityClientIds=$clients;synchronizationEnabled=$true;admissionEnabled=$true;
@@ -173,7 +174,8 @@ try{
             @{application=@{appId=$contract.webClientId};servicePrincipal=@{id=$contract.webServicePrincipalId}}
             @{application=@{appId=$contract.syncClientId;displayName='teams-reference-dev-sync'};servicePrincipal=@{id='40000000-0000-0000-0000-000000000001'}}
         )
-        platform=@(@{id=$cosmosId;name='existing-cosmos';type='Microsoft.DocumentDB/databaseAccounts'})
+        platform=@(@{id=$cosmosId;name='existing-cosmos';type='Microsoft.DocumentDB/databaseAccounts'},
+            @{name='existing';type='Microsoft.ServiceBus/namespaces'})
         cosmosRoleDefinitions=@(@{id=$contract.primaryReaderRoleId;properties=@{roleName='synthetic-live-primary-reader-v1'}})
         cosmosRoleAssignments=$data;roleAssignments=@()
     }
@@ -187,6 +189,15 @@ try{
     $legacyInventory|ConvertTo-Json -Depth 100|Set-Content -LiteralPath $legacyPath
     Reject {& (Join-Path $root 'scripts\New-ServiceDevPlan.ps1') -InventoryPath $legacyPath -OutputDirectory $planningDirectory} 'not normalized'
     $planned=Get-Content -LiteralPath (Join-Path $planningDirectory 'service-targets.draft.json') -Raw|ConvertFrom-Json -Depth 100
+    if($planned.serviceBusName -cne 'existing'){throw 'The planner did not pin the inventoried Service Bus namespace.'}
+    $multipleBuses=Clone $planningInventory
+    $multipleBuses.platform+=@(@{name='new-standard';type='Microsoft.ServiceBus/namespaces'})
+    $multipleBusesPath=Join-Path $temporary 'multiple-buses.json'
+    $multipleBuses|ConvertTo-Json -Depth 100|Set-Content -LiteralPath $multipleBusesPath
+    Reject {& (Join-Path $root 'scripts\New-ServiceDevPlan.ps1') -InventoryPath $multipleBusesPath -OutputDirectory $planningDirectory} 'one reviewed Service Bus'
+    & (Join-Path $root 'scripts\New-ServiceDevPlan.ps1') -InventoryPath $multipleBusesPath -OutputDirectory $planningDirectory -ServiceBusName 'new-standard'
+    $selected=Get-Content -LiteralPath (Join-Path $planningDirectory 'service-targets.draft.json') -Raw|ConvertFrom-Json -Depth 100
+    if($selected.serviceBusName -cne 'new-standard'){throw 'The planner did not preserve the explicit existing namespace selection.'}
     foreach($role in @('Receiver','Delivery','Control')){
         if($planned.roleBindings.$role.appName.Length -gt 32 -or
             -not $planned.roleBindings.$role.identityResourceId.EndsWith("-$($role.ToLowerInvariant())")){
@@ -225,6 +236,11 @@ try{
     Reject {Assert-ServiceDevTargets $bad} 'distinct'
     $bad=Clone $contract;$bad.dedicatedTestTenant=$false
     Reject {Assert-ServiceDevTargets $bad} 'dedicated'
+    $bad=Clone $contract;$bad.serviceBusName=''
+    Reject {Assert-ServiceDevTargets $bad} 'Service Bus namespace'
+    $bad=Clone $state.apps.Api
+    ($bad.properties.template.containers[0].env|Where-Object name -eq 'Azure__ServiceBus').value='different.servicebus.windows.net'
+    Reject {Assert-ServiceDevApp $bad 'Api' $contract $registry} 'reviewed service contract'
     $bad=Clone $state.apps.Api
     $bad.identity.userAssignedIdentities|Add-Member -NotePropertyName $contract.roleBindings.Control.identityResourceId -NotePropertyValue @{clientId=$clients.Control}
     Reject {Assert-ServiceDevApp $bad 'Api' $contract $registry} 'only its own'

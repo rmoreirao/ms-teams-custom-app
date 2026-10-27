@@ -26,6 +26,18 @@ Use independent instances of the same image, or the explicitly bounded compact t
 
 `infra\live.bicep` creates five distinct user-assigned identities, three state containers (`live-state`, `live-authority`, `live-control`), a separate `/id`-partitioned `live-leases` container, `graph-notifications`, `graph-delivery` and `graph-read-refresh` queues, private Front Door origins/WAF and role-specific workloads/access. It targets an **existing dedicated private platform**; it does not create or resize its Cosmos account, VNet/private endpoints, Service Bus namespace, Redis, PubSub or Key Vault. The dev serverless/session-consistency platform is not a production sizing template.
 
+The Development PoC uses the reviewed [Service Bus Standard
+cutover](dev-guide.md#development-service-bus-standard-cutover): a new namespace,
+public TLS with Entra-only authentication, unchanged queue-level identities and
+no changes to other services' private networking. The selected `serviceBusName`
+must match all five workloads' `Azure__ServiceBus` settings. This exception does
+not change the production private-platform design. Standard has shared capacity
+and a **256 KB encoded message/batch limit**, including encrypted-envelope and
+broker-property overhead. Notification batching honors the SDK-negotiated size;
+an individually oversized notification fails durable acceptance explicitly.
+There is no payload truncation, plaintext fallback or offloading store. Queue
+TTL, lock renewal, duplicate detection, retries and DLQ recovery remain required.
+
 The live Cosmos client requires explicit `readConsistency: "Session"` and uses native Session SDK reads for ordinary content. Missing settings and the old `Strong`/`SessionPrimary` profile names are rejected without aliases. Startup and deployment validate one readable/writable region and a Session or Strong account policy; they never change the account or require a consistency upgrade. See [ADR 0012](adr/0012-session-content-reads-and-revision-convergence.md).
 
 The template retains the canonical `readCurrentV1` procedure on the three data containers and, under the explicit RBAC provisioning switch, a custom reader role with `executeStoredProcedure` but no item-write actions. The API's authority access remains unable to create/replace/delete items. Because execution permissions are container-scoped, do not add mutating procedures to reader-accessible containers. A critical current read never falls back to an ordinary read if the procedure, permissions or response evidence is unavailable.

@@ -6,6 +6,7 @@ param(
     [string]$Location = 'swedencentral',
     [string]$CosmosLocation = $Location,
     [ValidateSet('Balanced_B0', 'Balanced_B1', 'Balanced_B3', 'Balanced_B5')][string]$RedisSku = 'Balanced_B0',
+    [ValidatePattern('^$|^[a-z][a-z0-9-]{4,48}[a-z0-9]$')][string]$ExistingServiceBusName = '',
     [switch]$Apply
 )
 $ErrorActionPreference = 'Stop'
@@ -28,6 +29,7 @@ $parameters = @{
     location = @{ value = $Location }
     cosmosLocation = @{ value = $CosmosLocation }
     redisSku = @{ value = $RedisSku }
+    existingServiceBusName = @{ value = $ExistingServiceBusName }
     webClientId = @{ value = $inventory.applications.web.clientId }
     eventsClientId = @{ value = $inventory.applications.events.clientId }
 }

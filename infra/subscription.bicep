@@ -5,6 +5,7 @@ param location string = 'swedencentral'
 param cosmosLocation string = location
 @allowed(['Balanced_B0', 'Balanced_B1', 'Balanced_B3', 'Balanced_B5'])
 param redisSku string = 'Balanced_B0'
+param existingServiceBusName string = ''
 param webClientId string
 param eventsClientId string
 
@@ -20,6 +21,7 @@ module platform './main.bicep' = {
     location: location
     cosmosLocation: cosmosLocation
     redisSku: redisSku
+    existingServiceBusName: existingServiceBusName
     webClientId: webClientId
     eventsClientId: eventsClientId
   }

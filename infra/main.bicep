@@ -7,6 +7,9 @@ param location string = 'swedencentral'
 param cosmosLocation string = location
 @allowed(['Balanced_B0', 'Balanced_B1', 'Balanced_B3', 'Balanced_B5'])
 param redisSku string = 'Balanced_B0'
+@description('Reviewed existing Development namespace. When set, do not provision the default Premium namespace or its private endpoint.')
+@maxLength(50)
+param existingServiceBusName string = ''
 param webClientId string
 param eventsClientId string
 param deployWorkloads bool = false
@@ -28,6 +31,7 @@ var tenantId = tenant().tenantId
 var appSubnetName = 'container-apps-ready'
 var appSubnetPrefix = '10.30.4.0/23'
 var endpointSubnetName = 'private-endpoints'
+var selectedServiceBusName = empty(existingServiceBusName) ? '${base}-bus' : existingServiceBusName
 
 resource edge 'Microsoft.Cdn/profiles@2024-02-01' = {
   name: '${base}-edge'
@@ -145,8 +149,8 @@ resource database 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2024-05-15
   name: 'teams'
   properties: { resource: { id: 'teams' } }
 }
-resource bus 'Microsoft.ServiceBus/namespaces@2024-01-01' = {
-  name: '${base}-bus'
+resource bus 'Microsoft.ServiceBus/namespaces@2024-01-01' = if (empty(existingServiceBusName)) {
+  name: selectedServiceBusName
   location: location
   tags: tags
   sku: { name: 'Premium', tier: 'Premium', capacity: 1 }
@@ -225,13 +229,14 @@ resource environment 'Microsoft.App/managedEnvironments@2025-07-01' = {
     appLogsConfiguration: { destination: 'log-analytics', logAnalyticsConfiguration: { customerId: logs.properties.customerId, sharedKey: logs.listKeys().primarySharedKey } }
   }
 }
-module privateLinks './modules/private-link.bicep' = [for item in [
+module privateLinks './modules/private-link.bicep' = [for item in concat([
   { name: 'cosmos', resourceId: cosmos.id, group: 'Sql', zone: 'privatelink.documents.azure.com' }
-  { name: 'bus', resourceId: bus.id, group: 'namespace', zone: 'privatelink.servicebus.windows.net' }
   { name: 'redis', resourceId: cache.id, group: 'redisEnterprise', zone: 'privatelink.redis.azure.net' }
   { name: 'vault', resourceId: vault.id, group: 'vault', zone: 'privatelink.vaultcore.azure.net' }
   { name: 'pubsub', resourceId: pubsub.id, group: 'webpubsub', zone: 'privatelink.webpubsub.azure.com' }
-] : {
+], empty(existingServiceBusName) ? [
+  { name: 'bus', resourceId: bus!.id, group: 'namespace', zone: 'privatelink.servicebus.windows.net' }
+] : []) : {
   name: '${prefix}-${item.name}-private'
   params: {
     name: '${base}-${item.name}-pe'
@@ -284,7 +289,7 @@ module workloads './modules/workloads.bicep' = if (deployWorkloads) {
     insightsConnectionString: insights.properties.ConnectionString
     cosmosEndpoint: cosmos.properties.documentEndpoint
     redisEndpoint: '${cache.properties.hostName}:10000'
-    busEndpoint: '${bus.name}.servicebus.windows.net'
+    busEndpoint: '${selectedServiceBusName}.servicebus.windows.net'
     pubsubEndpoint: 'https://${pubsub.properties.hostName}'
     protectionKey: '${vault.properties.vaultUri}keys/${protectionKey.name}'
   }
@@ -304,7 +309,7 @@ output apiName string = '${base}-api'
 output pubsubPrincipalId string = pubsub.identity.principalId
 output pubsubId string = pubsub.id
 output cosmosAccountName string = cosmos.name
-output serviceBusName string = bus.name
+output serviceBusName string = selectedServiceBusName
 output redisName string = cache.name
 output vaultName string = vault.name
 output pubsubName string = pubsub.name

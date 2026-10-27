@@ -3,6 +3,7 @@ function Get-ServiceDevRoles { @('Api','Receiver','Projector','Delivery','Contro
 function Assert-ServiceDevTargets($Contract) {
     $roles=@(Get-ServiceDevRoles)
     if($Contract.schemaVersion -ne 1 -or $Contract.dedicatedTestTenant -ne $true){throw 'A reviewed dedicated-test-tenant service target contract is required.'}
+    if($Contract.serviceBusName -cnotmatch '^[a-z][a-z0-9-]{4,48}[a-z0-9]$'){throw 'Resolve the reviewed Service Bus namespace name.'}
     foreach($field in @('tenantId','subscriptionId','webClientId','webServicePrincipalId','syncClientId')){
         $id=[guid]::Empty
         if(-not [guid]::TryParseExact([string]$Contract.$field,'D',[ref]$id) -or $id -eq [guid]::Empty){throw "Resolve the service target identity: $field."}
@@ -98,7 +99,8 @@ function Assert-ServiceDevApp($App,[string]$Role,$Contract,[string]$RegistryServ
     }
     foreach($pair in @(@('App__GraphMode','Live'),@('App__Auth','Entra'),@('App__Store','Cosmos'),@('App__Role',$Role),
         @('App__TenantId',$Contract.tenantId),@('AzureAd__TenantId',$Contract.tenantId),@('AzureAd__ClientId',$Contract.webClientId),
-        @('AzureClientId',$binding.clientId),@('AZURE_CLIENT_ID',$binding.clientId),@('App__PublicOrigin',$Contract.publicOrigin))){
+        @('AzureClientId',$binding.clientId),@('AZURE_CLIENT_ID',$binding.clientId),@('App__PublicOrigin',$Contract.publicOrigin),
+        @('Azure__ServiceBus',"$($Contract.serviceBusName).servicebus.windows.net"))){
         if($settings[$pair[0]].value -cne $pair[1] -or $settings[$pair[0]].secretRef){throw "The $Role setting $($pair[0]) differs from the reviewed service contract."}
     }
     if($settings['App__Operation'].value){throw "A diagnostic operation is configured on $Role."}
