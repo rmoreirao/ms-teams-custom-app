@@ -14,7 +14,7 @@
         <mxCell id="title" value="Cosmos projection: three inputs, one read model" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=38;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
           <mxGeometry x="48" y="61" width="1500" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="subtitle" value="Shared persistence rules run in the calling role. There is no central projection microservice." style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=22;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+        <mxCell id="subtitle" value="Each calling service checks the stored copy before writing. This is code, not another Azure service." style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=22;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
           <mxGeometry x="48" y="118" width="1500" height="35" as="geometry" />
         </mxCell>
         <mxCell id="header-rule" value="" style="edgeStyle=none;rounded=0;html=0;strokeColor=#C9D5E2;strokeWidth=2.5;dashed=0;dashPattern=8 5;endArrow=none;endFill=1;endSize=9;startArrow=none;" edge="1" parent="1">
@@ -59,13 +59,16 @@
         <mxCell id="control-detail" value="Hydration + reconciliation" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=20;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="control">
           <mxGeometry x="18" y="84" width="294" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="merge" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#C9D5E2;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
+        <mxCell id="merge-step-tag" value="CODE INSIDE EACH ROLE" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=center;verticalAlign=middle;fontFamily=Arial;fontSize=18;fontColor=#0078D4;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="480" y="339" width="330" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="merge" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#F1F7FD;strokeColor=#0078D4;strokeWidth=1.5;dashed=1;container=1;collapsible=0;" vertex="1" parent="1">
           <mxGeometry x="480" y="380" width="330" height="185" as="geometry" />
         </mxCell>
-        <mxCell id="merge-title" value="Version-aware&#10;merge" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=25;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="merge">
+        <mxCell id="merge-title" value="Check message&#10;before updating" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=25;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="merge">
           <mxGeometry x="18" y="16" width="294" height="56" as="geometry" />
         </mxCell>
-        <mxCell id="merge-detail" value="Compare source evidence;&#10;keep tombstones;&#10;flag ambiguity for repair." style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=21;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="merge">
+        <mxCell id="merge-detail" value="Skip duplicate / older copies;&#10;keep deletion markers;&#10;flag conflicts for repair." style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=21;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="merge">
           <mxGeometry x="18" y="82" width="294" height="90" as="geometry" />
         </mxCell>
         <mxCell id="cosmos" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#F0F8F7;strokeColor=#C9D5E2;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
@@ -160,10 +163,10 @@
         <mxCell id="in-process" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#F0F8F7;strokeColor=none;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
           <mxGeometry x="546" y="718" width="485" height="108" as="geometry" />
         </mxCell>
-        <mxCell id="in-process-heading" value="Shared rules, not a network call" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=23;fontColor=#0D7C78;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="in-process">
+        <mxCell id="in-process-heading" value="Code inside each calling service" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=23;fontColor=#0D7C78;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="in-process">
           <mxGeometry x="18" y="14" width="449" height="28" as="geometry" />
         </mxCell>
-        <mxCell id="in-process-body" value="Api and Control do not call the&#10;Projector Container App." style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=21;fontColor=#172B4D;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="in-process">
+        <mxCell id="in-process-body" value="Shared by Api, Projector and Control.&#10;No extra service-to-service call." style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=21;fontColor=#172B4D;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="in-process">
           <mxGeometry x="18" y="51" width="449" height="47" as="geometry" />
         </mxCell>
         <mxCell id="freshness" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#FFF7EC;strokeColor=none;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
