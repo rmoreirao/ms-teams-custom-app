@@ -16,6 +16,7 @@ NAMES = (
     "azure-resource-overview",
     "write-path",
     "send-operation-status",
+    "sender-to-recipient",
     "teams-event-ingestion",
     "change-feed-delivery",
     "read-path",

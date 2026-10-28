@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='utf-8'?>
 <mxfile host="Electron" version="32.6.1" type="device" agent="draw.io Desktop">
-  <diagram id="read-path" name="Read path: Redis, Cosmos, then Graph hydration">
+  <diagram id="read-path" name="Read path: cached messages, then load from Teams">
     <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" background="#FFFFFF" math="0" shadow="0">
       <root>
         <mxCell id="0" />
@@ -11,7 +11,7 @@
         <mxCell id="header-tag" value="TEAMS / AZURE POC     |     06" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=18;fontColor=#0078D4;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
           <mxGeometry x="48" y="22" width="1500" height="28" as="geometry" />
         </mxCell>
-        <mxCell id="title" value="Read path: Redis, Cosmos, then Graph hydration" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=38;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+        <mxCell id="title" value="Read path: cached messages, then load from Teams" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=38;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
           <mxGeometry x="48" y="61" width="1500" height="50" as="geometry" />
         </mxCell>
         <mxCell id="subtitle" value="Content can be refilled after cleanup. Cosmos authority and metadata remain required." style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=22;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
@@ -89,8 +89,8 @@
         <mxCell id="response-title" value="Api response" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=24;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="response">
           <mxGeometry x="18" y="16" width="226" height="56" as="geometry" />
         </mxCell>
-        <mxCell id="response-detail" value="200 ready / known empty&#10;202 if hydration pending" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=19;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="response">
-          <mxGeometry x="18" y="82" width="226" height="45" as="geometry" />
+        <mxCell id="response-detail" value="200 ready / checked empty&#10;202 loading accepted" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=19;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="response">
+          <mxGeometry x="18" y="82" width="230" height="45" as="geometry" />
         </mxCell>
         <mxCell id="request" value="" style="edgeStyle=none;rounded=0;html=0;strokeColor=#0078D4;strokeWidth=2.5;dashed=0;dashPattern=8 5;endArrow=block;endFill=1;endSize=9;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="browser" target="guard">
           <mxGeometry relative="1" as="geometry" />
@@ -121,16 +121,16 @@
         <mxCell id="cosmos-ready-label" value="200" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=center;verticalAlign=middle;fontFamily=Arial;fontSize=18;fontColor=#0078D4;fontStyle=0;spacing=0;strokeColor=none;fillColor=#FFFFFF;" vertex="1" parent="1">
           <mxGeometry x="1239" y="281" width="50" height="28" as="geometry" />
         </mxCell>
-        <mxCell id="background-heading" value="COLD VIEW: ASYNCHRONOUS HYDRATION" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=20;fontColor=#0D7C78;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+        <mxCell id="background-heading" value="BACKGROUND MESSAGE LOADING" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=20;fontColor=#0D7C78;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
           <mxGeometry x="48" y="450" width="820" height="32" as="geometry" />
         </mxCell>
         <mxCell id="cold-explanation" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#F1F7FD;strokeColor=none;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
           <mxGeometry x="48" y="500" width="330" height="155" as="geometry" />
         </mxCell>
-        <mxCell id="cold-explanation-heading" value="When content is cold" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=23;fontColor=#0078D4;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="cold-explanation">
+        <mxCell id="cold-explanation-heading" value="History not loaded yet" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=23;fontColor=#0078D4;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="cold-explanation">
           <mxGeometry x="18" y="14" width="294" height="28" as="geometry" />
         </mxCell>
-        <mxCell id="cold-explanation-body" value="A cold read requests hydration.&#10;A proven empty view needs&#10;no extra Graph request." style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=21;fontColor=#172B4D;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="cold-explanation">
+        <mxCell id="cold-explanation-body" value="No stored messages does not&#10;mean no Teams messages.&#10;Checked empty: no Graph call." style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=21;fontColor=#172B4D;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="cold-explanation">
           <mxGeometry x="18" y="51" width="294" height="94" as="geometry" />
         </mxCell>
         <mxCell id="refresh" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#C9D5E2;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
@@ -183,7 +183,7 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="cold-submit-label" value="Cold view: queue refresh" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=center;verticalAlign=middle;fontFamily=Arial;fontSize=20;fontColor=#0078D4;fontStyle=0;spacing=0;strokeColor=none;fillColor=#FFFFFF;" vertex="1" parent="1">
+        <mxCell id="cold-submit-label" value="History not loaded: queue request" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=center;verticalAlign=middle;fontFamily=Arial;fontSize=20;fontColor=#0078D4;fontStyle=0;spacing=0;strokeColor=none;fillColor=#FFFFFF;" vertex="1" parent="1">
           <mxGeometry x="650" y="395" width="350" height="28" as="geometry" />
         </mxCell>
         <mxCell id="consume-refresh" value="" style="edgeStyle=none;rounded=0;html=0;strokeColor=#0D7C78;strokeWidth=2.5;dashed=1;dashPattern=8 5;endArrow=block;endFill=1;endSize=9;startArrow=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="refresh" target="control">
@@ -273,7 +273,7 @@
         <mxCell id="legend-async-label" value="Asynchronous work" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=18;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
           <mxGeometry x="414" y="857" width="230" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="footer-message" value="Graph hydration is asynchronous  |  Cosmos remains required" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=right;verticalAlign=middle;fontFamily=Arial;fontSize=18;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+        <mxCell id="footer-message" value="Teams loading is asynchronous  |  Cosmos remains required" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=right;verticalAlign=middle;fontFamily=Arial;fontSize=18;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
           <mxGeometry x="720" y="857" width="832" height="30" as="geometry" />
         </mxCell>
       </root>

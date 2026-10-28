@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='utf-8'?>
 <mxfile host="Electron" version="32.6.1" type="device" agent="draw.io Desktop">
-  <diagram id="cold-view-hydration" name="Cold content: request recovery, then read again">
+  <diagram id="cold-view-hydration" name="Message history not loaded? Load it from Teams">
     <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" background="#FFFFFF" math="0" shadow="0">
       <root>
         <mxCell id="0" />
@@ -11,10 +11,10 @@
         <mxCell id="header-tag" value="TEAMS / AZURE POC     |     07" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=18;fontColor=#0078D4;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
           <mxGeometry x="48" y="22" width="1500" height="28" as="geometry" />
         </mxCell>
-        <mxCell id="title" value="Cold content: request recovery, then read again" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=38;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+        <mxCell id="title" value="Message history not loaded? Load it from Teams" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=38;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
           <mxGeometry x="48" y="61" width="1500" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="subtitle" value="A Redis miss is not a cold source view. Hydration starts only when the projected view needs it." style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=22;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+        <mxCell id="subtitle" value="A Redis miss first reads Cosmos. Queue source loading when the requested history is not available." style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=22;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="1">
           <mxGeometry x="48" y="118" width="1500" height="35" as="geometry" />
         </mxCell>
         <mxCell id="header-rule" value="" style="edgeStyle=none;rounded=0;html=0;strokeColor=#C9D5E2;strokeWidth=2.5;dashed=0;dashPattern=8 5;endArrow=none;endFill=1;endSize=9;startArrow=none;" edge="1" parent="1">
@@ -35,11 +35,11 @@
         <mxCell id="cold-number" value="1" style="ellipse;html=0;fillColor=#0078D4;strokeColor=none;fontFamily=Arial;fontSize=20;fontStyle=1;fontColor=#FFFFFF;" vertex="1" parent="cold">
           <mxGeometry x="235" y="12" width="34" height="34" as="geometry" />
         </mxCell>
-        <mxCell id="cold-title" value="Cold view" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=25;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="cold">
-          <mxGeometry x="18" y="16" width="244" height="56" as="geometry" />
+        <mxCell id="cold-title" value="History not&#10;loaded yet" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=24;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="cold">
+          <mxGeometry x="18" y="12" width="244" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="cold-detail" value="Authorized but&#10;not yet initialized" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=21;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="cold">
-          <mxGeometry x="18" y="82" width="244" height="33" as="geometry" />
+        <mxCell id="cold-detail" value="Access is verified;&#10;content is not stored" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=21;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="cold">
+          <mxGeometry x="18" y="79" width="244" height="42" as="geometry" />
         </mxCell>
         <mxCell id="submit" value="" style="rounded=1;arcSize=8;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#C9D5E2;strokeWidth=1.5;dashed=0;container=1;collapsible=0;" vertex="1" parent="1">
           <mxGeometry x="468" y="281" width="300" height="128" as="geometry" />
@@ -47,7 +47,7 @@
         <mxCell id="submit-number" value="2" style="ellipse;html=0;fillColor=#0078D4;strokeColor=none;fontFamily=Arial;fontSize=20;fontStyle=1;fontColor=#FFFFFF;" vertex="1" parent="submit">
           <mxGeometry x="255" y="12" width="34" height="34" as="geometry" />
         </mxCell>
-        <mxCell id="submit-title" value="Submit refresh" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=25;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="submit">
+        <mxCell id="submit-title" value="Submit request" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=25;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="submit">
           <mxGeometry x="18" y="16" width="264" height="56" as="geometry" />
         </mxCell>
         <mxCell id="submit-detail" value="Await durable&#10;queue acceptance" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=21;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="submit">
@@ -128,7 +128,7 @@
         <mxCell id="read-graph-number" value="6" style="ellipse;html=0;fillColor=#0078D4;strokeColor=none;fontFamily=Arial;fontSize=20;fontStyle=1;fontColor=#FFFFFF;" vertex="1" parent="read-graph">
           <mxGeometry x="235" y="12" width="34" height="34" as="geometry" />
         </mxCell>
-        <mxCell id="read-graph-title" value="Read Graph" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=25;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="read-graph">
+        <mxCell id="read-graph-title" value="Load from Teams" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=25;fontColor=#172B4D;fontStyle=1;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="read-graph">
           <mxGeometry x="18" y="16" width="244" height="56" as="geometry" />
         </mxCell>
         <mxCell id="read-graph-detail" value="Bounded application-&#10;authenticated reads" style="text;html=0;whiteSpace=nowrap;overflow=visible;align=left;verticalAlign=middle;fontFamily=Arial;fontSize=21;fontColor=#526479;fontStyle=0;spacing=0;strokeColor=none;fillColor=none;" vertex="1" parent="read-graph">
