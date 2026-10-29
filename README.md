@@ -4,9 +4,22 @@ A technical design for a responsive web application that exposes Microsoft Teams
 
 The reference design separates application capacity from Microsoft Graph capacity. Recent reads and real-time delivery scale in Azure; user-authored writes remain subject to Teams permissions, latency, and throttling limits.
 
-> **Azure event-driven validation is deployed and verified in Sweden Central.** [Open the Web App](https://teamsrefdev-unc3jasrpkgbo-web-htdnfyf3dbbjbca2.b02.azurefd.net). Real Graph chat/channel changes traversed signed encrypted notifications, durable queues, Cosmos projection/outbox and Web PubSub into browser deltas; normal app chat/reply sends also passed. The previous unconditional 30-second poll is gone from Live mode. This remains the approved three-user/five-resource synthetic scope, not production capacity/SLO certification. See [current evidence](docs/dev-validation.md).
+> **Azure event-driven validation is deployed and verified in Sweden Central.** [Open the Web App](https://teamsrefdev-unc3jasrpkgbo-web-htdnfyf3dbbjbca2.b02.azurefd.net). Real Graph chat/channel changes traversed signed encrypted notifications, durable queues, Cosmos projection/outbox and Web PubSub into browser deltas; normal app chat/reply sends also passed. The previous unconditional 30-second poll is gone from Live mode. That functional evidence covers the original three-user/five-resource synthetic scope, not production capacity/SLO certification. The separately approved channel activation and its acceptance limits are recorded in [current evidence](docs/dev-validation.md).
 
 ## Run the development application
+
+**Channels are activated in Development as of 2026-10-29.** The image includes separate Chats/Channels
+destinations, team-grouped channels, explicit posts and threaded replies, and
+joined-team channel discovery for the same three admitted users. Eligible
+standard, unmoderated channels in unarchived teams are prepared only on user
+selection, with at most seven days of recent history. Discovery/preparation use
+durable Control jobs and push events, not browser polling. The approved registry,
+work queue and scoped access are provisioned; registry, discovery and dynamic
+posting/replies are enabled across all five roles. Existing seed mappings,
+identities and admission are unchanged. A signed-in new-channel journey and
+real post/reply remain unperformed for this activation.
+See [ADR 0014](docs/adr/0014-event-driven-channel-discovery.md) and the
+[channel runtime contract](docs/live-runtime.md#event-driven-channel-discovery-deployment-and-activation).
 
 Install .NET 10 SDK, Node.js 22.12 or newer in the Node 22 line, npm, and PowerShell 7. From the repository root:
 

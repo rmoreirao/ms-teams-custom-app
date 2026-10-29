@@ -7,7 +7,7 @@ public sealed record ProjectionCheckResult(int Actors, int SnapshotReads, int Ex
 public static class ProjectionChecks
 {
     public static async Task<ProjectionCheckResult> RunAsync(ILiveStateStore store, LiveOptions options,
-        string tenant, TimeProvider clock, ILogger<LiveDiscovery> logger, CancellationToken ct)
+        string tenant, TimeProvider clock, ILogger<LiveDiscovery> logger, CancellationToken ct, IResourceRegistry? registry = null)
     {
         var policy = options.GraphPolicy ?? throw new InvalidOperationException("Projection checks require the approved Graph policy.");
         if (options.EntitlementProvider != "Graph" || !options.AdmissionEnabled || !options.SynchronizationEnabled)
@@ -16,25 +16,37 @@ public static class ProjectionChecks
         var reads = 0;
         var denials = 0;
         var opened = 0;
+        var resources = registry is null ? options.Resources : (await registry.ListAsync(ct)).Select(item => item.Resource).ToArray();
         foreach (var actorId in policy.AdmittedUserIds)
         {
             var actor = new Actor(tenant, actorId, "", "read-only-projection-check");
             var pairs = options.DirectChats.Where(pair => pair.FirstActorId == actorId || pair.SecondActorId == actorId).ToArray();
             var expected = options.Resources.Where(resource => !options.DirectChats.Any(pair => pair.ResourceId == resource.Id) ||
                 pairs.Any(pair => pair.ResourceId == resource.Id)).Select(resource => resource.Id).ToHashSet(StringComparer.Ordinal);
-            var catalog = await discovery.CatalogAsync(actor, null, ct);
-            if (catalog.Cursor is not null || catalog.Items.Count != expected.Count ||
-                !catalog.Items.Select(item => item.Id).ToHashSet(StringComparer.Ordinal).SetEquals(expected) ||
-                catalog.Items.Any(item => item.IsDirect != pairs.Any(pair => pair.ResourceId == item.Id)))
+            foreach (var resource in resources.Where(resource => !options.Resources.Any(seed => seed.Id == resource.Id)))
+            {
+                try { await store.GetMemberAsync(actor, resource.Id, false, ct); expected.Add(resource.Id); }
+                catch (AppError error) when (error.Status == 404 && error.Code == "access_denied") { }
+            }
+            List<ConversationView> catalog = [];
+            string? cursor = null;
+            do
+            {
+                var page = await discovery.CatalogAsync(actor, cursor, ct);
+                catalog.AddRange(page.Items); cursor = page.Cursor;
+            } while (cursor is not null);
+            if (catalog.Count != expected.Count ||
+                !catalog.Select(item => item.Id).ToHashSet(StringComparer.Ordinal).SetEquals(expected) ||
+                catalog.Any(item => item.IsDirect != pairs.Any(pair => pair.ResourceId == item.Id)))
                 throw new InvalidOperationException("The projected catalog differs from the approved member/pair boundary.");
-            foreach (var resource in options.Resources)
+            foreach (var resource in resources)
             {
                 if (!expected.Contains(resource.Id))
                 {
                     try { await store.GetMemberAsync(actor, resource.Id, false, ct); }
                     catch (AppError error) when (error.Status == 404 && error.Code == "access_denied")
                     {
-                        denials++;
+                        if (options.DirectChats.Any(pair => pair.ResourceId == resource.Id)) denials++;
                         continue;
                     }
                     throw new InvalidOperationException("A user outside an approved direct pair was not denied.");

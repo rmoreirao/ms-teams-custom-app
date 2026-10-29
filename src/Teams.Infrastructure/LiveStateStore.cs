@@ -8,7 +8,7 @@ namespace Teams.Infrastructure;
 
 public sealed partial class LiveStateStore(IPartitionDocuments documents, TimeProvider clock, IPartitionDocuments? authority = null,
     IRecentMessageCache? cache = null, IReadOnlySet<string>? approvedResources = null,
-    IReadOnlyDictionary<string, ApprovedResource>? resourceRegistry = null) : ILiveStateStore
+    IReadOnlyDictionary<string, ApprovedResource>? resourceRegistry = null, IResourceRegistry? registry = null) : ILiveStateStore
 {
     private IPartitionDocuments Authority => authority ?? documents;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -33,25 +33,28 @@ public sealed partial class LiveStateStore(IPartitionDocuments documents, TimePr
             (at ?? Now).ToUniversalTime().ToString("O"), sourceId);
     public async Task<Versioned<Conversation>?> GetAsync(string tenant, string id, CancellationToken ct)
     {
-        if (approvedResources is not null && !approvedResources.Contains(id)) return null;
+        var registered = registry is null ? null : await registry.FindAsync(id, ct);
+        if (registry is not null && registered is null || registry is null && approvedResources is not null && !approvedResources.Contains(id)) return null;
         var value = await documents.ReadCurrentAsync(Partition(tenant, id), "conversation", ct);
         if (value is null) return null;
         var conversation = Decode<Conversation>(value.Value);
         // Legacy unfinished cleanups placed their reset immediately after the invalidated revision.
         if (conversation.CacheInvalidationRevision is null && conversation.ActiveCacheCleanup is not null)
             conversation = conversation with { CacheInvalidationRevision = Math.Max(0, conversation.CacheResetRevision - 1) };
-        if (resourceRegistry is not null &&
+        if (registered is not null && !registered.Resource.Matches(conversation) || registry is null && resourceRegistry is not null &&
             (!resourceRegistry.TryGetValue(id, out var approved) || !approved.Matches(conversation)))
             throw new AppError(503, "resource_mapping_changed", "Resource mapping changed; explicit migration or a new logical ID is required.");
         return new(conversation with { CoverageReady = conversation.CoverageReady && conversation.CoverageUntil > Now }, value.Version);
     }
-    public Task<bool> CreateAsync(Conversation value, CancellationToken ct)
+    public async Task<bool> CreateAsync(Conversation value, CancellationToken ct)
     {
+        var registered = registry is null ? null : await registry.FindAsync(value.Id, ct);
         if (value.Messages.Count != 0 || value.Members.Count != 0 || value.Changes.Count != 0 ||
-            (approvedResources is not null && !approvedResources.Contains(value.Id)) ||
-            (resourceRegistry is not null && (!resourceRegistry.TryGetValue(value.Id, out var approved) || !approved.Matches(value))))
+            (registry is not null && (registered is null || !registered.Resource.Matches(value))) ||
+            (registry is null && approvedResources is not null && !approvedResources.Contains(value.Id)) ||
+            (registry is null && resourceRegistry is not null && (!resourceRegistry.TryGetValue(value.Id, out var approved) || !approved.Matches(value))))
             throw new InvalidOperationException("Live onboarding must use approved empty resource metadata, not fixture aggregates.");
-        return documents.WriteAsync([new(Wrap("conversation", Partition(value.TenantId, value.Id), "conversation",
+        return await documents.WriteAsync([new(Wrap("conversation", Partition(value.TenantId, value.Id), "conversation",
             value.TenantId, value.Id, value), null)], ct);
     }
     public async Task<bool> SaveAsync(Versioned<Conversation> value, CancellationToken ct)
@@ -71,12 +74,15 @@ public sealed partial class LiveStateStore(IPartitionDocuments documents, TimePr
         foreach (var record in page.Items)
         {
             var grant = Decode<Entitlement>(record.Value);
-            if (approvedResources is not null && !approvedResources.Contains(grant.ConversationId)) continue;
-            try { await GetMemberAsync(actor, grant.ConversationId, false, ct); }
+            if (registry is null && approvedResources is not null && !approvedResources.Contains(grant.ConversationId)) continue;
+            Member member;
+            try { member = await GetMemberAsync(actor, grant.ConversationId, false, ct); }
             catch (AppError ex) when (ex.Status == 404) { continue; }
             var conversation = await GetAsync(actor.TenantId, grant.ConversationId, ct);
             if (conversation is not null)
-                result.Add(new(conversation.Value.Id, conversation.Value.Title, conversation.Value.Kind, conversation.Value.Team, conversation.Value.Revision));
+                result.Add(new(conversation.Value.Id, conversation.Value.Title, conversation.Value.Kind, conversation.Value.Team,
+                    conversation.Value.Revision, TeamId: conversation.Value.GraphTeamId, CanPost: member.CanSend, CanReply: member.CanSend,
+                    CapabilityReason: member.CanSend ? null : "Posting is not enabled for this conversation."));
         }
         return new(result, page.Cursor);
     }
@@ -100,7 +106,7 @@ public sealed partial class LiveStateStore(IPartitionDocuments documents, TimePr
         var metadata = await GetAsync(actor.TenantId, conversation, ct);
         if (metadata is null || grant.Epoch != metadata.Value.Epoch)
             throw new AppError(503, "authorization_stale", "Policy and conversation epochs do not match.");
-        return new(grant.ActorId, grant.Name, grant.HistoryFrom, FreshUntil: grant.FreshUntil);
+        return new(grant.ActorId, grant.Name, grant.HistoryFrom, FreshUntil: grant.FreshUntil, CanSend: grant.CanSend);
     }
     public async Task<Versioned<Entitlement>?> SetEntitlementAsync(Entitlement grant, CancellationToken ct)
     {
@@ -357,10 +363,12 @@ public sealed partial class LiveStateStore(IPartitionDocuments documents, TimePr
             writes.Add(new(Operation(operation.Value), operation.Version));
         }
         var incoming = value.Messages.SingleOrDefault();
+        var historyFloor = registry is null ? Now.AddDays(-7) :
+            new[] { Now.AddDays(-7), (await registry.FindAsync(value.Id, ct))?.HistoryFrom ?? DateTimeOffset.MaxValue }.Max();
         var revision = current.Value.Revision;
         var ready = current.Value.CoverageReady;
         var generation = current.Value.RepairGeneration;
-        if (incoming is not null && incoming.CreatedAt >= Now.AddDays(-7))
+        if (incoming is not null && incoming.CreatedAt >= historyFloor)
         {
             var id = MessageId(incoming.Id, incoming.ParentId);
             var previous = await documents.ReadCurrentAsync(pk, id, ct);
@@ -442,9 +450,19 @@ public sealed partial class LiveStateStore(IPartitionDocuments documents, TimePr
         var conversationState = Decode<Conversation>(metadata.Value);
         if (conversationState.CacheGeneration != next.CacheGeneration)
             throw new AppError(409, "cache_generation_changed", "Cache cleanup superseded this hydration checkpoint.");
-        return await documents.WriteAsync([
+        List<DocumentWrite> writes = [
             new(Wrap(ReadViewId(parent), pk, "read-view", tenant, conversation, next), previous?.Version),
-            new(metadata.Value, metadata.Version)], ct);
+            new(metadata.Value, metadata.Version)];
+        if (conversationState.Kind == "channel" && next.Complete &&
+            (previous?.Value.Complete != true || previous.Value.CacheGeneration != next.CacheGeneration))
+        {
+            var change = new OutboxChange(Guid.NewGuid().ToString("N"), tenant, conversation, conversationState.Revision, Now,
+                new("channel.view.ready", conversationState.Revision, ConversationId: conversation, ParentId: parent,
+                    Generation: next.CacheGeneration));
+            writes.Add(new(Wrap($"outbox:{change.Id}", pk, "outbox", tenant, conversation, change,
+                14 * 86400, revision: change.Revision, pending: true), null));
+        }
+        return await documents.WriteAsync(writes, ct);
     }
     public async Task SetCoverageAsync(Coverage coverage, CancellationToken ct)
     {

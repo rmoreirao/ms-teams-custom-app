@@ -73,7 +73,8 @@ public static class TeamsApplication
                 .AddMicrosoftIdentityWebApp(config.GetSection("AzureAd"))
                 .EnableTokenAcquisitionToCallDownstreamApi(liveOptions.DelegatedSynthetic
                     ? DevelopmentTeamsScope.Scopes.Concat(["Chat.Create"])
-                    : liveOptions.Resources.Select(r => r.Kind == "chat" ? "ChatMessage.Send" : "ChannelMessage.Send").Distinct())
+                    : liveOptions.Resources.Select(r => r.Kind == "chat" ? "ChatMessage.Send" : "ChannelMessage.Send")
+                        .Concat(liveOptions.ChannelDiscovery.RegistryEnabled ? ["ChannelMessage.Send"] : []).Distinct())
                 .AddDistributedTokenCaches();
             builder.Services.AddCanonicalOidcCallback(config["App:PublicOrigin"]);
             builder.Services.Configure<MsalDistributedTokenCacheAdapterOptions>(o =>
@@ -253,8 +254,27 @@ public static class TeamsApplication
                 entitlementProvider = liveOptions.EntitlementProvider,
                 canStartDirectChats = liveOptions.DirectChats.Length > 0,
                 canCreateDirectChats = false,
+                canBrowseChannels = liveOptions.ChannelDiscovery.Enabled && liveOptions.SynchronizationEnabled,
+                channelRegistry = liveOptions.ChannelDiscovery.RegistryEnabled,
                 csrf = csrf.GetAndStoreTokens(c).RequestToken
             });
+        });
+        api.MapChannelEndpoints(liveOptions);
+        api.MapGet("/conversations/{id}/access", async (string id, string? parent, HttpContext context, Messaging service,
+            ILiveStateStore state, TimeProvider clock, CancellationToken ct) =>
+        {
+            var actor = Current(context);
+            var value = (await service.GetAuthorizedAsync(actor, id, ct)).Value;
+            var access = ReadAccess.Create(Messaging.Authorize(actor, value), value, clock.GetUtcNow());
+            if (parent is not null)
+            {
+                if (parent.Length is < 1 or > 512 || value.Kind != "channel")
+                    throw new AppError(404, "access_denied", "Thread is not available.");
+                var root = await state.CurrentMessageAsync(actor.TenantId, id, parent, null, ct);
+                if (root is null || root.Deleted || root.CreatedAt < access.HistoryFrom)
+                    throw new AppError(404, "access_denied", "Thread is not available.");
+            }
+            return access;
         });
         api.MapGet("/people", async (HttpContext context, ILiveStateStore state, CancellationToken ct) =>
             Results.Ok(await Discovery(context, state).PeopleAsync(Current(context), ct)));
@@ -291,13 +311,13 @@ public static class TeamsApplication
         api.MapGet("/conversations/{id}/cache-diagnostics/cleanup/{operationId}", (string id, string operationId,
             HttpContext c, ILiveStateStore state, CancellationToken ct) =>
             state.CacheCleanupAsync(Current(c), id, operationId, ct));
-        api.MapGet("/conversations/{id}/messages", async (string id, string? cursor, string? parent, long? minimumRevision, bool? diagnostics,
+        api.MapGet("/conversations/{id}/messages", async (string id, string? cursor, string? parent, long? minimumRevision, bool? diagnostics, bool? preview,
             HttpContext c, Messaging service, CancellationToken ct) =>
         {
             var evidence = diagnostics == true || c.Request.Headers["X-Cache-Diagnostics"] == "true"
                 ? new ReadEvidence("page", c.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow()) : null;
             c.Items["cache-read-evidence"] = evidence;
-            var page = await service.ReadAsync(Current(c), id, cursor, parent, minimumRevision ?? 0, ct, evidence);
+            var page = await service.ReadAsync(Current(c), id, cursor, parent, minimumRevision ?? 0, ct, evidence, preview == true);
             if (!page.Pending) return Results.Ok(page with { Diagnostics = evidence });
             c.Response.Headers.RetryAfter = "1";
             return Results.Json(new PendingRead("pending", 1000, page.Access, evidence), statusCode: 202);
@@ -354,13 +374,13 @@ public static class TeamsApplication
         LiveDiscovery Discovery(HttpContext context, ILiveStateStore state) => new(state, liveOptions, tenant,
             context.RequestServices.GetRequiredService<ILogger<LiveDiscovery>>(),
             context.RequestServices.GetRequiredService<TimeProvider>());
-        static Actor Current(HttpContext c) => new(
+    }
+    public static Actor Current(HttpContext c) => new(
             c.User.FindFirstValue("tid") ?? c.User.FindFirstValue("http://schemas.microsoft.com/identity/claims/tenantid")
                 ?? throw new AppError(401, "authentication_required", "The tenant claim is missing. Sign in again."),
             c.User.FindFirstValue("oid") ?? c.User.FindFirstValue("http://schemas.microsoft.com/identity/claims/objectidentifier")
                 ?? throw new AppError(401, "authentication_required", "The principal claim is missing. Sign in again."),
             c.User.FindFirstValue("name") ?? c.User.Identity?.Name ?? "Member",
             c.User.FindFirstValue("app_sid") ?? throw new AppError(401, "authentication_required", "Sign in to establish a new session."));
-    }
 }
 public partial class Program;

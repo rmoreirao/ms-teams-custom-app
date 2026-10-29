@@ -11,6 +11,7 @@ public sealed class LiveOptions
     public string AuthorityMode { get; set; } = "Policy";
     public string EntitlementProvider { get; set; } = "External";
     public GraphPolicyOptions? GraphPolicy { get; set; }
+    public ChannelDiscoveryOptions ChannelDiscovery { get; set; } = new();
     public Dictionary<string, string> RoleIdentityClientIds { get; set; } = [];
     public string[] HostedRoles { get; set; } = [];
     public string[] SyntheticActorIds { get; set; } = [];
@@ -50,6 +51,7 @@ public sealed class LiveOptions
         if (role is not ("Api" or "Receiver" or "Projector" or "Delivery" or "Control"))
             throw new InvalidOperationException("Live mode requires an independently deployed supported role.");
         ValidateHosting(role, tenant);
+        ChannelDiscovery.Validate(this);
         if (EntitlementProvider is not ("External" or "Graph") || DelegatedSynthetic && EntitlementProvider != "External")
             throw new InvalidOperationException("Select Graph or External policy under service authentication; synthetic hosting cannot select a policy provider.");
         foreach (var url in DelegatedSynthetic || EntitlementProvider == "Graph" ? new[] { NotificationUrl, LifecycleUrl } :
@@ -165,9 +167,19 @@ public sealed class LiveOptions
             throw new InvalidOperationException("Explicit Session reads require one readable/writable region and Session or Strong account consistency.");
     }
 }
-public sealed record SubscriptionScope(string Id, string Path)
+public sealed class ChannelDiscoveryOptions
 {
-    public bool Covers(ApprovedResource resource) => Path == resource.Path ||
-        Path == "chats/getAllMessages" && resource.Kind == "chat" ||
-        Path == "teams/getAllMessages" && resource.Kind == "channel";
+    public bool RegistryEnabled { get; set; }
+    public bool Enabled { get; set; }
+    public bool SendEnabled { get; set; }
+    public string ApprovalReference { get; set; } = "";
+    public DateTimeOffset HistoryFrom { get; set; }
+    public void Validate(LiveOptions options)
+    {
+        if ((Enabled || SendEnabled) && !RegistryEnabled || RegistryEnabled && (options.AuthorityMode != "Policy" ||
+            options.EntitlementProvider != "Graph" || string.IsNullOrWhiteSpace(ApprovalReference) ||
+            ApprovalReference.StartsWith("PENDING", StringComparison.OrdinalIgnoreCase) ||
+            HistoryFrom == default || HistoryFrom > DateTimeOffset.UtcNow))
+            throw new InvalidOperationException("Channel discovery requires the approved service Graph registry and explicit history policy.");
+    }
 }

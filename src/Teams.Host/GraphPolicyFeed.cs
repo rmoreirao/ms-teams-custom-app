@@ -7,7 +7,8 @@ using Teams.Core;
 namespace Teams.Host;
 
 public sealed class GraphPolicyFeed(IGraphBackground graph, IGraphPolicyReader policyReader, ILiveStateStore store,
-    LiveOptions options, string tenant, string webClientId, TimeProvider clock, ILogger<GraphPolicyFeed> logger) : IEntitlementFeed
+    LiveOptions options, string tenant, string webClientId, TimeProvider clock, ILogger<GraphPolicyFeed> logger,
+    IResourceRegistry? registry = null) : IEntitlementFeed
 {
     private sealed record Account(string Name, bool Enabled);
     private sealed record IdentitySnapshot(IReadOnlyDictionary<string, Account> Accounts, IReadOnlySet<string> Assigned,
@@ -15,10 +16,12 @@ public sealed class GraphPolicyFeed(IGraphBackground graph, IGraphPolicyReader p
     private readonly SemaphoreSlim identitiesGate = new(1);
     private readonly ConcurrentDictionary<string, AuthorityPage> snapshots = new();
     private IdentitySnapshot? identities;
+    private readonly ConcurrentDictionary<string, (HashSet<string> Teams, DateTimeOffset Until)> joinedTeams = new();
     private GraphPolicyOptions Policy => options.GraphPolicy ?? throw new InvalidOperationException("Graph membership policy is missing.");
     public async Task<AuthorityPage> ReadAsync(ApprovedResource resource, string? cursor, CancellationToken ct)
     {
-        if (cursor is not null || !options.Resources.Any(approved => approved == resource))
+        var registration = registry is null ? null : await registry.FindAsync(resource.Id, ct);
+        if (cursor is not null || (registry is null ? !options.Resources.Any(approved => approved == resource) : registration?.Resource != resource))
             throw new AppError(400, "policy_scope_invalid", "Policy reads must select an approved resource without a client continuation.");
         if (snapshots.TryGetValue(resource.Id, out var cached) &&
             cached.Entries.All(entry => entry.FreshUntil > clock.GetUtcNow().AddSeconds(60)))
@@ -29,12 +32,14 @@ public sealed class GraphPolicyFeed(IGraphBackground graph, IGraphPolicyReader p
         var identity = await IdentitiesAsync(ct);
         var source = graph.ForResource(resource.Path);
         var root = resource.Path[..resource.Path.LastIndexOf("/messages", StringComparison.Ordinal)];
-        var metadata = await source.GetAsync(root, ct);
+        var metadata = resource.Kind == "channel" ? await policyReader.ReadChannelAsync(resource, ct) :
+            await source.GetAsync(root, ct);
         var histories = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
         var memberIds = new HashSet<string>(StringComparer.Ordinal);
         var supported = true;
         string? denial = null;
         var pair = options.DirectChats.SingleOrDefault(pair => pair.ResourceId == resource.Id);
+        var historyFloor = registration?.HistoryFrom ?? Policy.HistoryFrom[resource.Id];
         if (resource.Kind == "chat")
         {
             if (Text(metadata, "id") != resource.GraphChatId)
@@ -65,16 +70,24 @@ public sealed class GraphPolicyFeed(IGraphBackground graph, IGraphPolicyReader p
             var teamRoot = $"teams/{Uri.EscapeDataString(resource.GraphTeamId!)}";
             var team = await policyReader.ReadAsync(teamRoot + "?$select=id,isArchived", ct);
             if (Text(team, "id") != resource.GraphTeamId || Text(metadata, "id") != resource.GraphChannelId) throw InvalidEvidence();
-            supported = Text(metadata, "membershipType") == "standard" && !Boolean(team, "isArchived") &&
-                (!metadata.TryGetProperty("moderationSettings", out var moderation) || moderation.ValueKind == JsonValueKind.Null);
-            var members = await CollectionAsync(path => policyReader.ReadAsync(path, ct), teamRoot + "/members", ct);
-            foreach (var member in members)
+            supported = ChannelEligibility.Supported(metadata) && !Boolean(team, "isArchived");
+            if (options.ChannelDiscovery.RegistryEnabled && !options.Resources.Any(seed => seed.Id == resource.Id))
             {
-                var id = Text(member, "userId");
-                if (!memberIds.Add(id)) throw InvalidEvidence();
-                if (member.TryGetProperty("tenantId", out var tid) && tid.GetString() != tenant) supported = false;
-                histories[id] = Policy.HistoryFrom[resource.Id];
+                foreach (var actor in Policy.AdmittedUserIds)
+                    if ((await JoinedTeamsAsync(actor, identity.FreshUntil, ct)).Contains(resource.GraphTeamId!))
+                    {
+                        memberIds.Add(actor);
+                        histories[actor] = historyFloor;
+                    }
             }
+            else
+                foreach (var member in await CollectionAsync(path => policyReader.ReadAsync(path, ct), teamRoot + "/members", ct))
+                {
+                    var id = Text(member, "userId");
+                    if (!memberIds.Add(id)) throw InvalidEvidence();
+                    if (member.TryGetProperty("tenantId", out var tid) && tid.GetString() != tenant) supported = false;
+                    histories[id] = historyFloor;
+                }
             if (!supported) denial = "policy_channel_scope_unsupported";
         }
         var verifiedAt = clock.GetUtcNow();
@@ -87,9 +100,10 @@ public sealed class GraphPolicyFeed(IGraphBackground graph, IGraphPolicyReader p
             var account = identity.Accounts[actor];
             var active = supported && account.Enabled && identity.Assigned.Contains(actor) &&
                 memberIds.Contains(actor) && histories.ContainsKey(actor) && !await store.IsBlockedAsync(tenant, actor, ct);
-            var cutoff = new[] { Policy.HistoryFrom[resource.Id], histories.GetValueOrDefault(actor), verifiedAt.AddDays(-7) }.Max();
+            var cutoff = new[] { historyFloor, histories.GetValueOrDefault(actor), verifiedAt.AddDays(-7) }.Max();
             entries.Add(new(tenant, resource.Id, actor, account.Name, cutoff, verifiedAt, freshUntil,
-                version, active, active && Policy.SendEnabledResources.Contains(resource.Id), options.WriterEpoch));
+                version, active, active && (registration?.CanSend ?? Policy.SendEnabledResources.Contains(resource.Id)) &&
+                    (options.Resources.Any(seed => seed.Id == resource.Id) || options.ChannelDiscovery.SendEnabled), options.WriterEpoch));
         }
         if (denial is not null)
             logger.LogWarning("Source-backed policy denied unsupported resource conditions; resource={ResourceId}, code={Code}.", resource.Id, denial);
@@ -100,6 +114,23 @@ public sealed class GraphPolicyFeed(IGraphBackground graph, IGraphPolicyReader p
         var page = new AuthorityPage(tenant, resource.Id, entries, null, direct);
         snapshots[resource.Id] = page;
         return page;
+    }
+    public async Task VerifyActorAsync(Actor actor, CancellationToken ct)
+    {
+        if (actor.TenantId != tenant || !Policy.AdmittedUserIds.Contains(actor.Id))
+            throw new AppError(403, "access_denied", "This workspace is not available.");
+        var snapshot = await IdentitiesAsync(ct);
+        if (!snapshot.Accounts[actor.Id].Enabled || !snapshot.Assigned.Contains(actor.Id) ||
+            await store.IsBlockedAsync(tenant, actor.Id, ct))
+            throw new AppError(403, "access_denied", "This account no longer has access.");
+    }
+    private async Task<HashSet<string>> JoinedTeamsAsync(string actor, DateTimeOffset until, CancellationToken ct)
+    {
+        if (joinedTeams.TryGetValue(actor, out var cached) && cached.Until > clock.GetUtcNow().AddSeconds(30)) return cached.Teams;
+        var values = await CollectionAsync(path => policyReader.ReadAsync(path, ct), $"users/{Uri.EscapeDataString(actor)}/joinedTeams", ct);
+        var teams = values.Select(value => Text(value, "id")).ToHashSet(StringComparer.Ordinal);
+        joinedTeams[actor] = (teams, until);
+        return teams;
     }
     private async Task<IdentitySnapshot> IdentitiesAsync(CancellationToken ct)
     {

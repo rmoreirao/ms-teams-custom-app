@@ -131,6 +131,17 @@ public sealed class SubscriptionController(IGraphBackground graph, LiveControlSt
     LiveOptions options, TimeProvider clock)
 {
     private readonly string owner = Guid.NewGuid().ToString("N");
+    public async Task EnsureAsync(SubscriptionScope scope, CancellationToken ct)
+    {
+        await StepAsync(scope, ct);
+        var current = await control.SubscriptionAsync(scope.Id, ct);
+        var lifecycle = await control.LifecycleAsync(scope.Id, ct);
+        if (current?.Value is not { GraphId: not null } subscription ||
+            subscription.Resource != scope.Path || subscription.Expires <= clock.GetUtcNow().AddMinutes(1) ||
+            subscription.CertificateId != options.NotificationCertificateId || lifecycle is { Value.Handled: false })
+            throw new AppError(503, "channel_subscription_preparing", "Live channel synchronization is not yet established.");
+        await control.RegisterLookupAsync(subscription, ct);
+    }
     public async Task StepAsync(SubscriptionScope scope, CancellationToken ct)
     {
         var scopedGraph = graph.ForResource(scope.Path);
@@ -257,7 +268,8 @@ public sealed class SubscriptionController(IGraphBackground graph, LiveControlSt
 }
 public sealed class LiveControlWorker(string tenant, LiveOptions options, ILiveStateStore store,
     LiveControlStore control, SubscriptionController subscriptions, ResourceHydrator hydrator,
-    IEntitlementFeed authority, IRealtime realtime, TimeProvider clock, ILogger<LiveControlWorker> logger) : BackgroundService
+    IEntitlementFeed authority, IRealtime realtime, TimeProvider clock, ILogger<LiveControlWorker> logger,
+    IResourceRegistry? registry = null) : BackgroundService
 {
     private readonly ConcurrentDictionary<string, string> authorityCursors = new();
     private readonly ConcurrentDictionary<string, byte> subscriptionGaps = new();
@@ -291,9 +303,9 @@ public sealed class LiveControlWorker(string tenant, LiveOptions options, ILiveS
     }
     private async Task RefreshAsync(CancellationToken ct)
     {
-        foreach (var scope in options.SubscriptionScopes)
+        foreach (var scope in registry is null ? options.SubscriptionScopes : await registry.ScopesAsync(ct))
             await GuardAsync(() => subscriptions.StepAsync(scope, ct), "subscription", ct, scope.Id);
-        await Parallel.ForEachAsync(options.Resources, new ParallelOptions
+        await Parallel.ForEachAsync(registry is null ? options.Resources : (await registry.ListAsync(ct)).Select(r => r.Resource), new ParallelOptions
             { MaxDegreeOfParallelism = options.QueueConcurrency, CancellationToken = ct }, async (resource, resourceToken) =>
         {
             await GuardAsync(async () =>
@@ -354,7 +366,7 @@ public sealed class LiveControlWorker(string tenant, LiveOptions options, ILiveS
         if (clock.GetUtcNow() - repairHealthAt >= TimeSpan.FromMinutes(1))
         {
             repairHealthAt = clock.GetUtcNow();
-            await Parallel.ForEachAsync(options.Resources, new ParallelOptions
+            await Parallel.ForEachAsync(registry is null ? options.Resources : (await registry.ListAsync(ct)).Select(r => r.Resource), new ParallelOptions
                 { MaxDegreeOfParallelism = options.QueueConcurrency, CancellationToken = ct }, async (resource, token) =>
                 await GuardAsync(async () =>
                 {
@@ -370,7 +382,8 @@ public sealed class LiveControlWorker(string tenant, LiveOptions options, ILiveS
         await Parallel.ForEachAsync(jobs.GroupBy(job => job.ResourceId), new ParallelOptions
             { MaxDegreeOfParallelism = options.QueueConcurrency, CancellationToken = ct }, async (resourceJobs, resourceToken) =>
         {
-            var resource = options.Resources.SingleOrDefault(r => r.Id == resourceJobs.Key);
+            var resource = registry is null ? options.Resources.SingleOrDefault(r => r.Id == resourceJobs.Key) :
+                (await registry.FindAsync(resourceJobs.Key, resourceToken))?.Resource;
             if (resource is null) { logger.LogError("Repair resource is no longer approved; work remains quarantined."); return; }
             var steps = 0;
             foreach (var job in resourceJobs)
@@ -445,7 +458,7 @@ public sealed class LiveControlWorker(string tenant, LiveOptions options, ILiveS
     private async Task<DateTimeOffset> SubscriptionExpiryAsync(ApprovedResource resource, CancellationToken ct)
     {
         var expires = DateTimeOffset.MinValue;
-        foreach (var scope in options.SubscriptionScopes.Where(s => s.Covers(resource)))
+        foreach (var scope in (registry is null ? options.SubscriptionScopes : await registry.ScopesAsync(ct)).Where(s => s.Covers(resource)))
         {
             var state = await control.SubscriptionAsync(scope.Id, ct);
             if (state is not null && state.Value.GraphId is not null && state.Value.Expires > expires) expires = state.Value.Expires;

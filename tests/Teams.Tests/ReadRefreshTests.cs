@@ -37,6 +37,111 @@ public sealed class ReadRefreshTests
     private static JsonElement Page(JsonElement[] messages, string? next = null) =>
         JsonSerializer.SerializeToElement(new Dictionary<string, object?> { ["value"] = messages, ["@odata.nextLink"] = next });
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RootCoverageAndPartialRepliesCannotStandInForThreadInitialization(bool partial)
+    {
+        const string id = "channel-general";
+        const string path = "teams/team/channels/channel-general/messages/root/replies";
+        if (partial)
+            await fixture.Store.ApplyAsync(fixture.Tenant, id, new("older", fixture.Sam.Id, "Sam", "Cached",
+                fixture.Clock.GetUtcNow().AddMinutes(-10), fixture.Clock.GetUtcNow().AddMinutes(-10), "root"), default);
+        Assert.True((await fixture.Store.GetAsync(fixture.Tenant, id, default))!.Value.CoverageReady);
+        Assert.Null((await Messaging().ChangesAsync(fixture.Alex, id, 0, default, "root")).ReplyCount);
+        var graph = new Graph(value => Task.FromResult(value.Contains("skiptoken", StringComparison.Ordinal)
+            ? Page([Source("latest-one", at: fixture.Clock.GetUtcNow().AddMinutes(-2)),
+                Source("latest-two", at: fixture.Clock.GetUtcNow().AddMinutes(-1))])
+            : Page([Source("older", at: fixture.Clock.GetUtcNow().AddMinutes(-10))],
+                $"https://graph.microsoft.com/v1.0/{path}?$skiptoken=two")));
+        var handler = Handler(graph);
+        var queue = new Queue((request, _, ct) => handler.HandleAsync(request, ct));
+        var result = await Messaging(queue).ReadAsync(fixture.Alex, id, null, "root", 0, default, preview: true);
+        Assert.True(Assert.Single(queue.Requests).Required);
+        Assert.Equal(2, graph.Paths.Count);
+        Assert.False(result.Pending);
+        Assert.True(result.Preview);
+        Assert.Equal(new[] { "latest-one", "latest-two" }, result.Messages.Select(message => message.Id));
+        Assert.Equal(3, result.ReplyCount);
+        Assert.Equal(fixture.Clock.GetUtcNow().AddMinutes(-10).AddDays(7), result.ReplyCountExpiresAt);
+        Assert.NotNull(result.Cursor);
+        var older = await Messaging(queue).ReadAsync(fixture.Alex, id, result.Cursor, "root", 0, default);
+        Assert.Equal("older", Assert.Single(older.Messages).Id);
+        Assert.Null(older.Cursor);
+        Assert.Null(older.ReplyCount);
+        Assert.Equal(3, (await Messaging().ChangesAsync(fixture.Alex, id, result.Revision, default, "root")).ReplyCount);
+        Assert.Single(queue.Requests);
+    }
+
+    [Fact]
+    public async Task ThreadHydrationContinuesAfterThreePagesWithoutFalseCompletionOrFailure()
+    {
+        var sourcePage = 0;
+        var graph = new Graph(_ => {
+            var index = ++sourcePage;
+            return Task.FromResult(Page([Source($"reply-{index}", at: fixture.Clock.GetUtcNow().AddMinutes(index - 10))],
+                index == 4 ? null : $"https://graph.microsoft.com/v1.0/teams/team/channels/channel-general/messages/root/replies?$skiptoken={index + 1}"));
+        });
+        var handler = Handler(graph);
+        var request = Request("channel-general", "root");
+        await Assert.ThrowsAsync<ReadRefreshDeferredException>(() => handler.HandleAsync(request, default));
+        var progress = (await fixture.Store.ReadViewAsync(fixture.Tenant, "channel-general", "root", default))!.Value;
+        Assert.False(progress.Complete);
+        Assert.Contains("skiptoken=4", progress.NextLink);
+        var lease = (await Control.ReadRefreshAsync(request.Key, default))!.Value;
+        Assert.Null(lease.CompletedThrough);
+        Assert.Null(lease.Failure);
+        Assert.Equal(0, lease.Attempts);
+        var queue = new Queue((next, _, ct) => handler.HandleAsync(next, ct));
+        var result = await Messaging(queue).ReadAsync(fixture.Alex, "channel-general", null, "root", 0, default, preview: true);
+        Assert.Equal(4, sourcePage);
+        Assert.Equal(new[] { "reply-3", "reply-4" }, result.Messages.Select(message => message.Id));
+        Assert.Equal(4, result.ReplyCount);
+        Assert.True((await fixture.Store.ReadViewAsync(fixture.Tenant, "channel-general", "root", default))!.Value.Complete);
+        Assert.NotNull((await Control.ReadRefreshAsync(request.Key, default))!.Value.CompletedThrough);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(25)]
+    public async Task ThreadCountsAreVerifiedEmptyOrExplicitlyUnknownForLongThreads(int count)
+    {
+        var graph = new Graph(_ => Task.FromResult(Page(Enumerable.Range(0, count)
+            .Select(index => Source($"reply-{index:D2}", at: fixture.Clock.GetUtcNow().AddMinutes(index - 30))).ToArray())));
+        var handler = Handler(graph);
+        var queue = new Queue((request, _, ct) => handler.HandleAsync(request, ct));
+        var result = await Messaging(queue).ReadAsync(fixture.Alex, "channel-general", null, "root", 0, default, preview: true);
+        Assert.False(result.Pending);
+        Assert.Equal(Math.Min(2, count), result.Messages.Count);
+        Assert.Equal(count == 0 ? 0 : (int?)null, result.ReplyCount);
+        Assert.Equal(count == 0, result.Cursor is null);
+        var ready = Assert.Single(await fixture.Store.PendingOutboxAsync(fixture.Tenant, default),
+            value => value.ConversationId == "channel-general" && value.Event?.Type == "channel.view.ready");
+        Assert.Equal("root", ready.Event!.ParentId);
+        Assert.Equal(result.Revision, ready.Event.Revision);
+        var changes = await Messaging().ChangesAsync(fixture.Alex, "channel-general", result.Revision, default, "root");
+        Assert.Equal(result.ReplyCount, changes.ReplyCount);
+        await Messaging(queue).ReadAsync(fixture.Alex, "channel-general", null, "root", 0, default, preview: true);
+        Assert.Single(graph.Paths);
+        Assert.Single(queue.Requests);
+    }
+
+    [Fact]
+    public async Task ColdThreadSubmissionAndSourceFailuresCannotReturnFabricatedEmptyReplies()
+    {
+        var queue = new Queue((_, _, _) => throw new AppError(503, "read_refresh_unavailable", "Queue unavailable."));
+        Assert.Equal("read_refresh_unavailable", (await Assert.ThrowsAsync<AppError>(() =>
+            Messaging(queue).ReadAsync(fixture.Alex, "channel-general", null, "root", 0, default, preview: true))).Code);
+        Assert.True(Assert.Single(queue.Requests).Required);
+        var request = Request("channel-general", "root");
+        var failed = Handler(new Graph(_ => throw new AppError(503, "graph_503", "Teams unavailable.")));
+        Assert.Equal("graph_503", (await Assert.ThrowsAsync<AppError>(() => failed.HandleAsync(request, default))).Code);
+        Assert.Null(await fixture.Store.ReadViewAsync(fixture.Tenant, "channel-general", "root", default));
+        var lease = (await Control.ReadRefreshAsync(request.Key, default))!.Value;
+        Assert.Null(lease.CompletedThrough);
+        Assert.Equal("graph_503", lease.Failure);
+    }
+
     [Fact]
     public async Task ExpiredSourceCoverageDoesNotHideHistoryOrShortenTheAuthorityLease()
     {

@@ -67,6 +67,131 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
         Assert.True(response.Headers.CacheControl?.NoStore);
     }
     [Fact]
+    public async Task AccessLeaseRenewsWithoutReadingMessageContentsAndDiscoveryDefaultsOff()
+    {
+        using var client = factory.Client();
+        var response = await client.GetAsync("/api/conversations/chat-handover/access");
+        var access = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(access.GetProperty("validUntil").GetDateTimeOffset() > factory.Fixture.Clock.GetUtcNow());
+        Assert.True(access.GetProperty("canSend").GetBoolean());
+        Assert.False(access.TryGetProperty("messages", out _));
+        Assert.True(response.Headers.CacheControl?.NoStore);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/teams?requestId={Guid.NewGuid():D}")).StatusCode);
+    }
+
+    [Fact]
+    public async Task ThreadPreviewUsesTheExistingAuthorizedReadEndpointAndRejectsUnscopedPreview()
+    {
+        using var isolated = new Factory();
+        using var client = isolated.Client();
+        var fixture = isolated.Fixture;
+        var now = fixture.Clock.GetUtcNow();
+        for (var index = 0; index < 3; index++)
+            await fixture.Store.ApplyAsync(fixture.Tenant, "channel-general",
+                new($"reply-{index}", fixture.Sam.Id, fixture.Sam.Name, "Reply", now.AddMinutes(index - 10),
+                    now.AddMinutes(index - 10), "root"), default);
+        Assert.True(await fixture.Store.SaveReadViewAsync(fixture.Tenant, "channel-general", "root", null,
+            new(1, true, null, now), default));
+        var response = await client.GetAsync("/api/conversations/channel-general/messages?parent=root&preview=true");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(response.Headers.CacheControl?.NoStore);
+        var result = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(result.GetProperty("preview").GetBoolean());
+        Assert.Equal(3, result.GetProperty("replyCount").GetInt32());
+        Assert.Equal(2, result.GetProperty("messages").GetArrayLength());
+        Assert.Equal("reply-1", result.GetProperty("messages")[0].GetProperty("id").GetString());
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/conversations/channel-general/messages?preview=true")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync(
+            "/api/conversations/channel-general/messages?parent=root&preview=true&cursor=invalid")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync(
+            "/api/conversations/chat-handover/messages?parent=root&preview=true")).StatusCode);
+        Assert.True(await fixture.Store.SaveReadViewAsync(fixture.Tenant, "channel-general", "missing", null,
+            new(1, true, null, now, ParentMissing: true), default));
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync(
+            "/api/conversations/channel-general/messages?parent=missing&preview=true")).StatusCode);
+    }
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("deleted")]
+    [InlineData("history")]
+    [InlineData("reply")]
+    public async Task ThreadAccessLeaseRechecksTheOriginalParent(string outcome)
+    {
+        using var isolated = new Factory();
+        using var client = isolated.Client();
+        const string path = "/api/conversations/channel-general/access?parent=";
+        var eligible = await client.GetAsync(path + "root");
+        Assert.Equal(HttpStatusCode.OK, eligible.StatusCode);
+        Assert.False((await eligible.Content.ReadFromJsonAsync<JsonElement>()).TryGetProperty("messages", out _));
+        var fixture = isolated.Fixture;
+        fixture.Clock.Advance(TimeSpan.FromSeconds(1));
+        var now = fixture.Clock.GetUtcNow();
+        var parent = outcome == "missing" ? "missing" : outcome == "reply" ? "reply" : "root";
+        if (outcome == "deleted")
+            await fixture.Store.ApplyAsync(fixture.Tenant, "channel-general",
+                new("root", fixture.Sam.Id, fixture.Sam.Name, "", now.AddHours(-1), now, Deleted: true, SourceVersion: "deleted"), default);
+        if (outcome == "history")
+            await fixture.Store.SetEntitlementAsync(new(fixture.Tenant, "channel-general", fixture.Alex.Id, fixture.Alex.Name,
+                now.AddMinutes(-30), now, now.AddMinutes(5), "tightened-history", true, true, 1), default);
+        if (outcome == "reply")
+            await fixture.Store.ApplyAsync(fixture.Tenant, "channel-general",
+                new("reply", fixture.Sam.Id, fixture.Sam.Name, "Reply", now, now, "root"), default);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync(path + parent)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/conversations/chat-handover/access?parent=root")).StatusCode);
+    }
+
+    [Fact]
+    public async Task ChannelRequestsUseDurableActorOperationsSignedSelectionsAndCsrf()
+    {
+        using var isolated = new Factory { Channels = true };
+        using var anonymous = isolated.Client(false);
+        var id = Guid.NewGuid().ToString("D");
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync($"/api/teams?requestId={id}")).StatusCode);
+        using var client = isolated.Client();
+        var session = await client.GetFromJsonAsync<JsonElement>("/api/session");
+        Assert.True(session.GetProperty("canBrowseChannels").GetBoolean());
+        var request = await client.GetAsync($"/api/teams?requestId={id}");
+        Assert.Equal(HttpStatusCode.Accepted, request.StatusCode);
+        Assert.True(request.Headers.CacheControl?.NoStore);
+        Assert.Single(isolated.ChannelQueue.Items);
+        Assert.Equal(HttpStatusCode.Conflict, (await client.GetAsync($"/api/teams/team/channels?requestId={id}")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/channel-operations/not-a-uuid")).StatusCode);
+        var current = (await isolated.Workflows.GetAsync(Factory.Actor, id, default))!;
+        await isolated.Workflows.SaveAsync(Factory.Actor, current, current.Value with
+        {
+            State = "ready", Teams = [new("team", "Engineering")], FreshUntil = isolated.Fixture.Clock.GetUtcNow().AddMinutes(1)
+        }, default);
+        var ready = await client.GetFromJsonAsync<JsonElement>($"/api/channel-operations/{id}");
+        Assert.Equal("ready", ready.GetProperty("state").GetString());
+        Assert.Equal("Engineering", ready.GetProperty("teams")[0].GetProperty("name").GetString());
+        var changes = await client.GetFromJsonAsync<ActorEventPage>("/api/realtime/changes?after=0");
+        Assert.Equal(2, changes!.Events.Count);
+        var open = new OpenChannel(Guid.NewGuid().ToString("D"), "tampered-selection");
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/channels/open", open)).StatusCode);
+        using var command = new HttpRequestMessage(HttpMethod.Post, "/api/channels/open");
+        command.Headers.Add("X-CSRF-TOKEN", session.GetProperty("csrf").GetString());
+        command.Content = JsonContent.Create(open);
+        Assert.Equal(HttpStatusCode.Gone, (await client.SendAsync(command)).StatusCode);
+        Assert.Single(isolated.ChannelQueue.Items);
+        var channelWork = new ChannelWork(Factory.Tenant, Factory.Actor, "Alex", Guid.NewGuid().ToString("D"), "channels", "team");
+        await isolated.Workflows.CreateAsync(channelWork, default);
+        var channelOperation = (await isolated.Workflows.GetAsync(Factory.Actor, channelWork.OperationId, default))!;
+        await isolated.Workflows.SaveAsync(Factory.Actor, channelOperation, channelOperation.Value with
+        {
+            State = "ready", Channels = [new("general", "team", "General", "Engineering")],
+            FreshUntil = isolated.Fixture.Clock.GetUtcNow().AddMinutes(1)
+        }, default);
+        var channels = await client.GetFromJsonAsync<JsonElement>($"/api/channel-operations/{channelWork.OperationId}");
+        using var valid = new HttpRequestMessage(HttpMethod.Post, "/api/channels/open");
+        valid.Headers.Add("X-CSRF-TOKEN", session.GetProperty("csrf").GetString());
+        valid.Content = JsonContent.Create(new OpenChannel(Guid.NewGuid().ToString("D"),
+            channels.GetProperty("channels")[0].GetProperty("selection").GetString()!));
+        Assert.Equal(HttpStatusCode.Accepted, (await client.SendAsync(valid)).StatusCode);
+        Assert.Equal("general", isolated.ChannelQueue.Items[^1].ChannelId);
+        isolated.Fixture.Clock.Advance(TimeSpan.FromMinutes(2));
+        Assert.Equal(HttpStatusCode.Gone, (await client.GetAsync($"/api/channel-operations/{id}")).StatusCode);
+    }
+    [Fact]
     public async Task LiveReadSendAndCsrfProtectionUseTheRealApiPipeline()
     {
         using var client = factory.Client();
@@ -230,6 +355,10 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
         private readonly LiveFixture fixture = new(Tenant, Actor);
         public LiveFixture Fixture => fixture;
         public IReadRefresh? Refresh { get; set; }
+        public bool Channels { get; set; }
+        public ChannelWorkflowStore Workflows => new(channelDocuments, Tenant, fixture.Clock);
+        private readonly MemoryPartitionDocuments channelDocuments = new();
+        public TestChannelQueue ChannelQueue { get; } = new();
         private WebApplication? application;
         public HttpClient Client(bool signedIn = true)
         {
@@ -239,7 +368,7 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
             if (signedIn) client.DefaultRequestHeaders.Add("X-Test-Actor", Actor);
             return client;
         }
-        public static Dictionary<string, string?> Settings()
+        public static Dictionary<string, string?> Settings(bool channels = false)
         {
             using var rsa = RSA.Create(2048);
             var request = new CertificateRequest("CN=Test notification", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
@@ -263,6 +392,22 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
                 Resources = [new("chat-handover", "chat", "Chat", null, "chat-handover", null, null)],
                 SubscriptionScopes = [new("scope", "chats/chat-handover/messages")]
             };
+            if (channels)
+            {
+                options.EntitlementProvider = "Graph";
+                options.RoleIdentityClientIds = new() {
+                    ["Api"] = "60000000-0000-0000-0000-000000000001",
+                    ["Receiver"] = "60000000-0000-0000-0000-000000000002",
+                    ["Projector"] = "60000000-0000-0000-0000-000000000003",
+                    ["Delivery"] = "60000000-0000-0000-0000-000000000004",
+                    ["Control"] = options.ControlIdentityClientId
+                };
+                options.GraphPolicy = new() { ApprovalReference = "local-test-policy",
+                    WebServicePrincipalId = "70000000-0000-0000-0000-000000000001", AdmittedUserIds = [Actor],
+                    HistoryFrom = new() { ["chat-handover"] = DateTimeOffset.UtcNow.AddDays(-1) } };
+                options.ChannelDiscovery = new() { RegistryEnabled = true, Enabled = true,
+                    ApprovalReference = "local-test-channel-scope", HistoryFrom = DateTimeOffset.UtcNow.AddDays(-1) };
+            }
             return new()
             {
                 ["App:GraphMode"] = "Live",
@@ -273,7 +418,8 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
                 ["App:PublicOrigin"] = "https://example.test",
                 ["Live:Configuration"] = JsonSerializer.Serialize(options, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
                 ["AzureAd:TenantId"] = Tenant,
-                ["AzureAd:ClientId"] = options.SyncClientId,
+                ["AzureAd:ClientId"] = channels ? "80000000-0000-0000-0000-000000000001" : options.SyncClientId,
+                ["AzureClientId"] = channels ? options.RoleIdentityClientIds["Api"] : null,
                 ["Azure:ProtectionKey"] = "https://example.vault.azure.net/keys/session",
                 ["Azure:PubSub"] = "https://example.webpubsub.azure.com",
                 ["Callbacks:Audience"] = "api://test",
@@ -287,7 +433,7 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
                 EnvironmentName = "Testing",
                 ContentRootPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "Teams.Host"))
             });
-            builder.Configuration.AddInMemoryCollection(Settings());
+            builder.Configuration.AddInMemoryCollection(Settings(Channels));
             builder.WebHost.UseTestServer();
             var app = TeamsApplication.Build(builder, services =>
             {
@@ -306,6 +452,11 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
                 services.AddSingleton<ICommandBudget>(new MemoryBudget(fixture.Clock));
                 services.RemoveAll<IReadRefresh>();
                 if (Refresh is not null) services.AddSingleton(Refresh);
+                if (Channels)
+                {
+                    services.AddSingleton(Workflows);
+                    services.AddSingleton<IChannelWorkQueue>(ChannelQueue);
+                }
                 services.AddAuthentication(o =>
                 {
                     o.DefaultAuthenticateScheme = "Test";
@@ -321,6 +472,12 @@ public sealed class ApiTests : IClassFixture<ApiTests.Factory>
             return app;
         }
         public void Dispose() => application?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+    }
+    public sealed class TestChannelQueue : IChannelWorkQueue
+    {
+        public List<ChannelWork> Items { get; } = [];
+        public Task EnqueueAsync(ChannelWork work, DateTimeOffset? scheduledAt, CancellationToken ct)
+        { Items.Add(work); return Task.CompletedTask; }
     }
     private sealed class TestAuthentication(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)
         : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)

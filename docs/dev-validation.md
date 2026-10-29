@@ -1,5 +1,234 @@
 # Dev functional validation report
 
+## Inline channel reading: Development deployment (2026-10-29)
+
+**Deployed to all five existing Development roles; signed-in Teams read-through
+and inline-send acceptance remain unverified.** Private ACR build `dt1c` produced
+immutable digest
+`sha256:13c2513632c2c439289b591a920ef9fa40bf52f3e5c2a3cb06bcf7aae7337b25`
+from a stable 330-file workspace manifest, SHA256
+`1802370ab94efd246a7edab95e8cc173ffa1e2a398c07dba66ddc4f157c917cf`.
+Source and the reviewed active contract were unchanged through build, rollout
+and public acceptance. Deployment-status documentation was updated afterward
+and is not part of that image's manifest.
+
+The guarded image-only release preflight verified every existing role, private
+Session storage, current-read procedure and exact queue/data access before the
+first mutation. The release sequence now prepares Control, Receiver, Projector
+and Delivery before the API/frontend; offline release regressions cover this
+order, all-target preflight, partial-failure preservation and idempotent reapply.
+
+| Role | Exact active healthy revision |
+| --- | --- |
+| Control | `teamsrefdev-unc3jasrpkgbo-ctrl--dev-68159c0dcacd4490` |
+| Receiver | `teamsrefdev-unc3jasrpkgbo-recv--dev-95ab47f6f1dd4f89` |
+| Projector | `teamsrefdev-unc3jasrpkgbo-worker--dev-9ec0ffba195b49bb` |
+| Delivery | `teamsrefdev-unc3jasrpkgbo-dlvr--dev-6183bd563ade4ef4` |
+| Api | `teamsrefdev-unc3jasrpkgbo-api--dev-b6e22aa73fa94b33` |
+
+Final independent inventory confirmed all five running on the same digest with
+unchanged non-image configuration, apart from the new revision suffixes.
+Registry, discovery and dynamic posting remain enabled under the existing
+approval. Identities, grants, the three-user scope, history floors, seeds,
+admission, network, sizing and replica limits were not changed.
+
+Public readiness, anonymous API denial and canonical Entra redirect passed.
+The public shell references `index-Babfp_ww.js` and `index-BG-yFOZ5.css`; downloaded
+JavaScript and CSS were byte-identical to the matching local production build.
+Private evidence retains recovery inventories, build intent/run, source hashes,
+preflight/release output, exact revision details and public asset hashes.
+
+No new infrastructure or permissions, real Teams sends, authenticated browser
+journey, Git commit/push or Actions dispatch was performed for this release.
+Public readiness and the controlled local scenarios below are not real-source
+thread-hydration, unattended recovery or production acceptance.
+
+## Inline channel reading: local validation (2026-10-29)
+
+**Implemented and validated locally before the Development release above.**
+Posts now show two latest
+reply previews directly in the channel feed, with readable short bodies,
+expandable long bodies, inline paginated history and a contextual reply composer.
+The optional focused panel shares drafts, authorized content and delivery state.
+Opening, expanding, retrying or switching views never sends a message.
+
+Missing/incomplete thread history uses the existing Redis/Cosmos/Control Teams
+read-through path. Root readiness cannot fabricate empty replies; bounded source
+steps continue across unordered reply pages and emit targeted readiness even
+when a known-empty thread finishes without a revision increase. Visible previews
+are bounded and offscreen content reads pause. Failures expose Retry while
+retaining only still-authorized content; no passive reply-syncing placeholder or
+recurring pending-content polling is used. Counts stay unknown when incomplete
+or beyond the bounded census, and expire at the applicable history boundary.
+
+| Local evidence | Result |
+| --- | --- |
+| `dotnet test .\tests\Teams.Tests\Teams.Tests.csproj --no-restore --verbosity quiet` | 398 passed; one opt-in real-service test skipped |
+| `npm --prefix .\src\Web run check` | Type-check passed |
+| `npm --prefix .\src\Web test` | 175 passed across fifteen suites |
+| `npm --prefix .\src\Web run test:e2e` with `REFERENCE_TEST_PORT=5491` | 58 passed against the production-built shell, including fifteen channel scenarios |
+| Desktop/mobile inspection | Inline reading and shared draft handoff checked at 1280px and 390px; no horizontal overflow in the navigation journeys |
+| Scoped layout scan and CRLF-aware whitespace check | Passed |
+
+Coverage includes cold and known-empty Teams reads, source continuations beyond
+three pages, bounded failure/Retry, honest counts and expiry, long-thread
+pagination, same-revision events, shared drafts, rich-content safety, nearby-only
+reads and offscreen catch-up. Existing chat, Split View, authorization/history,
+offboarding, send uncertainty, concurrency and cache-diagnostic regressions passed.
+
+Graph, queues, policy and browser APIs were controlled dependencies for this
+local pass. It made no Azure deployment/configuration changes, new permissions,
+real Teams sends or authenticated live Teams acceptance. The subsequent
+Development deployment is recorded above; the earlier metadata-repair evidence
+below does not certify the inline feature's signed-in journey.
+
+## Channel metadata compatibility repair (2026-10-29)
+
+**The repair is deployed to all five existing Development service roles; live
+metadata and authority checks passed. The signed-in UI journey remains
+unverified.** Channel discovery and
+the existing channel's authority refresh selected `moderationSettings` on Graph
+v1.0, where it is unsupported. Control logs showed `graph_400` for both paths.
+Expired authority then caused the principal catalog/sidebar to fail closed.
+Earlier mocked responses incorrectly supplied the beta property on v1.0 and
+represented unmoderated channels only as null.
+
+The repair isolates read-only beta channel metadata behind fixed fields and
+team/path-bound continuations. Messages/subscriptions and generic clients stay
+on v1.0. Discovery, selection and authority renewal share strict eligibility
+checks covering explicit unmoderated objects, archive state and missing/unknown
+evidence. Permanent Graph 400 responses terminate the discovery request rather
+than appearing as delayed loading; the UI names delayed requests and gives
+terminal failures an explicit reload path without sending a message.
+
+The combined targeted backend run passed 149 channel/policy/transport/cursor,
+shared retry and telemetry regressions. The channel-browser suite passed 14
+tests, including delayed/failed recovery. The production frontend build/type-check
+and five compiled-shell channel Playwright scenarios passed, including
+desktop/mobile focus and drafts.
+
+Private ACR build `dt1b` produced immutable digest
+`sha256:8f6f2e2a36839549398a7b361328f52754ba89bcc424e845d94153bd8631cf2a`
+from a stable 327-file workspace manifest. The existing guarded image-only
+release verified all five exact healthy revisions and public smoke while
+preserving active channel flags, history floors, identities, access, seeds and
+network/scale configuration. No infrastructure or Entra changes were made.
+The public shell references `index-DL0emEbD.js`; downloaded JavaScript and CSS
+were byte-identical to the local verified production build.
+
+A one-off `Inspect` execution used the **already attached Control identity** on
+the existing manual, retry-disabled diagnostic job; its persistent configuration
+was unchanged. Real beta entity and collection reads succeeded, the configured
+channel was eligible and listed, and all three admitted users had fresh channel
+authority. None of the five registered resources reported `authorization_stale`;
+the three direct chats continued to deny their excluded third user. The probe
+made no Graph source writes and read/logged no Graph message bodies.
+
+This is targeted repair evidence, not full synchronization or authenticated
+browser acceptance. At inspection time the channel root was reconciled, but
+thread hydration remained queued and one direct-chat reconciliation was
+temporarily deferred by Graph throttling. An existing Edge session was not
+debuggable, so no sign-in, new-channel registration, real message send or
+authenticated UI journey was performed. Reloading teams/channels starts a fresh
+metadata operation; failed operations are not rewritten or replayed.
+
+## Approved channel activation (2026-10-29)
+
+**Registry, channel discovery and dynamic posts/replies are activated across all
+five Development roles.** The user explicitly approved the additional scoped
+infrastructure/access and channel processing after the image-only release.
+Activation reused that release's immutable image without a rebuild.
+
+The same three admitted users may browse only directly joined teams and select
+same-tenant standard, unmoderated channels in unarchived teams. Selection prepares
+up to seven days of recent history without joining, creating or sending. The
+fixed policy floor is `2026-10-22T07:52:45.1807249Z`; registration uses the later
+of that floor and current time minus seven days. Existing five seed mappings,
+their history/send policies and the three direct-chat pairs remain unchanged.
+
+| Evidence | Result / boundary |
+| --- | --- |
+| Additive infrastructure | ARM preview and successful Incremental deployment contained exactly eleven additions: `live-resources`, `readCurrentV1`, five container-scoped Cosmos assignments, `channel-work` and three queue-scoped assignments; no broad platform deployment |
+| Least-privilege access | Control alone writes the registry; the other four roles use the reviewed current-reader role. Only Api Sender and Control Sender/Receiver access the new queue. Existing Cosmos assignments and queue configurations were preserved |
+| Existing Graph consent | Required application permissions and all three existing user-specific `ChannelMessage.Send` consents were present; no Entra permissions or consent were changed |
+| Staged runtime | All five exact registry-only revisions became active, healthy and running before full enablement. All five final revisions reached the same state on the unchanged image, with Api enabled last. Startup exercised registry current reads and required queue links without sending or consuming a test message |
+| Original-to-final preservation | Independent comparison allowed only `Live__Configuration.channelDiscovery` and revision suffix changes; image, other configuration, identities, networking, replica limits, admission and existing source/history mappings were preserved |
+| Release safeguards | Read-only release guards passed against both staged profiles, including exact Cosmos access, channel/read-refresh queues, scoped grants, current-read procedure and immutable image. A localized typed-date parsing defect in the history-cutoff guard was fixed and covered by the offline deployment-contract suite; this local release-tooling change does not alter the container image |
+| Public application | Readiness, compiled shell, anonymous API denial and canonical Entra redirect passed after activation |
+| Persistent recovery/release state | Before/after inventories, exact revision identities, stage/progress records and final activation proof remain private. The persistent routine-release contract was updated to the verified active profile with the original retained for recovery |
+
+No signed-in browser journey, arbitrary new-channel selection/onboarding or real
+Teams test send was performed during activation. User selection remains the
+trigger for preparing an eligible new channel. These results establish
+configuration/runtime activation, not authenticated new-channel end-to-end,
+unattended freshness, production policy, capacity or recovery acceptance.
+No Git commit, push or GitHub Actions dispatch was made.
+
+## Channel code: image-only Development release (2026-10-29)
+
+**At the end of the image-only release, the new image was deployed to all five
+existing Development roles; expanded channel discovery and dynamic sending were
+still off.** This release added the
+channel UI/code without provisioning its additional registry, queue or access,
+or broadening the existing three-user/five-resource processing scope. The
+subsequent separately approved activation is recorded above.
+
+ACR `dt1a` built the uncommitted workspace based on
+`2024bea92b5af6eb004cf6044a84af0d35c19523`, with workspace SHA-256
+`928921840e010dffeba2fd459b07291dc181a4e5513c8d21cf6ce2ded5e19d71`,
+into immutable image
+`sha256:9194d44215926e5e298e5f26e1f11e757132c29212992961627967aa86fba194`.
+The source manifest matched before/after build, before rollout and during public
+asset acceptance. These subsequent documentation-only status updates were not
+part of that image build.
+
+| Evidence | Result / boundary |
+| --- | --- |
+| Current source validation | Frontend production build, type-check, 163 unit/component tests and authentication-helper type checks passed; 368 backend tests passed with one opt-in real-Cosmos test skipped |
+| Release safeguards | Script syntax and offline deployment contracts passed; read-only preflight verified all five existing targets, exact Cosmos access, Standard read-refresh queue/scoped grants and the immutable ACR digest before mutation |
+| Exact workload rollout | Api, Receiver, Projector, Delivery and Control each reached their exact new active healthy revision on the same digest; final inventory verified all five running |
+| Preserved state | Independent before/after comparison allowed only the image and revision suffix to change; configuration, identities, grants, networking, replica limits, admission and existing source/history mappings were preserved |
+| Public application | Readiness, shell loading, anonymous API denial and canonical Entra redirect passed; public JavaScript and stylesheet bytes matched the local production build exactly |
+| Channel activation boundary | At this release boundary, registry, new discovery and dynamic sending remained disabled on all five roles; no `live-resources`/`channel-work` provisioning or additional access grants were applied |
+
+No signed-in browser journey, real Teams send, new-channel subscription or
+new-channel cloud acceptance was performed. No Git commit, push or GitHub Actions
+dispatch was made. Existing background synchronization continued under the
+then-unchanged approved scope; this release does not certify unattended source
+freshness or production capacity. Private source manifests, recovery snapshots,
+exact revision identities and release proofs remain outside the repository.
+
+## Event-driven channels: local implementation only (2026-10-28)
+
+**Implemented and verified locally; not deployed or activated in Azure.**
+The source now includes separate Chats/Channels destinations, team-grouped
+channel navigation, metadata-only joined-team browsing, immediate durable
+preparation on selection, explicit new posts and contextual threaded replies.
+The existing Cosmos/Redis content path remains authoritative. Durable actor
+and view-readiness events drive progress and reconnect catch-up, without
+recurring browser catalog, preparation-status or channel-content polling.
+
+| Local evidence | Result / boundary |
+| --- | --- |
+| Complete backend suite | 368 passed, one opt-in real-Cosmos integration test skipped; zero failures |
+| Frontend type-check and unit suite | Passed; 163 unit/component tests, including revision preservation across older pages, consecutive event batches, durable sequence recovery and parent-bound access renewal |
+| Production shell and offline browser suite | Build passed; all 48 Playwright scenarios passed using runner-owned API/WebSocket fixtures |
+| Channel browser interactions | Metadata-only discovery, no send on selection, event-driven preparation and same-revision known-empty readiness; explicit Post/Reply, in-memory drafts and read-only access |
+| Desktop/mobile inspection | Channel/thread screenshots inspected at 1280px and 390px; responsive layout, focus restoration and no horizontal overflow covered by browser assertions; bundled design detector passed |
+| Deployment definitions and guards | Local Bicep compilation and offline script contracts passed; additive registry/queue access remains gated and off by default |
+
+Parent access renewal rechecks the original root, rejecting missing, deleted,
+out-of-history and substituted reply parents. Loading an older page does not
+advance the revision of the entire loaded feed; announced changes still catch
+up across every loaded page.
+
+No cloud deployment, permission/configuration change, real Teams subscription
+creation, additional live content processing, or real Teams send was performed.
+No Git commit or push was made. These offline results do not establish real
+Entra, Graph, Cosmos/Redis service, Service Bus or Web PubSub acceptance.
+The historical deployment evidence below applies to earlier releases, not this
+channel expansion. Activation requires separate approval.
+
 ## Development Service Bus Standard cutover (2026-10-26)
 
 **The five Development roles and existing manual diagnostic job now reference

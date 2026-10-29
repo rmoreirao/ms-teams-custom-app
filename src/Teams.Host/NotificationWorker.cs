@@ -33,7 +33,7 @@ public sealed class ServiceBusNotificationInbox(ServiceBusClient client) : IEncr
     }
 }
 public sealed class NotificationProjector(LiveOptions options, string tenant, ILiveStateStore store, LiveControlStore control,
-    NotificationDecryptor decryptor, IEncryptedNotificationInbox? inbox = null)
+    NotificationDecryptor decryptor, IEncryptedNotificationInbox? inbox = null, IResourceRegistry? registry = null)
 {
     public async Task ApplyAsync(EncryptedNotification notification, CancellationToken ct)
     {
@@ -42,7 +42,8 @@ public sealed class NotificationProjector(LiveOptions options, string tenant, IL
         if (notification.TenantId != tenant) throw new AppError(403, "tenant_mismatch", "Notification belongs to another tenant.");
         if (notification.LifecycleEvent is not null && notification.ResourceId.StartsWith("scope:", StringComparison.Ordinal))
         {
-            var scope = options.SubscriptionScopes.SingleOrDefault(s => $"scope:{s.Id}" == notification.ResourceId);
+            var scope = (registry is null ? options.SubscriptionScopes : await registry.ScopesAsync(ct))
+                .SingleOrDefault(s => $"scope:{s.Id}" == notification.ResourceId);
             if (scope is null || scope.Path != notification.ResourcePath || inbox is null)
                 throw new AppError(403, "scope_mismatch", "Lifecycle scope is not configured.");
             var subscription = await control.SubscriptionAsync(scope.Id, ct);
@@ -51,7 +52,8 @@ public sealed class NotificationProjector(LiveOptions options, string tenant, IL
             if (current is null || notification.ReceivedAt > current.Value.At)
                 if (!await control.SaveLifecycleAsync(scope.Id, new(notification.LifecycleEvent, notification.ReceivedAt),
                     current?.Version, ct)) throw new AppError(409, "lifecycle_conflict", "Lifecycle state changed concurrently.");
-            var resources = options.Resources.Where(scope.Covers).OrderBy(r => r.Id, StringComparer.Ordinal).ToArray();
+            var resources = (registry is null ? options.Resources : (await registry.ListAsync(ct)).Select(r => r.Resource))
+                .Where(scope.Covers).OrderBy(r => r.Id, StringComparer.Ordinal).ToArray();
             if (notification.Offset < 0 || notification.Offset > resources.Length) throw new JsonException("Invalid lifecycle continuation.");
             foreach (var affected in resources.Skip(notification.Offset).Take(25))
             {
@@ -63,7 +65,8 @@ public sealed class NotificationProjector(LiveOptions options, string tenant, IL
                 await inbox.EnqueueAsync([notification with { Offset = notification.Offset + 25 }], ct);
             return;
         }
-        var resource = options.Resources.SingleOrDefault(r => r.Id == notification.ResourceId)
+        var resource = (registry is null ? options.Resources.SingleOrDefault(r => r.Id == notification.ResourceId) :
+            (await registry.FindAsync(notification.ResourceId, ct))?.Resource)
             ?? throw new AppError(403, "resource_unknown", "Notification resource is not approved.");
         if (notification.LifecycleEvent is not null)
         {
@@ -117,7 +120,7 @@ public sealed class NotificationProjector(LiveOptions options, string tenant, IL
 }
 public sealed class NotificationWorker(ServiceBusClient client, NotificationProjector projector,
     ILiveStateStore store, LiveControlStore control, LiveOptions options, IEncryptedNotificationInbox inbox,
-    IConfiguration configuration, ILogger<NotificationWorker> logger) : BackgroundService
+    IConfiguration configuration, ILogger<NotificationWorker> logger, IResourceRegistry? registry = null) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -153,7 +156,9 @@ public sealed class NotificationWorker(ServiceBusClient client, NotificationProj
             {
                 LiveTelemetry.Failure("notification");
                 logger.LogError("Graph notification apply failed: {ErrorType}; delivery {Delivery}", ex.GetType().Name, args.Message.DeliveryCount);
-                var resource = notification?.TenantId != tenant ? null : options.Resources.SingleOrDefault(r => r.Id == notification.ResourceId);
+                var resource = notification?.TenantId != tenant ? null : registry is null ?
+                    options.Resources.SingleOrDefault(r => r.Id == notification.ResourceId) :
+                    (await registry.FindAsync(notification.ResourceId, args.CancellationToken))?.Resource;
                 if (resource is not null)
                 {
                     await store.SetCoverageAsync(new(notification!.TenantId, resource.Id, false, null, null, "notification_failed"), args.CancellationToken);
@@ -181,7 +186,7 @@ public sealed class NotificationWorker(ServiceBusClient client, NotificationProj
                             await deadLetters.AbandonMessageAsync(message, cancellationToken: stoppingToken);
                             continue;
                         }
-                        var repair = options.SubscriptionScopes.Select(scope => new EncryptedNotification(
+                        var repair = (registry is null ? options.SubscriptionScopes : await registry.ScopesAsync(stoppingToken)).Select(scope => new EncryptedNotification(
                             tenant, $"scope:{scope.Id}", scope.Path, "", null, DateTimeOffset.UtcNow, "missed")).ToArray();
                         await inbox.EnqueueAsync(repair, stoppingToken);
                         await deadLetters.CompleteMessageAsync(message, stoppingToken);

@@ -40,8 +40,14 @@ public sealed class LiveJourneyTests
         await control.SaveSubscriptionAsync(subscription, null, default);
         await control.RegisterLookupAsync(subscription, default);
         if (reply)
+        {
             await store.ApplyAsync(tenant, resource.Id, new("root", "sam", "Sam", "Root",
                 clock.GetUtcNow(), clock.GetUtcNow()), default);
+            Assert.True(await store.SaveReadViewAsync(tenant, resource.Id, "root", null,
+                new(0, true, null, clock.GetUtcNow()), default));
+            foreach (var initialized in await store.PendingOutboxAsync(tenant, default))
+                await store.CompleteOutboxAsync(initialized, default);
+        }
         var before = (await store.GetAsync(tenant, resource.Id, default))!.Value.Revision;
         var key = RandomNumberGenerator.GetBytes(32);
         var content = JsonSerializer.Serialize(new

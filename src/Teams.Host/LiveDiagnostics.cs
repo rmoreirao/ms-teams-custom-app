@@ -80,7 +80,7 @@ public static class LiveDiagnostics
         if (projectionCheck)
         {
             var proof = await ProjectionChecks.RunAsync(store, options, tenant, services.GetRequiredService<TimeProvider>(),
-                services.GetRequiredService<ILogger<LiveDiscovery>>(), ct);
+                services.GetRequiredService<ILogger<LiveDiscovery>>(), ct, services.GetRequiredService<IResourceRegistry>());
             Print(new { operation, proof, evidence = "API-identity projected data access, not browser authentication or delegated sends",
                 sourceWrites = 0, messageBodiesLogged = false });
             return;
@@ -88,13 +88,33 @@ public static class LiveDiagnostics
         if (operation == "Inspect")
         {
             var results = new List<object>();
-            foreach (var resource in options.Resources)
+            var registry = services.GetRequiredService<IResourceRegistry>();
+            foreach (var registration in await registry.ListAsync(ct))
             {
+                var resource = registration.Resource;
                 var item = await store.GetAsync(tenant, resource.Id, ct);
                 var control = services.GetRequiredService<LiveControlStore>();
                 var root = await control.RepairAsync(resource.Id, null, ct);
                 var repairs = await control.UnresolvedRepairsAsync(resource.Id, ct);
                 var coverageCheckpoint = await store.ReadCoverageAsync(tenant, resource.Id, ct);
+                bool? channelMetadataEligible = null;
+                bool? channelMetadataListed = null;
+                string? channelMetadataError = null;
+                if (serviceInspect && resource.Kind == "channel" && options.Resources.Any(seed => seed.Id == resource.Id))
+                    try
+                    {
+                        var metadata = await services.GetRequiredService<IGraphPolicyReader>().ReadChannelAsync(resource, ct);
+                        channelMetadataEligible = ChannelEligibility.Supported(metadata);
+                        var page = await services.GetRequiredService<GraphBackground>()
+                            .GetChannelMetadataAsync(resource.GraphTeamId!, null, null, ct);
+                        if (!page.TryGetProperty("value", out var channels) || channels.ValueKind != JsonValueKind.Array ||
+                            channels.GetArrayLength() > 1000)
+                            throw new AppError(503, "channel_source_invalid", "The channel metadata check returned an invalid page.");
+                        channelMetadataListed = channels.EnumerateArray().Any(channel =>
+                            ChannelEligibility.Supported(channel) && channel.TryGetProperty("id", out var id) &&
+                            id.ValueKind == JsonValueKind.String && id.GetString() == resource.GraphChannelId);
+                    }
+                    catch (AppError error) { channelMetadataError = error.Code; }
                 var members = 0;
                 var denials = new List<string>();
                 if (item is not null)
@@ -111,6 +131,9 @@ public static class LiveDiagnostics
                         coverageCheckpoint.Ready, coverageCheckpoint.VerifiedAt, coverageCheckpoint.FreshUntil,
                         coverageCheckpoint.RepairGeneration },
                     repairGeneration = item?.Value.RepairGeneration, freshMembers = members, denials,
+                    channelMetadata = channelMetadataEligible is null && channelMetadataError is null ? null :
+                        new { api = "beta", eligible = channelMetadataEligible, listedInFirstPage = channelMetadataListed,
+                            error = channelMetadataError, sourceWrites = 0, messageBodiesRead = 0 },
                     rootRepair = root is null ? null : new { status = root.Value.Status, root.Value.Generation,
                         root.Value.LastProgressAt, root.Value.Failure, root.Value.Recovery },
                     unresolvedRepairs = repairs.Count,
@@ -119,7 +142,7 @@ public static class LiveDiagnostics
                         status = repair.Status, repair.Generation, repair.LastProgressAt, repair.Failure, repair.Recovery }) });
             }
             var subscriptions = new List<object>();
-            foreach (var subscriptionScope in options.SubscriptionScopes)
+            foreach (var subscriptionScope in await registry.ScopesAsync(ct))
             {
                 var subscription = await services.GetRequiredService<LiveControlStore>().SubscriptionAsync(subscriptionScope.Id, ct);
                 var lifecycle = await services.GetRequiredService<LiveControlStore>().LifecycleAsync(subscriptionScope.Id, ct);

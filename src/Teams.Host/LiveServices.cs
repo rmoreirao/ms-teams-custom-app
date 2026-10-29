@@ -19,6 +19,13 @@ public static class LiveServices
         services.AddSingleton(options);
         services.AddSingleton(sp => new LiveControlStore(sp.GetRequiredKeyedService<Teams.Infrastructure.IPartitionDocuments>("control"),
             sp.GetRequiredService<TimeProvider>(), tenant));
+        if (options.ChannelDiscovery.RegistryEnabled)
+        {
+            services.AddHostedService<ChannelRuntimeValidation>();
+            services.AddSingleton(sp => new ChannelWorkflowStore(sp.GetRequiredService<Teams.Infrastructure.IPartitionDocuments>(),
+                tenant, sp.GetRequiredService<TimeProvider>()));
+            if (role is "Api" or "Control") services.AddSingleton<IChannelWorkQueue, ServiceBusChannelWork>();
+        }
         services.AddHostedService<ReadRefreshQueueValidation>();
         if (options.Hosts("Api", role)) services.AddSingleton<IReadRefresh, ServiceBusReadRefresh>();
         if (options.Hosts("Receiver", role))
@@ -30,7 +37,7 @@ public static class LiveServices
             services.AddSingleton<IEncryptedNotificationInbox, ServiceBusNotificationInbox>();
             services.AddSingleton(sp => new NotificationIntake(options, tenant, sp.GetRequiredService<LiveControlStore>(),
                 sp.GetRequiredService<INotificationTokenValidator>(), sp.GetRequiredService<IEncryptedNotificationInbox>(),
-                sp.GetRequiredService<TimeProvider>()));
+                sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<IResourceRegistry>()));
         }
         if (options.Hosts("Projector", role))
         {
@@ -39,17 +46,18 @@ public static class LiveServices
             services.AddSingleton<NotificationDecryptor>();
             services.AddSingleton(sp => new NotificationProjector(options, tenant, sp.GetRequiredService<ILiveStateStore>(),
                 sp.GetRequiredService<LiveControlStore>(), sp.GetRequiredService<NotificationDecryptor>(),
-                sp.GetRequiredService<IEncryptedNotificationInbox>()));
+                sp.GetRequiredService<IEncryptedNotificationInbox>(), sp.GetRequiredService<IResourceRegistry>()));
             services.AddHostedService<NotificationWorker>();
         }
         if (options.Hosts("Delivery", role))
         {
             services.AddSingleton<IDeliveryWorkQueue, ServiceBusDeliveryQueue>();
             services.AddSingleton(sp => new OutboxDispatcher(tenant, options, sp.GetRequiredService<IDeliveryWorkQueue>(),
-                sp.GetRequiredService<ILogger<OutboxDispatcher>>()));
+                sp.GetRequiredService<ILogger<OutboxDispatcher>>(), sp.GetRequiredService<IResourceRegistry>()));
             services.AddSingleton(sp => new DeliveryHandler(tenant, options, sp.GetRequiredService<ILiveStateStore>(),
                 sp.GetRequiredService<IRealtime>(), sp.GetRequiredService<IDeliveryWorkQueue>(), sp.GetRequiredService<TimeProvider>(),
-                sp.GetRequiredService<ILogger<DeliveryHandler>>()));
+                sp.GetRequiredService<ILogger<DeliveryHandler>>(), sp.GetRequiredService<IResourceRegistry>(),
+                sp.GetService<ChannelWorkflowStore>()));
             services.AddHostedService<OutboxFeedWorker>();
             services.AddHostedService<DeliveryQueueWorker>();
         }
@@ -80,10 +88,12 @@ public static class LiveServices
                     services.AddSingleton<ApplicationGraph>();
                     services.AddSingleton<IGraphBackground>(sp => sp.GetRequiredService<ApplicationGraph>());
                     services.AddSingleton<IGraphPolicyReader>(sp => sp.GetRequiredService<ApplicationGraph>());
-                    services.AddSingleton<IEntitlementFeed>(sp => new GraphPolicyFeed(
+                    services.AddSingleton(sp => new GraphPolicyFeed(
                         sp.GetRequiredService<IGraphBackground>(), sp.GetRequiredService<IGraphPolicyReader>(),
                         sp.GetRequiredService<ILiveStateStore>(), options, tenant, configWebClient(sp),
-                        sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<GraphPolicyFeed>>()));
+                        sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<GraphPolicyFeed>>(),
+                        sp.GetRequiredService<IResourceRegistry>()));
+                    services.AddSingleton<IEntitlementFeed>(sp => sp.GetRequiredService<GraphPolicyFeed>());
                 }
                 else
                 {
@@ -96,12 +106,24 @@ public static class LiveServices
             services.AddSingleton<ResourceHydrator>();
             services.AddSingleton(sp => new ReadRefreshHandler(tenant, options, sp.GetRequiredService<ILiveStateStore>(),
                 sp.GetRequiredService<LiveControlStore>(), sp.GetRequiredService<IGraphBackground>(),
-                sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<ReadRefreshHandler>>()));
+                sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<ReadRefreshHandler>>(),
+                sp.GetRequiredService<IResourceRegistry>()));
             services.AddHostedService<ReadRefreshWorker>();
             services.AddHostedService(sp => new LiveControlWorker(tenant, options, sp.GetRequiredService<ILiveStateStore>(),
                 sp.GetRequiredService<LiveControlStore>(), sp.GetRequiredService<SubscriptionController>(),
                 sp.GetRequiredService<ResourceHydrator>(), sp.GetRequiredService<IEntitlementFeed>(),
-                sp.GetRequiredService<IRealtime>(), sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<LiveControlWorker>>()));
+                sp.GetRequiredService<IRealtime>(), sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<LiveControlWorker>>(),
+                sp.GetRequiredService<IResourceRegistry>()));
+            if (options.ChannelDiscovery.RegistryEnabled)
+            {
+                services.AddSingleton<ChannelGraphSource>();
+                services.AddSingleton(sp => new ChannelJobHandler(tenant, options, sp.GetRequiredService<ChannelWorkflowStore>(),
+                    sp.GetRequiredService<ChannelGraphSource>(), sp.GetRequiredService<IResourceRegistry>(),
+                    sp.GetRequiredService<ILiveStateStore>(), sp.GetRequiredService<IEntitlementFeed>(),
+                    sp.GetRequiredService<SubscriptionController>(), sp.GetRequiredService<ReadRefreshHandler>(),
+                    sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<IRealtime>()));
+                services.AddHostedService<ChannelJobWorker>();
+            }
         }
         static string configWebClient(IServiceProvider sp) => sp.GetRequiredService<IConfiguration>()["AzureAd:ClientId"]
             ?? throw new InvalidOperationException("The Web application client ID is required for source-backed admission.");

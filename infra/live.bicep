@@ -28,6 +28,7 @@ param deployWorkloads bool = false
 param provisionRbac bool = false
 param enableSynchronization bool = false
 param enableAdmission bool = false
+param enableChannelRegistry bool = false
 param enableMonitoring bool = false
 param logsWorkspaceId string = ''
 param actionGroupId string = ''
@@ -91,6 +92,16 @@ resource primaryReadRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitio
   }
 }
 resource bus 'Microsoft.ServiceBus/namespaces@2024-01-01' existing = { name: serviceBusName }
+module channelDiscovery 'modules/channel-discovery.bicep' = if (enableChannelRegistry) {
+  name: 'live-channel-discovery'
+  params: {
+    cosmosAccountName: cosmosAccountName
+    serviceBusName: serviceBusName
+    principals: { Api: identities[0].properties.principalId, Receiver: identities[1].properties.principalId, Projector: identities[2].properties.principalId, Delivery: identities[3].properties.principalId, Control: identities[4].properties.principalId }
+    primaryReaderRoleId: primaryReadRole.id
+    provisionAccess: provisionRbac
+  }
+}
 module readRefresh 'modules/read-refresh.bicep' = {
   name: 'live-read-refresh'
   params: {

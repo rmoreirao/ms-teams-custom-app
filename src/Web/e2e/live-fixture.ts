@@ -1,21 +1,22 @@
 import { test as base, expect } from "@playwright/test";
 import type { Page, WebSocketRoute } from "@playwright/test";
-import type { Conversation, DeliveryState, Message, Operation, Session } from "../src/api";
+import type { ChannelOperation, Conversation, DeliveryState, Message, Operation, RealtimeEvent, Session } from "../src/api";
 
 export const session: Session = {
   id: "alex", name: "Alex Morgan", csrf: "test-only-csrf", environment: "Development",
   source: "Microsoft Teams", scopedValidation: true, canStartDirectChats: false, canCreateDirectChats: false,
 };
+const fixtureOrigin = Date.now() - 86400_000;
 export const message = (id: string, body: string, parentId: string | null = null): Message => ({
   id, body, parentId, actorId: "sam", author: "Sam Rivera", deleted: false,
-  createdAt: new Date(Date.UTC(2026, 9, 19, 10) + Number(id.replace(/\D/g, "") || 100) * 1000).toISOString(),
-  modifiedAt: "2026-10-19T12:00:00Z",
+  createdAt: new Date(fixtureOrigin + Number(id.replace(/\D/g, "") || 100) * 1000).toISOString(),
+  modifiedAt: new Date(fixtureOrigin + 7200_000).toISOString(),
 });
 export const catalog: Conversation[] = [
   { id: "chat-handover", title: "Sam Rivera", kind: "chat", team: null, revision: 1, isDirect: true },
   { id: "chat-empty", title: "New conversation", kind: "chat", team: null, revision: 1 },
   { id: "chat-project", title: "Opening team", kind: "chat", team: null, revision: 1 },
-  { id: "channel-updates", title: "General", kind: "channel", team: "Northwind", revision: 1 },
+  { id: "channel-updates", title: "General", kind: "channel", team: "Northwind", teamId: "northwind", revision: 1, canPost: true, canReply: true },
 ];
 
 /** Browser-runner doubles only: the shipped shell and real Web PubSub SDK are unmodified. */
@@ -42,6 +43,14 @@ export async function installLiveFixture(page: Page) {
     reads: [] as string[],
     denied: new Set<string>(),
     historyFrom: undefined as string | undefined,
+    channelOperations: new Map<string, ChannelOperation>(),
+    channelRequests: [] as string[],
+    channelEvents: [] as RealtimeEvent[],
+    preparingViews: new Set<string>(),
+    failedViews: new Set<string>(),
+    messageReads: [] as string[],
+    contentReads: [] as string[],
+    canSend: true,
   };
   await page.routeWebSocket("wss://realtime.example.test/**", socket => {
     sockets.add(socket);
@@ -64,6 +73,16 @@ export async function installLiveFixture(page: Page) {
     if (conversation) conversation.revision++;
     hint(conversationId);
   };
+  const event = (value: Omit<RealtimeEvent, "sequence"> & { sequence?: number }) => {
+    const data: RealtimeEvent = { ...value, sequence: value.sequence ?? state.channelEvents.length + 1 };
+    if (data.sequence > 0) state.channelEvents.push(data);
+    for (const socket of sockets) socket.send(JSON.stringify({
+      type: "message", from: "server", dataType: "json", data,
+    }));
+  };
+  const channelOperation = (id: string, kind: ChannelOperation["kind"], values: Partial<ChannelOperation>): ChannelOperation => ({
+    id, kind, state: "ready", revision: 1, error: null, teams: null, channels: null, cursor: null, conversation: null, ...values,
+  });
   await page.route("**/api/**", async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -78,30 +97,68 @@ export async function installLiveFixture(page: Page) {
     if (path === "/api/realtime/negotiate") return route.fulfill({
       json: { transport: "webpubsub", url: "wss://realtime.example.test/client/hubs/test" },
     });
+    if (path === "/api/realtime/changes") {
+      const after = Number(url.searchParams.get("after") ?? 0);
+      return route.fulfill({ json: { events: state.channelEvents.filter(item => item.sequence > after),
+        sequence: state.channelEvents.at(-1)?.sequence ?? 0, resetRequired: false, more: false } });
+    }
+    if (path === "/api/teams" || path === "/api/teams/northwind/channels" || path === "/api/channels/open") {
+      state.channelRequests.push(request.url());
+      const id = request.method() === "POST" ? request.postDataJSON().operationId : url.searchParams.get("requestId")!;
+      const value = path === "/api/teams" ? channelOperation(id, "teams", { teams: [{ id: "northwind", name: "Northwind" }] }) :
+        path.includes("/channels") && request.method() === "GET" ? channelOperation(id, "channels", { channels: [
+          { id: "source-general", teamId: "northwind", name: "General", teamName: "Northwind", selection: "actor-bound-selection" },
+        ] }) : channelOperation(id, "open", { state: "preparing" });
+      state.channelOperations.set(id, value);
+      return route.fulfill({ status: value.state === "ready" ? 200 : 202, json: value });
+    }
+    if (path.startsWith("/api/channel-operations/")) {
+      const value = state.channelOperations.get(path.split("/").at(-1)!);
+      return value ? route.fulfill({ json: value }) : failure(404, "not_found", "Operation not found.");
+    }
     if (path === "/api/conversations") return route.fulfill({ json: state.conversations });
-    const match = /^\/api\/conversations\/([^/]+)\/(messages|changes|operations)(?:\/([^/]+))?$/.exec(path);
+    const match = /^\/api\/conversations\/([^/]+)\/(messages|changes|operations|access)(?:\/([^/]+))?$/.exec(path);
     if (!match || state.denied.has(match[1]) || !state.conversations.some(item => item.id === match[1]))
       return failure(404, "access_denied", "This conversation is no longer available.");
     const [, id, action, operationId] = match;
     const revision = state.conversations.find(item => item.id === id)!.revision;
     const messages = state.messages.get(id) ?? [];
     const access = { historyFrom: state.historyFrom ?? new Date(Date.now() - 7 * 86400_000).toISOString(),
-      validUntil: new Date(Date.now() + 300_000).toISOString(), epoch: 1 };
+      validUntil: new Date(Date.now() + 300_000).toISOString(), epoch: 1, canSend: state.canSend };
+    if (action === "access") {
+      const parent = url.searchParams.get("parent");
+      const root = parent ? messages.find(item => item.id === parent && item.parentId === null) : null;
+      if (parent && (!root || root.deleted || root.createdAt < access.historyFrom))
+        return failure(404, "access_denied", "This thread is no longer available.");
+      return route.fulfill({ json: access });
+    }
     if (action === "operations") {
       const operation = state.operations.get(operationId);
       return operation ? route.fulfill({ json: operation }) : failure(404, "not_found", "Operation not found.");
     }
+    const parent = url.searchParams.get("parent");
+    const matching = messages.filter(item => item.parentId === parent && item.createdAt >= access.historyFrom);
+    if (request.method() === "GET" && (action === "messages" || action === "changes"))
+      state.contentReads.push(path + url.search);
+    if (request.method() === "GET" && (action === "messages" || action === "changes") &&
+        state.failedViews.has(`${id}:${parent ?? ""}`))
+      return failure(503, "read_refresh_unavailable", "Microsoft Teams could not be reached.");
+    const replyCount = parent && matching.length < 21 ? matching.length : null;
     if (action === "changes") return route.fulfill({ json: {
       changes: [], revision, resetRequired: false, messages, historyFrom: state.historyFrom, window: "test-command-window", access,
+      replyCount,
     } });
     if (request.method() === "GET") {
-      const parent = url.searchParams.get("parent");
-      const matching = messages.filter(item => item.parentId === parent &&
-        (!state.historyFrom || item.createdAt >= state.historyFrom));
+      state.messageReads.push(path + url.search);
+      if (state.preparingViews.has(`${id}:${parent ?? ""}`))
+        return route.fulfill({ status: 202, json: { state: "pending", retryAfterMs: 1000, access } });
       const end = Number(url.searchParams.get("cursor") ?? matching.length);
+      const preview = url.searchParams.get("preview") === "true";
+      const size = preview ? 2 : 20;
       return route.fulfill({ json: {
-        messages: matching.slice(Math.max(0, end - 20), end), cursor: end > 20 ? String(end - 20) : null,
+        messages: matching.slice(Math.max(0, end - size), end), cursor: end > size ? String(end - size) : null,
         revision, window: "test-command-window", parentMessage: parent ? messages.find(item => item.id === parent) : null, access,
+        replyCount, preview,
       } });
     }
     const body = request.postDataJSON();
@@ -128,7 +185,7 @@ export async function installLiveFixture(page: Page) {
     state.session = null;
     await route.fulfill({ status: 200, json: {} });
   });
-  return { state, hint, update, disconnect: () => {
+  return { state, hint, update, event, disconnect: () => {
     for (const socket of sockets) socket.close({ code: 1000, reason: "test disconnect" });
     sockets.clear();
   } };

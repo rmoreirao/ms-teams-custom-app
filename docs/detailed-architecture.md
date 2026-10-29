@@ -11,6 +11,19 @@
 
 This document explains how the reference design can be assembled and how its components interact. It does not replace the TDD's workload assumptions, SLIs/SLOs, Graph limit snapshot, or production acceptance gates.
 
+The gated channel implementation adds a shared `live-resources` admission
+manifest and a metadata-only `channel-work` path from Api to Control. Actor
+workflow snapshots/journal/outbox in `live-state` and root/thread view-ready
+outbox events reuse change-feed Delivery and Web PubSub; content still uses the
+existing Cosmos/Redis projection. Source selection is never an entitlement.
+See [ADR 0014](adr/0014-event-driven-channel-discovery.md) and the [implemented
+contracts and limits](live-runtime.md#event-driven-channel-discovery-deployment-and-activation).
+The code and separately approved registry/work-queue access and channel profile
+were activated in Development on 2026-10-29. The same three admitted users can
+select eligible directly joined channels for at most seven days of history.
+Healthy runtime activation does not establish signed-in new-channel or real-send
+acceptance; see the [activation evidence](dev-validation.md#approved-channel-activation-2026-10-29).
+
 ## Contents
 
 - [1. Scope and architectural boundaries](#1-scope-and-architectural-boundaries)

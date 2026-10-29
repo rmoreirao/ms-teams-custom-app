@@ -49,7 +49,7 @@ public sealed class NotificationTokenValidator(string tenant, string clientId,
     }
 }
 public sealed class NotificationIntake(LiveOptions options, string tenant, LiveControlStore control,
-    INotificationTokenValidator tokens, IEncryptedNotificationInbox inbox, TimeProvider clock)
+    INotificationTokenValidator tokens, IEncryptedNotificationInbox inbox, TimeProvider clock, IResourceRegistry? registry = null)
 {
     private static JsonElement Required(JsonElement value, string field) =>
         value.ValueKind == JsonValueKind.Object && value.TryGetProperty(field, out var found) ? found :
@@ -74,7 +74,8 @@ public sealed class NotificationIntake(LiveOptions options, string tenant, LiveC
             var id = Required(item, "subscriptionId").GetString() ?? "";
             var subscription = await control.FindSubscriptionAsync(id, ct)
                 ?? throw new AppError(403, "subscription_unknown", "Subscription is not registered.");
-            var configured = options.SubscriptionScopes.SingleOrDefault(s => s.Id == subscription.ScopeId);
+            var configured = (registry is null ? options.SubscriptionScopes : await registry.ScopesAsync(ct))
+                .SingleOrDefault(s => s.Id == subscription.ScopeId);
             var state = Required(item, "clientState").GetString() ?? "";
             // Graph can omit tenantId on lifecycle events; the tenant-scoped lookup and secret state still bind them.
             var suppliedTenant = item.TryGetProperty("tenantId", out var tenantValue) ? tenantValue.GetString() : null;
@@ -93,7 +94,8 @@ public sealed class NotificationIntake(LiveOptions options, string tenant, LiveC
                 continue;
             }
             var path = GraphMessages.NormalizeResource(Required(item, "resource").GetString() ?? "");
-            var approved = options.Resources.Where(configured.Covers).SingleOrDefault(r =>
+            var resources = registry is null ? options.Resources : (await registry.ListAsync(ct)).Select(r => r.Resource);
+            var approved = resources.Where(configured.Covers).SingleOrDefault(r =>
                 path.StartsWith(r.Path + "/", StringComparison.Ordinal));
             // Aggregate scopes can cover resources outside the approved projection; never persist those payloads.
             if (approved is null)

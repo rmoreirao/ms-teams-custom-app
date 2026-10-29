@@ -14,6 +14,151 @@ Follow the [implementation status](live-integration-plan.md#execution-status) an
 
 ## Runtime and storage boundaries
 
+### Event-driven channel discovery (deployment and activation)
+
+**Channels are activated across all five Development roles as of 2026-10-29.**
+The initial image-only release preserved the original configuration and scope.
+Subsequent explicit approval authorized the additive registry/queue and exact
+scoped access, followed by registry-only then full activation with Api last.
+The same three admitted users may select eligible channels from their directly
+joined teams; no Entra permissions, existing seed mappings/history, identities,
+networking or scale were changed. Runtime/access and public acceptance do not
+establish a signed-in new-channel or real-send journey. See the
+[activation evidence](dev-validation.md#approved-channel-activation-2026-10-29).
+
+`LiveOptions.ChannelDiscovery` has three switches, all false by default:
+`RegistryEnabled` enables the shared dynamic inventory and accepted-work recovery;
+`Enabled` admits new browse/open requests; `SendEnabled` permits source-authorized
+dynamic-channel posts/replies. Disabling only `Enabled` preserves registered
+channels and accepted work. `ApprovalReference` must be explicit and nonpending,
+and `HistoryFrom` must be a nonfuture history floor. Service Graph policy and
+the existing tenant/admitted-user/account/app-assignment gates remain required.
+The approved Development profile enables all three switches with policy floor
+`2026-10-22T07:52:45.1807249Z`; registration uses the later of this floor and
+current time minus seven days. The private routine-release contract retains
+this active configuration. Default-off templates are not a deactivation plan:
+disable new discovery explicitly if needed without abandoning accepted work.
+
+The API enqueues metadata-only work on `channel-work`; only Control holds the
+background Graph identity. Teams discovery uses the admitted actor's
+`joinedTeams`; channel discovery/opening reverify direct team membership, archive
+state and explicit standard/unmoderated source metadata. Private/shared channels,
+cross-tenant access, joining/creation and arbitrary application users are excluded.
+Selecting a channel never sends a Teams message.
+
+Channel metadata uses a dedicated read-only Graph **beta** path because
+[`moderationSettings`](https://learn.microsoft.com/en-us/graph/api/resources/channelmoderationsettings?view=graph-rest-beta)
+is not available on the v1.0 channel resource. Messages, subscriptions and other
+Graph requests remain on v1.0; generic clients still reject beta URLs. The
+metadata path fixes the selected fields, binds continuations to the same team
+and endpoint, and rejects content expansion. This beta dependency is limited to
+the Development implementation and is not production API support.
+
+Discovery, opening and policy refresh share the same eligibility check: standard
+membership, an explicitly unarchived channel/team, and explicit unmoderated
+evidence. The documented moderation object must allow posts from `everyone` or
+`everyoneExceptGuests` and replies from `everyone`; admitted accounts must still
+be tenant members, never guests. An explicit null moderation setting is also
+accepted. Missing, malformed, unknown or restrictive evidence stays denied.
+
+| API | Contract |
+| --- | --- |
+| `GET /api/teams?requestId={uuid}&cursor={optional}` | Durable joined-team metadata request; 202 until its snapshot is ready |
+| `GET /api/teams/{teamId}/channels?requestId={uuid}&cursor={optional}` | Reverified team's eligible channel metadata |
+| `POST /api/channels/open` | CSRF-protected `{operationId, selection}`; signed actor-bound selection, automatic preparation |
+| `GET /api/channel-operations/{id}` | Original actor's versioned pending/preparing/deferred/ready/denied/failed/capacity snapshot; expired discovery returns 410 |
+| `GET /api/realtime/changes?after={sequence}` | Up to 50 retained actor events; explicit gap reset and more-page evidence |
+| `GET /api/conversations/{id}/access` | Current authorization/capability lease without message contents |
+
+`live-resources` holds a tenant-partitioned conditional registry manifest.
+Only Control writes it; the other four roles use scoped current reads. A
+tenant/team/channel hash gives a stable logical ID; existing configured mappings
+keep their IDs, histories and sending policy. All configured and reserved
+dynamic per-channel subscriptions share the existing 100-scope ceiling,
+including unfinished/uncertain creation. Reservations are not automatically
+released after an ambiguous failure.
+
+Preparation registers the resource, establishes encrypted subscription/lookup,
+initializes metadata/current grants, then runs bounded resumable hydration.
+Completion requires an authorized usable or known-empty view. Channel roots
+are not assumed creation-ordered. The registered history floor is enforced
+before content projection; copying, replay or reopening never extends the
+seven-day lifetime from original creation.
+
+Actor snapshots, a sequence journal and body-free outbox commit atomically in
+`live-state`; an empty root/thread completion also commits a view-ready outbox
+event without requiring a message revision increase. Existing change-feed
+Delivery leases and Web PubSub publish these events. Browser bootstrap/reconnect,
+visibility/network return and sequence gaps trigger catch-up; operation events
+trigger a targeted status read and view-ready events trigger the relevant page.
+There is no recurring browser catalog/status/channel-message polling or fallback
+when push is unavailable. Access-lease renewal remains a security timer.
+
+Channels reuse the message-only Redis cache: tenant/conversation scope,
+epoch/revision/generation/parent/page identity, at most 21 messages, 1 MB serialized,
+15-second maximum TTL shortened at seven-day expiry, and 256 indexed pages.
+Warm hits still require fresh authority, narrower member history and eligible
+parents; roots and each thread remain isolated. Redis loss falls back to bounded
+Cosmos reads, not Graph. Unknown Cosmos views request Control hydration;
+known-empty views do not. Channel cache cleanup remains deliberately unavailable.
+
+### Inline channel threads
+
+Posts show up to two latest reply previews in the main feed. View all replies
+expands a paginated thread in place; Reply opens its contextual composer.
+Long previews expand through the existing sanitized message renderer. The
+optional focused panel shares the same authorized feed memory, drafts and
+delivery state; opening or switching readers never sends a message.
+
+`GET /api/conversations/{id}/messages?parent={root}&preview=true` uses the normal
+read-through path and returns two replies with a signed older-page cursor.
+Preview requires a channel parent and cannot be combined with a continuation.
+Expanded reads retain the existing twenty-message pages. Root coverage does
+not initialize a thread: absent or incomplete thread evidence requires durable
+Control hydration even if some replies are cached. Channel replies are not
+assumed source-ordered; hydration follows validated continuations in bounded
+steps until the thread is initialized. Completion commits `channel.view.ready`,
+including known-empty completion at an unchanged revision, for configured as
+well as registered channels. API processes acquire no new Graph access.
+
+Exact reply counts are returned only when the bounded twenty-one-row query
+establishes the complete authorized count. Larger/incomplete counts stay unknown,
+not zero; loading all pages establishes a client count. A count's earliest
+seven-day expiry is carried separately so an unseen older reply cannot leave a
+stale exact preview count. Narrowed history also invalidates cached counts.
+
+Only nearby posts activate content reads; offscreen readers pause and catch up
+when brought back. Thread page/delta reads share three concurrent browser lanes
+and a twenty-second request deadline. Accepted pending work waits for targeted
+events rather than content polling; initial and older-page waits have a
+120-second recovery deadline and an explicit Teams-read failure with Retry.
+Previously authorized replies remain readable on operational failure, but never
+past their access/history boundaries. Access renewal remains content-free.
+Inline replies use normal document flow, keep independent author styling and do
+not auto-focus, force expansion or move the channel feed on live updates.
+
+This follow-on is deployed to all five existing Development roles as ACR build
+`dt1c` (2026-10-29), preserving their active configuration and access scope.
+Control was released first and the API/frontend last. Exact healthy revisions
+and byte-identical public assets passed acceptance; see the
+[deployment evidence](dev-validation.md#inline-channel-reading-development-deployment-2026-10-29).
+Readiness and earlier metadata-repair evidence do not certify its signed-in
+live Teams read-through or inline-send journey.
+
+The additive `infra/modules/channel-discovery.bicep` definitions are guarded by
+`enableChannelRegistry=false` in Live/service-access templates. They define
+`live-resources` plus `readCurrentV1`, four readers/one Control writer, and
+`channel-work` with Api sender and Control sender/receiver only. Image-only
+release contracts fail closed unless enabled profiles already have the exact
+queue/scoped access and current-read procedure. The 2026-10-29 image-only
+release created no channel infrastructure or cloud grants. The subsequent
+approved activation applied only the standalone additive module: one container,
+one procedure, five Cosmos assignments, one queue and three queue-scoped grants.
+All five roles then reached healthy registry-only and fully active revisions on
+the unchanged immutable image. Startup exercised registry current reads and the
+Api/Control queue links without sending a test message. This establishes runtime
+activation, not evidence that a selected new-channel workflow has run in Azure.
+
 | Role | Entry points and responsibilities | Required data access |
 | --- | --- | --- |
 | `Api` | Cookie/OIDC BFF, guarded projected reads, durable cold-view requests, paged catalog, delegated sends, operation status, authenticated PubSub admission | Projection read/write for commands; authority read; read-refresh queue send; Redis session/cache/permits; session-protection key; PubSub |
@@ -66,8 +211,9 @@ After a five-second total server budget, an accepted cold request can return:
 ```
 
 That is HTTP `202` with `Retry-After: 1`. A verified eligible view can include
-`access`; an unknown parent cannot supply fresh retention permission. The browser
-automatically retries cold/older-page loading within 120 seconds, retains
+`access`; an unknown parent cannot supply fresh retention permission. Chat readers
+automatically retry cold/older-page loading within 120 seconds; channel readers
+use the targeted readiness events and bounded failure described above. Both retain
 previously loaded authorized history/drafts during operational failures, renews
 access proactively and clears content when authority expires or fails. A queue
 submission failure is `read_refresh_unavailable`, not accepted pending work.
@@ -77,9 +223,11 @@ Cosmos/security-store failure never authorizes a Graph-only response.
 context and request time. Control derives Graph paths from the registry and uses
 its existing credentials and reactive retry policy. Context leases coalesce replicas; original
 redelivery waits for lease/backoff instead of being falsely acknowledged. Each
-job has a 45-second execution budget, at most three 50-item source pages plus an
+execution step has a 45-second budget, at most three 50-item source pages plus an
 optional parent GET, and at most two concurrent handlers. Progress persists after
-each page. Chat paging is creation-descending; channels do not assume that order.
+each page. An unfinished channel-thread step releases its lease without claiming
+completion and defers the same durable work to continue. Chat paging is
+creation-descending; channels do not assume that order.
 Equal-timestamp older-page hydration uses the same ascending message-ID tie-break
 as the projected query, so it continues past the requested cursor instead of
 returning pending after a page entirely before that cursor.

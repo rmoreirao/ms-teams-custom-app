@@ -2,9 +2,22 @@
 
 ## Current status and boundaries
 
+**Channels were activated across all five Development roles on 2026-10-29,
+following separate explicit approval.** The registry, work queue and exact scoped
+access were provisioned before staged registry-only and full activation, with Api
+enabled last. The same three users may browse their directly joined teams and
+select eligible standard, unmoderated channels in unarchived teams for up to
+seven days of history and explicit posts/replies. Existing five seed mappings,
+history cutoffs, identities, networking and replica limits are preserved; no Entra
+permission changes were needed. The private routine-release contract now retains
+the active profile. Signed-in new-channel and real-send journeys were not performed.
+Run offline tests with injected dependencies; normal local runs remain
+Teams-connected. See the [activation evidence](dev-validation.md#approved-channel-activation-2026-10-29)
+and [channel runtime contract](live-runtime.md#event-driven-channel-discovery-deployment-and-activation).
+
 There is one environment: **Development**, connected to real Microsoft Teams. It now runs five isolated Live workloads in Sweden Central: Api, Receiver, Projector, Delivery and Control. The existing API and worker were retained for Api and Projector; the additional apps use `-recv`, `-dlvr` and `-ctrl` suffixes to stay within the Container Apps name limit. Simulator and legacy GraphPilot are no longer supported runtimes; local persona/password sign-in, simulator controls, fixture seeding/reset, and pilot polling have been removed.
 
-The deployed service profile uses `authorityMode=Policy`, `entitlementProvider=Graph` and Control's managed identity federated to the separate sync registration. Alex, Sam and Jordan remain ordinary interactive users; their sessions are not background credentials. Preserve the dedicated group chat/channel, three existing pair mappings and history cutoffs. `DelegatedSynthetic` remains only as guarded migration compatibility until unattended acceptance; it is not the deployed profile. This does not authorize organization-wide discovery, new chat creation from the app, business-content processing, or production acceptance.
+The deployed service profile uses `authorityMode=Policy`, `entitlementProvider=Graph` and Control's managed identity federated to the separate sync registration. Alex, Sam and Jordan remain ordinary interactive users; their sessions are not background credentials. Preserve the dedicated group chat/channel, three existing pair mappings and history cutoffs. `DelegatedSynthetic` remains only as guarded migration compatibility until unattended acceptance; it is not the deployed profile. The approved channel expansion does not authorize organization-wide discovery, new chat creation from the app, wider user admission or production activation.
 
 The cloud migration was explicitly approved on 2026-10-21. Five app-owned rich subscriptions, all five covered resources and their expected source-backed memberships were verified before user admission was enabled. The admitted public shell, anonymous denial and canonical Entra redirect pass. The eight-hour unattended observation and a fresh authenticated browser journey remain acceptance checks; do not equate healthy revisions or offline browser tests with those results.
 
@@ -168,6 +181,11 @@ Set these environment variables:
 The workflow builds and pushes an immutable container digest, preflights every selected target before any application mutation, and updates images only. It preserves Live settings, admission/synchronization state, secrets, identities, networking, sizing, replica limits and all data services. It refuses Simulator/GraphPilot targets and incomplete or inconsistent configuration. It does not call platform Bicep, seed/reset jobs, Entra reconciliation or Graph writes.
 
 With `AZURE_SERVICE_TARGETS_JSON` configured, the workflow preflights all five existing isolated roles through `Deploy-ServiceDev.ps1`. The contract must match the protected tenant/subscription/resource group/environment. It verifies one attached identity per role, distinct Web/sync clients, the exact approved resource/policy configuration, effective Cosmos assignments and the read-only primary-reader role definition. Extra compact API authority-write privileges and incomplete drafts are refused before the first update. The service release preserves all configuration and limits and reports exact partial-rollout/recovery identities; it does not grant access, provision workloads, alter edge routing or enable admission. The two-target path is only for an unmigrated legacy environment and cannot accept the deployed service configuration.
+
+After all-target preflight and the unchanged-state recheck, updates run in
+Control, Receiver, Projector, Delivery, Api order, waiting for each exact healthy
+revision before proceeding. This makes the updated hydration/delivery workers
+ready before the API serves the new frontend.
 
 The five-role preflight also reads `graph-read-refresh` properties and requires
 exact queue-scoped API Data Sender and Control Data Receiver grants; inherited

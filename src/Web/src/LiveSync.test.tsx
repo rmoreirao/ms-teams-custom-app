@@ -19,9 +19,10 @@ vi.mock("@azure/web-pubsub-client", () => ({
   },
 }));
 const session: Session = { id: "alex", name: "Alex", environment: "Development", source: "Microsoft Teams", csrf: "csrf" };
+const messageOrigin = Date.now() - 3600_000;
 const message = (id: string, body = id, parentId: string | null = null): Message => ({
-  id, body, parentId, actorId: "sam", author: "Sam", createdAt: `2026-10-19T10:${id.padStart(2, "0")}:00Z`,
-  modifiedAt: "2026-10-19T12:00:00Z", deleted: false,
+  id, body, parentId, actorId: "sam", author: "Sam", createdAt: new Date(messageOrigin + Number(id) * 60_000).toISOString(),
+  modifiedAt: new Date(messageOrigin + 3600_000).toISOString(), deleted: false,
 });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 const page = (messages: Message[], cursor: string | null = null, revision = 1) => ({
@@ -33,6 +34,58 @@ afterEach(() => {
 });
 
 describe("live transport", () => {
+  it("recovers durable channel sequences, coalesces events during catch-up, and never starts a catalog timer", async () => {
+    vi.useFakeTimers();
+    const event = (sequence: number) => ({ type: "channel.operation.changed", schemaVersion: 1, sequence,
+      revision: sequence, operationId: "11111111-2222-3333-4444-555555555555" });
+    let first!: (response: Response) => void;
+    let gap = false;
+    const fetch = vi.fn((path: string) => {
+      if (path === "/api/realtime/negotiate")
+        return Promise.resolve(json({ transport: "webpubsub", url: "wss://realtime.example.test/client" }));
+      if (path.endsWith("after=0")) return new Promise<Response>(resolve => { first = resolve; });
+      return Promise.resolve(json({ events: gap ? [event(3), event(4)] : [], sequence: gap ? 4 : 2,
+        resetRequired: false, more: false }));
+    });
+    vi.stubGlobal("fetch", fetch);
+    const callbacks = { ...handlers(), events: vi.fn() };
+    const channelSession = { ...session, channelRegistry: true };
+    renderHook(() => useRealtime(channelSession, callbacks));
+    await act(async () => {});
+    await act(async () => { sdk.handlers.get("connected")?.(); });
+    act(() => sdk.handlers.get("server-message")?.({ message: { data: event(2) } }));
+    await act(async () => { first(json({ events: [event(1), event(2)], sequence: 2, resetRequired: false, more: false })); });
+    expect(callbacks.events).toHaveBeenCalledOnce();
+    expect(callbacks.events.mock.calls[0][0].map((item: { sequence: number }) => item.sequence)).toEqual([1, 2]);
+    gap = true;
+    await act(async () => { sdk.handlers.get("server-message")?.({ message: { data: event(4) } }); });
+    expect(callbacks.events.mock.calls[1][0].map((item: { sequence: number }) => item.sequence)).toEqual([3, 4]);
+    act(() => sdk.handlers.get("server-message")?.({ message: { data: event(4) } }));
+    const requests = fetch.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(600_000); });
+    expect(fetch).toHaveBeenCalledTimes(requests);
+    expect(callbacks.events).toHaveBeenCalledTimes(2);
+    expect(callbacks.reconcile).not.toHaveBeenCalled();
+    expect(callbacks.error).not.toHaveBeenCalled();
+  });
+
+  it("requests a snapshot on a retained-journal gap and continues at the recovered sequence", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (path: string) => path === "/api/realtime/negotiate" ?
+      json({ transport: "webpubsub", url: "wss://realtime.example.test/client" }) :
+      json({ events: [], sequence: 40, resetRequired: true, more: false })));
+    const callbacks = { ...handlers(), events: vi.fn() };
+    const channelSession = { ...session, channelRegistry: true };
+    renderHook(() => useRealtime(channelSession, callbacks));
+    await act(async () => {});
+    await act(async () => { sdk.handlers.get("connected")?.(); });
+    expect(callbacks.reconcile).toHaveBeenCalledOnce();
+    act(() => sdk.handlers.get("server-message")?.({ message: { data: {
+      type: "channel.catalog.changed", schemaVersion: 1, revision: 0, sequence: 41, conversationId: "channel-one",
+    } } }));
+    expect(callbacks.events).toHaveBeenCalledOnce();
+    expect(callbacks.events.mock.calls[0][0][0].sequence).toBe(41);
+  });
+
   it.each([null, {}, { conversationId: "../secret", revision: 1 }, { conversationId: "chat", revision: -1 },
     { conversationId: "chat", revision: 1.5 }, { conversationId: "chat", revision: Number.MAX_SAFE_INTEGER + 1 }])(
     "rejects malformed hints without interpreting them as refresh-all", value => expect(() => parseHint(value)).toThrow());

@@ -81,12 +81,15 @@ public static class AzureRuntime
             sp.GetRequiredService<CosmosClient>().GetContainer("teams", "live-state")));
         services.AddKeyedSingleton<IPartitionDocuments>("control", (sp, _) => new CosmosPartitionDocuments(
             sp.GetRequiredService<CosmosClient>().GetContainer("teams", "live-control")));
+        services.AddSingleton<IResourceRegistry>(sp => new ResourceRegistry(options, tenant,
+            options.ChannelDiscovery.RegistryEnabled ? new CosmosPartitionDocuments(
+                sp.GetRequiredService<CosmosClient>().GetContainer("teams", "live-resources")) : null));
         if (role == "Api") services.AddSingleton<IRecentMessageCache, RedisRecentMessages>();
         services.AddSingleton<ILiveStateStore>(sp => new LiveStateStore(sp.GetRequiredService<IPartitionDocuments>(),
             sp.GetRequiredService<TimeProvider>(), new CosmosPartitionDocuments(
                 sp.GetRequiredService<CosmosClient>().GetContainer("teams", "live-authority")),
             sp.GetService<IRecentMessageCache>(), options.Resources.Select(r => r.Id).ToHashSet(StringComparer.Ordinal),
-            options.Resources.ToDictionary(r => r.Id, StringComparer.Ordinal)));
+            options.Resources.ToDictionary(r => r.Id, StringComparer.Ordinal), sp.GetRequiredService<IResourceRegistry>()));
         services.AddSingleton<IStateStore>(sp => sp.GetRequiredService<ILiveStateStore>());
         services.AddSingleton(_ => new ServiceBusClient(config["Azure:ServiceBus"], credential));
         services.AddSingleton(_ => new WebPubSubServiceClient(new Uri(config["Azure:PubSub"]

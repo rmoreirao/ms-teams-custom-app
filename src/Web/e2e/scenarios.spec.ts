@@ -36,10 +36,10 @@ test("browse, page, send, preserve drafts, and sign out using the Live contract"
 test("channel threads, pushed external changes, and markup safety", async ({ page, live }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Channels", exact: true }).click();
-  await page.getByRole("button", { name: /General Northwind/ }).click();
+  await page.getByRole("button", { name: "Open channel: Northwind / General" }).click();
   await expect(page.getByText(/Text-safety fixture:/)).toBeVisible();
   expect(await page.locator(".message-text img, .message-text script").count()).toBe(0);
-  await page.getByRole("button", { name: "Open thread" }).nth(1).click();
+  await page.getByRole("button", { name: "Open in panel" }).nth(1).click();
   await page.getByRole("textbox", { name: "Write a reply" }).fill("A browser-validated thread reply");
   expect((await submitMessage(page, "Reply", 201)).state).toBe("confirmed");
   await expect(page.getByText("A browser-validated thread reply", { exact: true })).toBeVisible();

@@ -288,10 +288,11 @@ describe("personal-chat test messages", () => {
     mockApi();
     await openChat();
     const navigation = within(screen.getByRole("navigation"));
-    for (const name of ["Project groupChat", "GeneralTeam"]) {
-      await act(async () => { fireEvent.click(navigation.getByRole("button", { name })); });
-      expect(screen.queryByRole("button", { name: "Send test messages" })).not.toBeInTheDocument();
-    }
+    await act(async () => { fireEvent.click(navigation.getByRole("button", { name: "Project groupChat" })); });
+    expect(screen.queryByRole("button", { name: "Send test messages" })).not.toBeInTheDocument();
+    await act(async () => { fireEvent.click(navigation.getByRole("button", { name: "Channels" })); });
+    await act(async () => { fireEvent.click(navigation.getByRole("button", { name: "Open channel: Team / General" })); });
+    expect(screen.queryByRole("button", { name: "Send test messages" })).not.toBeInTheDocument();
   });
 
   it("starts later test messages before earlier confirmations, and updates each icon independently", async () => {

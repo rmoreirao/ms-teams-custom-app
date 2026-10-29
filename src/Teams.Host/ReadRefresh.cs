@@ -27,7 +27,7 @@ public sealed class ReadRefreshQueueValidation(ServiceBusClient client, LiveOpti
 }
 
 public sealed class ServiceBusReadRefresh(ServiceBusClient client, LiveOptions options, IConfiguration configuration,
-    TimeProvider clock, ILogger<ServiceBusReadRefresh> logger) : IReadRefresh, IAsyncDisposable
+    TimeProvider clock, ILogger<ServiceBusReadRefresh> logger, IResourceRegistry? registry = null) : IReadRefresh, IAsyncDisposable
 {
     public const string QueueName = "graph-read-refresh";
     private readonly ServiceBusSender sender = client.CreateSender(QueueName);
@@ -41,7 +41,8 @@ public sealed class ServiceBusReadRefresh(ServiceBusClient client, LiveOptions o
         };
         try
         {
-            ReadRefreshValidation.Check(request, configuration["App:TenantId"]!, options, clock.GetUtcNow());
+            ReadRefreshValidation.Check(request, configuration["App:TenantId"]!, options, clock.GetUtcNow(),
+                registry is null ? null : (await registry.FindAsync(request.ConversationId, ct))?.Resource);
             await sender.SendMessageAsync(message, ct);
             LiveTelemetry.ReadRefreshRequests.Add(1);
         }
@@ -60,9 +61,10 @@ public sealed class ReadRefreshDeferredException(DateTimeOffset retryAt) : Excep
 }
 public static class ReadRefreshValidation
 {
-    public static ApprovedResource Check(ReadRefreshRequest request, string tenant, LiveOptions options, DateTimeOffset now)
+    public static ApprovedResource Check(ReadRefreshRequest request, string tenant, LiveOptions options, DateTimeOffset now,
+        ApprovedResource? registered = null)
     {
-        var resource = options.Resources.SingleOrDefault(value => value.Id == request.ConversationId);
+        var resource = registered ?? options.Resources.SingleOrDefault(value => value.Id == request.ConversationId);
         if (request.SchemaVersion != 1 || request.CacheGeneration < 0 || request.TenantId != tenant || resource is null ||
             request.RequestedAt > now.AddMinutes(1) || request.RequestedAt < now.AddMinutes(-5) ||
             request.Parent is not null && (resource.Kind != "channel" || request.Parent.Length is < 1 or > 128 ||
@@ -75,12 +77,14 @@ public static class ReadRefreshValidation
 }
 
 public sealed class ReadRefreshHandler(string tenant, LiveOptions options, ILiveStateStore store,
-    LiveControlStore control, IGraphBackground graph, TimeProvider clock, ILogger<ReadRefreshHandler> logger)
+    LiveControlStore control, IGraphBackground graph, TimeProvider clock, ILogger<ReadRefreshHandler> logger,
+    IResourceRegistry? registry = null)
 {
     public async Task HandleAsync(ReadRefreshRequest request, CancellationToken ct)
     {
         var now = clock.GetUtcNow();
-        var resource = ReadRefreshValidation.Check(request, tenant, options, now);
+        var resource = ReadRefreshValidation.Check(request, tenant, options, now,
+            registry is null ? null : (await registry.FindAsync(request.ConversationId, ct))?.Resource);
         var metadata = await store.GetAsync(tenant, resource.Id, ct)
             ?? throw new AppError(404, "resource_unknown", "Refresh requires an onboarded resource.");
         if (!resource.Matches(metadata.Value))
@@ -116,13 +120,15 @@ public sealed class ReadRefreshHandler(string tenant, LiveOptions options, ILive
             throw new ReadRefreshDeferredException(now.AddSeconds(1));
         var lease = await control.ReadRefreshAsync(request.Key, ct);
         if (lease?.Value.Owner != owner) throw new ReadRefreshDeferredException(now.AddSeconds(1));
+        var continuing = false;
         try
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
             deadline.CancelAfter(TimeSpan.FromSeconds(45));
-            await HydrateAsync(resource, request, deadline.Token);
+            continuing = !await HydrateAsync(resource, request, deadline.Token);
             if (!await control.SaveReadRefreshAsync(request.Key, lease,
-                claim with { Owner = "", LeaseUntil = DateTimeOffset.MinValue, CompletedThrough = clock.GetUtcNow() }, ct))
+                claim with { Owner = "", LeaseUntil = DateTimeOffset.MinValue,
+                    CompletedThrough = continuing ? claim.CompletedThrough : clock.GetUtcNow() }, ct))
                 throw new AppError(409, "read_refresh_conflict", "Refresh completion changed concurrently.");
         }
         catch (Exception error) when (error is not OperationCanceledException || !ct.IsCancellationRequested)
@@ -141,14 +147,15 @@ public sealed class ReadRefreshHandler(string tenant, LiveOptions options, ILive
             else LiveTelemetry.GraphDeferred.Add(1);
             throw;
         }
+        if (continuing) throw new ReadRefreshDeferredException(clock.GetUtcNow().AddMilliseconds(100));
     }
 
-    private async Task HydrateAsync(ApprovedResource resource, ReadRefreshRequest request, CancellationToken ct)
+    private async Task<bool> HydrateAsync(ApprovedResource resource, ReadRefreshRequest request, CancellationToken ct)
     {
         var scoped = graph.ForResource(resource.Path);
         var previous = await store.ReadViewAsync(tenant, resource.Id, request.Parent, ct);
         var state = previous?.Value.Epoch == request.Epoch && previous.Value.CacheGeneration == request.CacheGeneration ? previous.Value : null;
-        if (state?.Complete == true && !state.ParentMissing) return;
+        if (state?.Complete == true && !state.ParentMissing) return true;
         if (request.Parent is not null)
         {
             var root = await store.CurrentMessageAsync(tenant, resource.Id, request.Parent, null, ct);
@@ -167,13 +174,13 @@ public sealed class ReadRefreshHandler(string tenant, LiveOptions options, ILive
                 catch (AppError error) when (error.Code == "graph_404")
                 {
                     await SaveAsync(new(request.Epoch, true, null, clock.GetUtcNow(), ParentMissing: true, CacheGeneration: request.CacheGeneration));
-                    return;
+                    return true;
                 }
             }
             if (root.Deleted || root.CreatedAt < clock.GetUtcNow().AddDays(-7))
             {
                 await SaveAsync(new(request.Epoch, true, null, clock.GetUtcNow(), ParentMissing: true, CacheGeneration: request.CacheGeneration));
-                return;
+                return true;
             }
         }
         var expected = request.Parent is null ? resource.Path :
@@ -202,11 +209,13 @@ public sealed class ReadRefreshHandler(string tenant, LiveOptions options, ILive
             if (resource.Kind == "chat" && oldest < clock.GetUtcNow().AddDays(-7)) next = null;
             state = new(request.Epoch, next is null, next, clock.GetUtcNow(), oldest, CacheGeneration: request.CacheGeneration);
             await SaveAsync(state);
-            if (next is null || messages.Any(message => message.CreatedAt >= clock.GetUtcNow().AddDays(-7) &&
+            if (next is null) return true;
+            if (request.Parent is null && messages.Any(message => message.CreatedAt >= clock.GetUtcNow().AddDays(-7) &&
                 (request.Before is null || message.CreatedAt < request.Before ||
-                    message.CreatedAt == request.Before && StringComparer.Ordinal.Compare(message.Id, request.BeforeId) > 0))) return;
+                    message.CreatedAt == request.Before && StringComparer.Ordinal.Compare(message.Id, request.BeforeId) > 0))) return true;
             path = next;
         }
+        return request.Parent is null;
 
         async Task SaveAsync(ReadViewState value)
         {

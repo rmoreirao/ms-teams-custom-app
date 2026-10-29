@@ -1,8 +1,8 @@
-export interface Session { id: string; name: string; environment: "Development"; source: "Microsoft Teams"; csrf: string; scopedValidation?: boolean; backgroundAuthentication?: "delegated-validation" | "application"; entitlementProvider?: "External" | "Graph"; canStartDirectChats?: boolean; canCreateDirectChats?: false }
+export interface Session { id: string; name: string; environment: "Development"; source: "Microsoft Teams"; csrf: string; scopedValidation?: boolean; backgroundAuthentication?: "delegated-validation" | "application"; entitlementProvider?: "External" | "Graph"; canStartDirectChats?: boolean; canCreateDirectChats?: false; canBrowseChannels?: boolean; channelRegistry?: boolean }
 export interface Person { id: string; name: string; email: string | null }
-export interface Conversation { id: string; title: string; kind: "chat" | "channel"; team: string | null; revision: number; isDirect?: boolean }
+export interface Conversation { id: string; title: string; kind: "chat" | "channel"; team: string | null; revision: number; isDirect?: boolean; teamId?: string | null; canPost?: boolean; canReply?: boolean; capabilityReason?: string | null }
 export interface Message { id: string; actorId: string; author: string; body: string; createdAt: string; modifiedAt: string; parentId: string | null; deleted: boolean; contentNotice?: string | null; teamsUrl?: string | null; htmlBody?: string | null }
-export interface ReadAccess { historyFrom: string; validUntil: string; epoch: number }
+export interface ReadAccess { historyFrom: string; validUntil: string; epoch: number; canSend?: boolean }
 export interface CacheReadEvidence { kind: "page" | "delta"; observedAt: string; hydrationRequested: boolean;
   steps: { layer: string; outcome: string; count: number; milliseconds: number }[] }
 export interface ReadObservation { observedAt: string; kind: "page" | "delta"; outcome: "ready" | "pending" | "failed";
@@ -13,12 +13,21 @@ export interface CacheCleanup { id: string; cosmos: boolean; redis: boolean; tar
 export interface CacheSnapshot { observedAt: string; revision: number; generation: number; cosmosMessages: number | null;
   cosmosCountComplete: boolean; coverageComplete: boolean; readViewComplete: boolean; cosmosError: string | null;
   redis: { status: string; pages: number | null; maximumTtlSeconds: number | null; complete: boolean }; cleanup: CacheCleanup | null }
-export interface MessagePage { messages: Message[]; cursor: string | null; revision: number; window: string; parentMessage: Message | null; access?: ReadAccess; diagnostics?: CacheReadEvidence }
+export interface MessagePage { messages: Message[]; cursor: string | null; revision: number; window: string; parentMessage: Message | null; access?: ReadAccess; diagnostics?: CacheReadEvidence; replyCount?: number | null; preview?: boolean; replyCountExpiresAt?: string | null }
 export interface PendingRead { state: "pending"; retryAfterMs: number; access: ReadAccess | null; diagnostics?: CacheReadEvidence }
 export const isPendingRead = (value: unknown): value is PendingRead =>
   typeof value === "object" && value !== null && "state" in value;
-export interface ChangePage { changes: { revision: number; messageId: string; parentId: string | null }[]; revision: number; resetRequired: boolean; messages?: Message[]; historyFrom?: string; window?: string; access?: ReadAccess; cacheReset?: boolean; diagnostics?: CacheReadEvidence }
+export interface ChangePage { changes: { revision: number; messageId: string; parentId: string | null }[]; revision: number; resetRequired: boolean; messages?: Message[]; historyFrom?: string; window?: string; access?: ReadAccess; cacheReset?: boolean; diagnostics?: CacheReadEvidence; replyCount?: number | null; replyCountExpiresAt?: string | null }
 export interface RealtimeHint { conversationId: string; revision: number }
+export interface RealtimeEvent { type: "channel.operation.changed" | "channel.catalog.changed" | "channel.view.ready";
+  schemaVersion: 1; revision: number; sequence: number; operationId?: string | null; conversationId?: string | null;
+  parentId?: string | null; generation?: number | null }
+export interface ChannelTeam { id: string; name: string }
+export interface DiscoveredChannel { id: string; teamId: string; name: string; teamName: string; selection: string }
+export interface ChannelOperation { id: string; kind: "teams" | "channels" | "open";
+  state: "pending" | "preparing" | "deferred" | "ready" | "denied" | "failed" | "capacity";
+  revision: number; error: string | null; teams: ChannelTeam[] | null; channels: DiscoveredChannel[] | null;
+  cursor: string | null; conversation: Conversation | null }
 export type DeliveryState = "pending" | "dispatching" | "confirmed" | "rejected" | "unknown";
 export interface Operation { id: string; state: DeliveryState; messageId: string | null; error: string | null;
   attempts?: number; throttles?: number; firstStatus?: number | null; retryAt?: string | null }
@@ -43,7 +52,8 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return (await request<T>(path, init)).body;
 }
 export async function readMessages(path: string, signal?: AbortSignal): Promise<MessagePage | PendingRead> {
-  const response = await request<MessagePage | PendingRead>(path, { signal, headers: { "X-Cache-Diagnostics": "true" } });
+  const read = (bounded = signal) => request<MessagePage | PendingRead>(path, { signal: bounded, headers: { "X-Cache-Diagnostics": "true" } });
+  const response = new URL(path, "https://local").searchParams.has("parent") ? await threadRead(read, signal) : await read();
   const value = response.body;
   if (response.status === 202 && value && isPendingRead(value) && value.state === "pending" &&
       Number.isInteger(value.retryAfterMs) && value.retryAfterMs >= 100 && value.retryAfterMs <= 30000 &&
@@ -110,3 +120,4 @@ function isOperation(value: unknown): value is Operation {
     (!("retryAt" in value) || value.retryAt === null ||
       typeof value.retryAt === "string" && Number.isFinite(Date.parse(value.retryAt)));
 }
+import { threadRead } from "./threadReads";

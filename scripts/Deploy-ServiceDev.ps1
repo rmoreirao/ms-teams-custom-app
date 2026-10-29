@@ -70,6 +70,14 @@ $refresh=Read-Azure @('servicebus','queue','show','--resource-group',$contract.r
     '--namespace-name',$Matches.name,'--name','graph-read-refresh')
 $refreshAccess=Read-Azure @('role','assignment','list','--scope',$refresh.id,'--include-inherited')
 Assert-ServiceDevReadRefresh $refresh $refreshAccess $contract
+if($contract.liveConfig.channelDiscovery.registryEnabled){
+    $channelQueue=Read-Azure @('servicebus','queue','show','--resource-group',$contract.resourceGroup,
+        '--namespace-name',$contract.serviceBusName,'--name','channel-work')
+    $channelAccess=Read-Azure @('role','assignment','list','--scope',$channelQueue.id,'--include-inherited')
+    Assert-ServiceDevChannelWork $channelQueue $channelAccess $contract
+    $currentRead=Read-Azure @('rest','--method','get','--url',"https://management.azure.com$($cosmos.id)/sqlDatabases/teams/containers/live-resources/storedProcedures/readCurrentV1?api-version=2024-05-15")
+    if($currentRead.name -cne 'readCurrentV1'){throw 'Verify live-resources primary current reads before release.'}
+}
 Write-Output 'Plan: image-only release to five existing isolated service workloads. No identity, grants, provisioning, admission, edge, scale or data changes.'
 if(-not $Apply -or -not $PSCmdlet.ShouldProcess(($targets.name-join ', '),"Release immutable service image $Image")){return}
 $directory=Join-Path (Split-Path $path -Parent) ('.service-release-'+[guid]::NewGuid().ToString('N'))
@@ -82,7 +90,8 @@ try{
             $current.properties.latestRevisionName -cne $target.app.properties.latestRevisionName -or
             $current.properties.latestReadyRevisionName -cne $target.app.properties.latestReadyRevisionName){throw 'A target changed after all-target preflight.'}
     }
-    foreach($target in $targets){
+    foreach($role in @('Control','Receiver','Projector','Delivery','Api')){
+        $target=@($targets|Where-Object role -eq $role)[0]
         $current=Read-Azure @('containerapp','show','--resource-group',$contract.resourceGroup,'--name',$target.name)
         if((Get-ServiceDevFingerprint (Get-ServiceDevPreservedState $current)) -cne $target.fingerprint){throw "The $($target.role) configuration changed before update."}
         $expected=$target.app|ConvertTo-Json -Depth 100|ConvertFrom-Json -Depth 100

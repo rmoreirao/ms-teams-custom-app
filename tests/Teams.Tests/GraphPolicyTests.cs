@@ -104,12 +104,51 @@ public sealed class GraphPolicyTests
     [InlineData("archived")]
     [InlineData("private-channel")]
     [InlineData("moderated")]
+    [InlineData("archived-channel")]
+    [InlineData("missing-moderation")]
+    [InlineData("reply-restricted")]
     public async Task UnsupportedChannelPoliciesStayDenied(string denial)
     {
         var fixture = new Fixture();
         fixture.Source.Denial = denial;
         var page = await fixture.Feed.ReadAsync(fixture.Channel, null, default);
         Assert.All(page.Entries, entry => Assert.False(entry.Active));
+    }
+    [Fact]
+    public async Task ChannelPolicyRenewsExpiredCatalogAuthorityUsingMetadataNotMessageContents()
+    {
+        var fixture = new Fixture();
+        var actor = new Actor(Tenant, Actors[0], "");
+        var first = await fixture.Feed.ReadAsync(fixture.Channel, null, default);
+        foreach (var grant in first.Entries) await fixture.Store.SetEntitlementAsync(grant, default);
+        Assert.Single((await fixture.Store.CatalogAsync(actor, null, default)).Items);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(3));
+        Assert.Equal("authorization_stale", (await Assert.ThrowsAsync<AppError>(() =>
+            fixture.Store.CatalogAsync(actor, null, default))).Code);
+        var renewed = await fixture.Feed.ReadAsync(fixture.Channel, null, default);
+        foreach (var grant in renewed.Entries) await fixture.Store.SetEntitlementAsync(grant, default);
+        Assert.Single((await fixture.Store.CatalogAsync(actor, null, default)).Items);
+        Assert.True(renewed.Entries[0].VerifiedAt > first.Entries[0].VerifiedAt);
+        Assert.Contains(fixture.Source.Reads, path => path.StartsWith("https://graph.microsoft.com/beta/teams/", StringComparison.Ordinal));
+        Assert.DoesNotContain(fixture.Source.Reads, path => path.Contains("/messages", StringComparison.Ordinal));
+    }
+    [Fact]
+    public async Task BetaMetadataPolicyReaderCannotLeaveTheRegisteredChannel()
+    {
+        var fixture = new Fixture();
+        var requests = new List<Uri>();
+        var transport = new GraphBackground(new HttpClient(new Handler(request =>
+        {
+            requests.Add(request.RequestUri!);
+            return new(HttpStatusCode.OK) { Content = new StringContent("{}") };
+        })), new Credential());
+        var app = new ApplicationGraph(transport, fixture.Options, new(new MemoryPartitionDocuments(), fixture.Clock, Tenant));
+        await app.ReadChannelAsync(fixture.Channel, default);
+        Assert.StartsWith("/beta/teams/", Assert.Single(requests).AbsolutePath);
+        await Assert.ThrowsAsync<AppError>(() => app.ReadChannelAsync(fixture.Direct, default));
+        await Assert.ThrowsAsync<AppError>(() => app.ReadChannelAsync(fixture.Channel with { GraphChannelId = "other" }, default));
+        await Assert.ThrowsAsync<AppError>(() => app.ReadChannelAsync(fixture.Channel with { Id = "unregistered" }, default));
+        Assert.Single(requests);
     }
     [Theory]
     [InlineData("invalid-user")]
@@ -361,10 +400,15 @@ public sealed class GraphPolicyTests
         public string Denial = "";
         public readonly List<string> Reads = [];
         public Task<JsonElement> GetAsync(string path, CancellationToken ct) => ReadAsync(path, ct);
+        public Task<JsonElement> ReadChannelAsync(ApprovedResource resource, CancellationToken ct) =>
+            ReadAsync(GraphUrls.ChannelMetadata(resource.GraphTeamId!, resource.GraphChannelId!).AbsoluteUri, ct);
         public Task<JsonElement> ReadAsync(string path, CancellationToken ct)
         {
             Reads.Add(path);
-            var route = GraphUrls.ResourcePath(GraphUrls.Validate(path));
+            var uri = new Uri(path, UriKind.RelativeOrAbsolute);
+            var route = uri.IsAbsoluteUri && uri.AbsolutePath.StartsWith("/beta/", StringComparison.Ordinal) ?
+                GraphMessages.NormalizeResource(uri.AbsolutePath["/beta/".Length..]) :
+                GraphUrls.ResourcePath(GraphUrls.Validate(path));
             if (Denial == "policy-unavailable") throw new AppError(503, "graph_503", "Source unavailable.");
             object value;
             if (route == $"servicePrincipals/{WebPrincipal}")
@@ -381,9 +425,18 @@ public sealed class GraphPolicyTests
                     accountEnabled = actor != Actors[0] || Denial != "disabled", userType = actor == Actors[0] && Denial == "guest" ? "Guest" : "Member" };
             }
             else if (route == "teams/team") value = new { id = "team", isArchived = Denial == "archived" };
-            else if (route == "teams/team/channels/channel") value = new { id = "channel",
-                membershipType = Denial == "private-channel" ? "private" : "standard",
-                moderationSettings = Denial == "moderated" ? new { enabled = true } : null };
+            else if (route == "teams/team/channels/channel")
+            {
+                Assert.StartsWith("/beta/", uri.AbsolutePath);
+                var channel = new Dictionary<string, object?> { ["id"] = "channel",
+                    ["membershipType"] = Denial == "private-channel" ? "private" : "standard",
+                    ["isArchived"] = Denial == "archived-channel" };
+                if (Denial != "missing-moderation") channel["moderationSettings"] = new {
+                    userNewMessageRestriction = Denial == "moderated" ? "moderators" : "everyone",
+                    replyRestriction = Denial == "reply-restricted" ? "authorAndModerators" : "everyone"
+                };
+                value = channel;
+            }
             else if (route.EndsWith("/members", StringComparison.Ordinal))
             {
                 var direct = route.StartsWith("chats/19%3Adirect", StringComparison.Ordinal);

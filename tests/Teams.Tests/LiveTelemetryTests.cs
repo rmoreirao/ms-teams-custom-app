@@ -29,6 +29,6 @@ public sealed class LiveTelemetryTests
         Assert.Contains(measurements, m => m.Name == "teamsref_dependency_duration_ms");
         Assert.Contains(measurements, m => m.Name == "teamsref_graph_responses");
         Assert.All(measurements.SelectMany(m => m.Keys), key =>
-            Assert.Contains(key, new[] { "mode", "component", "operation", "state", "attempt", "status" }));
+            Assert.Contains(key, new[] { "mode", "component", "operation", "state", "attempt", "status", "outcome" }));
     }
 }

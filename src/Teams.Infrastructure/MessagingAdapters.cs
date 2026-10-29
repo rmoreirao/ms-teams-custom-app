@@ -1,4 +1,5 @@
 using Azure.Messaging.WebPubSub;
+using System.Text.Json;
 using Teams.Core;
 
 namespace Teams.Infrastructure;
@@ -19,4 +20,12 @@ public sealed class AzureRealtime(WebPubSubServiceClient client, IPrincipalRevoc
     public async Task RevokeAsync(string tenant, string actorId, CancellationToken ct) =>
         await client.CloseUserConnectionsAsync(User(tenant, actorId), reason: "Access revoked",
             context: new Azure.RequestContext { CancellationToken = ct });
+    public async Task PublishEventAsync(string tenant, string actorId, RealtimeEvent value, CancellationToken ct)
+    {
+        if (await revocations.IsBlockedAsync(tenant, actorId, ct)) return;
+        await client.SendToUserAsync(User(tenant, actorId),
+            Azure.Core.RequestContent.Create(BinaryData.FromObjectAsJson(value, new JsonSerializerOptions(JsonSerializerDefaults.Web))),
+            Azure.Core.ContentType.ApplicationJson,
+            context: new Azure.RequestContext { CancellationToken = ct });
+    }
 }

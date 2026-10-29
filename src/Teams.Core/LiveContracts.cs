@@ -23,10 +23,12 @@ public interface IReadRefresh
 {
     Task RequestAsync(ReadRefreshRequest request, bool required, CancellationToken ct);
 }
-public sealed record OutboxChange(string Id, string TenantId, string ConversationId, long Revision, DateTimeOffset CreatedAt);
+public sealed record OutboxChange(string Id, string TenantId, string ConversationId, long Revision, DateTimeOffset CreatedAt,
+    RealtimeEvent? Event = null);
 public sealed record DeliveryProgress(long Page, string? Cursor, string Owner, DateTimeOffset LeaseUntil, bool Complete,
     long TargetRevision = 0);
-public sealed record DeliveryWork(OutboxChange Change, long Page = 0, string RecoveryId = "", int SchemaVersion = 1);
+public sealed record DeliveryWork(OutboxChange Change, long Page = 0, string RecoveryId = "", int SchemaVersion = 1,
+    ActorEventWork? ActorEvent = null);
 public interface IDeliveryWorkQueue
 {
     Task EnqueueAsync(DeliveryWork work, DateTimeOffset? scheduledAt, CancellationToken ct);

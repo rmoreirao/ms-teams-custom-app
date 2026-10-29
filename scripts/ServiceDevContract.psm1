@@ -34,6 +34,21 @@ function Assert-ServiceDevTargets($Contract) {
         if(@($values|Sort-Object -Unique).Count -ne 5){throw 'Roles must have five distinct targets, clients, principals and attached identities.'}
     }
     $live=$Contract.liveConfig
+    $channels=$live.channelDiscovery
+    if(($channels.enabled -or $channels.sendEnabled) -and -not $channels.registryEnabled){throw 'Channel browsing and sending require the durable registry.'}
+    if($channels.registryEnabled){
+        $from=[DateTimeOffset]::MinValue
+        $historyFrom=$channels.historyFrom
+        if($historyFrom -is [DateTime] -or $historyFrom -is [DateTimeOffset]){
+            $historyFrom=$historyFrom.ToString('o',[Globalization.CultureInfo]::InvariantCulture)
+        }
+        if(-not $channels.approvalReference -or $channels.approvalReference -match '^(?i)PENDING' -or
+            -not [DateTimeOffset]::TryParse([string]$historyFrom,[Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::None,[ref]$from) -or
+            $from -eq [DateTimeOffset]::MinValue -or $from -gt [DateTimeOffset]::UtcNow){
+            throw 'Expanded channel processing needs a separate reviewed approval and history cutoff.'
+        }
+    }
     if($live.authorityMode -cne 'Policy' -or $live.entitlementProvider -cne 'Graph' -or $live.readConsistency -cne 'Session' -or
         -not $live.approvalReference -or $live.graphPolicy.approvalReference -match '^(?i)PENDING' -or -not $live.graphPolicy.approvalReference -or
         $live.graphPolicy.webServicePrincipalId -ne $Contract.webServicePrincipalId -or $live.syncClientId -ne $Contract.syncClientId -or
@@ -145,6 +160,9 @@ function Assert-ServiceDevDataAccess($Assignments,[string]$CosmosId,[string]$Rea
     $matrix=@{Api=@{'live-state'=$true;'live-authority'=$false};Receiver=@{'live-control'=$false};
         Projector=@{'live-state'=$true;'live-control'=$true};Delivery=@{'live-state'=$true;'live-authority'=$false;'live-leases'=$true};
         Control=@{'live-state'=$true;'live-control'=$true;'live-authority'=$true}}
+    if($Contract.liveConfig.channelDiscovery.registryEnabled){
+        foreach($role in @(Get-ServiceDevRoles)){$matrix[$role]['live-resources']=($role -eq 'Control')}
+    }
     foreach($role in @(Get-ServiceDevRoles)){
         $actual=@($Assignments|Where-Object{$_.properties.principalId -eq $Contract.roleBindings.$role.principalId})
         $expected=$matrix[$role]
@@ -179,4 +197,23 @@ function Assert-ServiceDevReadRefresh($Queue,$Assignments,$Contract) {
         }
     }
 }
-Export-ModuleMember -Function Get-ServiceDevRoles,Assert-ServiceDevTargets,Get-ServiceDevFingerprint,Get-ServiceDevPreservedState,Assert-ServiceDevApp,Assert-ServiceDevDataAccess,Assert-ServiceDevReaderRole,Assert-ServiceDevReadRefresh
+function Assert-ServiceDevChannelWork($Queue,$Assignments,$Contract) {
+    if($Queue.name -cne 'channel-work' -or $Queue.id -notmatch '/providers/Microsoft.ServiceBus/namespaces/[^/]+/queues/channel-work$' -or
+        $Queue.status -cne 'Active' -or $Queue.requiresDuplicateDetection -ne $true -or $Queue.deadLetteringOnMessageExpiration -ne $true -or
+        $Queue.maxDeliveryCount -ne 5 -or $Queue.defaultMessageTimeToLive -cne 'PT1H' -or $Queue.lockDuration -cne 'PT1M' -or
+        $Queue.duplicateDetectionHistoryTimeWindow -cne 'PT1M'){
+        throw 'Provision and review channel-work before enabling channel discovery.'
+    }
+    $sender='69a216fc-b8fb-44d8-bc22-1f3c2cd27a39';$receiver='4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0'
+    foreach($role in @(Get-ServiceDevRoles)){
+        $expected=if($role -eq 'Api'){@($sender)}elseif($role -eq 'Control'){@($sender,$receiver)}else{@()}
+        $actual=@($Assignments|Where-Object{$_.principalId -eq $Contract.roleBindings.$role.principalId})
+        if($actual.Count -ne $expected.Count){throw "Unexpected $role channel-work access."}
+        foreach($permission in $expected){
+            if(@($actual|Where-Object{$_.scope -eq $Queue.id -and $_.roleDefinitionId -like "*/$permission"}).Count -ne 1){
+                throw "The $role channel-work permission must be exact and queue-scoped."
+            }
+        }
+    }
+}
+Export-ModuleMember -Function Get-ServiceDevRoles,Assert-ServiceDevTargets,Get-ServiceDevFingerprint,Get-ServiceDevPreservedState,Assert-ServiceDevApp,Assert-ServiceDevDataAccess,Assert-ServiceDevReaderRole,Assert-ServiceDevReadRefresh,Assert-ServiceDevChannelWork

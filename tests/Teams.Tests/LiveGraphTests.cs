@@ -76,6 +76,52 @@ public sealed class LiveGraphTests
         Assert.Equal(0, calls);
     }
     [Fact]
+    public async Task OnlyDedicatedReadOnlyChannelMetadataUsesBeta()
+    {
+        var requests = new List<(HttpMethod Method, Uri Uri)>();
+        var client = new GraphBackground(new HttpClient(new Handler(request =>
+        {
+            requests.Add((request.Method, request.RequestUri!));
+            return new(HttpStatusCode.OK) { Content = new StringContent("{}") };
+        })), new Credential());
+        await client.GetChannelMetadataAsync("team", "19:channel@thread.tacv2", null, default);
+        await client.GetAsync(Resource.Path, default);
+        await client.GetAsync("subscriptions", default);
+        Assert.All(requests, request => Assert.Equal(HttpMethod.Get, request.Method));
+        Assert.Equal("/beta/teams/team/channels/19%3Achannel%40thread.tacv2", requests[0].Uri.AbsolutePath);
+        Assert.Equal("?$select=id,displayName,membershipType,isArchived,moderationSettings", requests[0].Uri.Query);
+        Assert.StartsWith("/v1.0/chats/", requests[1].Uri.AbsolutePath);
+        Assert.Equal("/v1.0/subscriptions", requests[2].Uri.AbsolutePath);
+        await Assert.ThrowsAsync<AppError>(() => client.GetAsync(requests[0].Uri.AbsoluteUri, default));
+        await Assert.ThrowsAsync<AppError>(() => client.PostAsync(requests[0].Uri.AbsoluteUri, new { }, default));
+        Assert.Equal(3, requests.Count);
+    }
+    [Theory]
+    [InlineData("http://graph.microsoft.com/beta/teams/team/channels")]
+    [InlineData("https://graph.microsoft.com.evil.invalid/beta/teams/team/channels")]
+    [InlineData("https://graph.microsoft.com:444/beta/teams/team/channels")]
+    [InlineData("https://user@graph.microsoft.com/beta/teams/team/channels")]
+    [InlineData("https://graph.microsoft.com/v1.0/teams/team/channels")]
+    [InlineData("https://graph.microsoft.com/beta/teams/other/channels")]
+    [InlineData("https://graph.microsoft.com/beta/teams/team/channels/channel/messages")]
+    [InlineData("https://graph.microsoft.com/beta/subscriptions")]
+    public void MetadataContinuationsCannotEscapeTheSelectedTeamVersionOrMetadataPath(string path) =>
+        Assert.Throws<AppError>(() => GraphUrls.ChannelMetadata("team", null, path));
+    [Fact]
+    public void MetadataContinuationPreservesOpaqueTokensButCannotExpandContent()
+    {
+        var initial = GraphUrls.ChannelMetadata("team", null).AbsoluteUri;
+        var next = initial + "&$skiptoken=opaque%2Btoken%3d%3d+literal";
+        Assert.Equal(next, GraphUrls.ChannelMetadata("team", null, next).OriginalString);
+        foreach (var invalid in new[] {
+            initial + "&$expand=messages", initial + "&$select=body",
+            initial.Replace("id,displayName,membershipType,isArchived,moderationSettings", "id,body", StringComparison.Ordinal),
+            initial + "&$top=1001", initial + "#fragment"
+        }) Assert.Throws<AppError>(() => GraphUrls.ChannelMetadata("team", null, invalid));
+        Assert.Throws<AppError>(() => GraphUrls.ChannelMetadata("..", null));
+        Assert.Throws<AppError>(() => GraphUrls.ChannelMetadata("team", ".."));
+    }
+    [Fact]
     public async Task ThrottledGraphAttemptHonorsRetryBudgetWithoutSharedCooldown()
     {
         var calls = 0;

@@ -12,6 +12,7 @@ param vaultName string
 param sessionKeyName string
 param notificationKeyNames array
 param provisionAccess bool = false
+param enableChannelRegistry bool = false
 @description('Existing exact role/scope/principal assignment names verified by inventory; avoids duplicating approved assignments.')
 param existingDataAssignmentIds object = {}
 param existingRoleAssignmentIds object = {}
@@ -20,6 +21,18 @@ param existingRedisAssignmentIds object = {}
 resource registry 'Microsoft.ContainerRegistry/registries@2025-04-01' existing = { name: registryName }
 resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' existing = { name: cosmosAccountName }
 resource bus 'Microsoft.ServiceBus/namespaces@2024-01-01' existing = { name: serviceBusName }
+module channelDiscovery 'modules/channel-discovery.bicep' = if (enableChannelRegistry) {
+  name: 'service-dev-channel-discovery'
+  params: {
+    cosmosAccountName: cosmosAccountName
+    serviceBusName: serviceBusName
+    principals: principals
+    primaryReaderRoleId: primaryReaderRoleId
+    provisionAccess: provisionAccess
+    existingDataAssignmentIds: existingDataAssignmentIds
+    existingRoleAssignmentIds: existingRoleAssignmentIds
+  }
+}
 module readRefresh 'modules/read-refresh.bicep' = if (provisionAccess) {
   name: 'service-dev-read-refresh'
   params: {

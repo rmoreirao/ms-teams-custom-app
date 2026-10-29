@@ -6,36 +6,54 @@ namespace Teams.Host;
 public interface IGraphPolicyReader
 {
     Task<JsonElement> ReadAsync(string path, CancellationToken ct);
+    Task<JsonElement> ReadChannelAsync(ApprovedResource resource, CancellationToken ct);
 }
 
-public sealed class ApplicationGraph(GraphBackground transport, LiveOptions options, LiveControlStore control)
+public sealed class ApplicationGraph(GraphBackground transport, LiveOptions options, LiveControlStore control, IResourceRegistry? registry = null)
     : IGraphBackground, IGraphPolicyReader
 {
     public IGraphBackground ForResource(string resourcePath)
     {
         var uri = GraphUrls.Validate(resourcePath);
-        var resource = options.Resources.SingleOrDefault(value => value.Path == GraphUrls.ResourcePath(uri));
-        if (resource is null || uri.Query.Length != 0)
+        if (uri.Query.Length != 0)
             throw new AppError(403, "graph_scope_denied", "Select an explicitly approved resource without a continuation.");
-        return new Scoped(this, resource);
+        return new Scoped(this, GraphUrls.ResourcePath(uri));
     }
     public Task<JsonElement> GetAsync(string path, CancellationToken ct) => throw new InvalidOperationException("Select an approved Graph resource context.");
     public Task<JsonElement> PostAsync(string path, object body, CancellationToken ct) => throw new InvalidOperationException("Select an approved Graph resource context.");
     public Task<JsonElement> PatchAsync(string path, object body, CancellationToken ct) => throw new InvalidOperationException("Select an approved Graph resource context.");
-    public Task<JsonElement> ReadAsync(string path, CancellationToken ct)
+    public async Task<JsonElement> ReadChannelAsync(ApprovedResource resource, CancellationToken ct)
+    {
+        var approved = registry is null ? options.Resources.SingleOrDefault(item => item.Id == resource.Id) :
+            (await registry.FindAsync(resource.Id, ct))?.Resource;
+        if (resource.Kind != "channel" || approved != resource)
+            throw new AppError(403, "graph_policy_scope_denied", "Channel metadata reads require the original registered channel.");
+        return await transport.GetChannelMetadataAsync(resource.GraphTeamId!, resource.GraphChannelId!, null, ct);
+    }
+    public async Task<JsonElement> ReadAsync(string path, CancellationToken ct)
     {
         var policy = options.GraphPolicy ?? throw new InvalidOperationException("Graph policy is not configured.");
         var canonical = GraphUrls.ResourcePath(GraphUrls.Validate(path));
         var parts = canonical.Split('/');
         var user = parts is ["users", var id] && policy.AdmittedUserIds.Contains(Uri.UnescapeDataString(id));
+        var joined = options.ChannelDiscovery.RegistryEnabled && parts is ["users", var actor, "joinedTeams"] &&
+            policy.AdmittedUserIds.Contains(Uri.UnescapeDataString(actor));
         var app = canonical == $"servicePrincipals/{policy.WebServicePrincipalId}" ||
             canonical == $"servicePrincipals/{policy.WebServicePrincipalId}/appRoleAssignedTo";
-        var team = options.Resources.Where(resource => resource.Kind == "channel").Any(resource =>
+        var resources = registry is null ? options.Resources : (await registry.ListAsync(ct)).Select(r => r.Resource);
+        var team = resources.Where(resource => resource.Kind == "channel").Any(resource =>
             canonical == $"teams/{Uri.EscapeDataString(resource.GraphTeamId!)}" ||
             canonical == $"teams/{Uri.EscapeDataString(resource.GraphTeamId!)}/members");
-        if (!user && !app && !team)
+        if (!user && !app && !team && !joined)
             throw new AppError(403, "graph_policy_scope_denied", "Policy reads cannot leave the admitted users, Web application or approved teams.");
-        return transport.GetAsync(path, ct);
+        return await transport.GetAsync(path, ct);
+    }
+    private async Task<JsonElement> ResolveAsync(string resourcePath, HttpMethod method, string path, object? body, CancellationToken ct)
+    {
+        var resources = registry is null ? options.Resources : (await registry.ListAsync(ct)).Select(r => r.Resource);
+        var resource = resources.SingleOrDefault(value => value.Path == resourcePath)
+            ?? throw new AppError(403, "graph_scope_denied", "This source resource is not registered.");
+        return await RequestAsync(resource, method, path, body, ct);
     }
     private async Task<JsonElement> RequestAsync(ApprovedResource resource, HttpMethod method, string path, object? body, CancellationToken ct)
     {
@@ -76,10 +94,10 @@ public sealed class ApplicationGraph(GraphBackground transport, LiveOptions opti
             : method == HttpMethod.Post ? await transport.PostAsync(path, body!, ct)
             : await transport.PatchAsync(path, body!, ct);
     }
-    private sealed class Scoped(ApplicationGraph owner, ApprovedResource resource) : IGraphBackground
+    private sealed class Scoped(ApplicationGraph owner, string resourcePath) : IGraphBackground
     {
-        public Task<JsonElement> GetAsync(string path, CancellationToken ct) => owner.RequestAsync(resource, HttpMethod.Get, path, null, ct);
-        public Task<JsonElement> PostAsync(string path, object body, CancellationToken ct) => owner.RequestAsync(resource, HttpMethod.Post, path, body, ct);
-        public Task<JsonElement> PatchAsync(string path, object body, CancellationToken ct) => owner.RequestAsync(resource, HttpMethod.Patch, path, body, ct);
+        public Task<JsonElement> GetAsync(string path, CancellationToken ct) => owner.ResolveAsync(resourcePath, HttpMethod.Get, path, null, ct);
+        public Task<JsonElement> PostAsync(string path, object body, CancellationToken ct) => owner.ResolveAsync(resourcePath, HttpMethod.Post, path, body, ct);
+        public Task<JsonElement> PatchAsync(string path, object body, CancellationToken ct) => owner.ResolveAsync(resourcePath, HttpMethod.Patch, path, body, ct);
     }
 }

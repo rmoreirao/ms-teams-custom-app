@@ -2,7 +2,7 @@ namespace Teams.Core;
 
 public sealed record Actor(string TenantId, string Id, string Name, string SessionId = "fixture");
 public sealed record Member(string Id, string Name, DateTimeOffset HistoryFrom, bool Active = true,
-    DateTimeOffset? FreshUntil = null);
+    DateTimeOffset? FreshUntil = null, bool CanSend = true);
 public sealed record Message(string Id, string ActorId, string Author, string Body,
     DateTimeOffset CreatedAt, DateTimeOffset ModifiedAt, string? ParentId = null,
     bool Deleted = false, string SourceVersion = "1", string? ContentNotice = null, string? TeamsUrl = null, string? HtmlBody = null);
@@ -27,28 +27,31 @@ public sealed record WriteResult(OperationState State, Message? Message, string?
     TimeSpan? RetryAfter = null, int? Status = null, bool Dispatched = true);
 public sealed record OperationView(string Id, OperationState State, string? MessageId, string? Error,
     int Attempts = 0, int Throttles = 0, int? FirstStatus = null, DateTimeOffset? RetryAt = null);
-public sealed record ConversationView(string Id, string Title, string Kind, string? Team, long Revision, bool IsDirect = false);
-public sealed record ReadAccess(DateTimeOffset HistoryFrom, DateTimeOffset ValidUntil, long Epoch)
+public sealed record ConversationView(string Id, string Title, string Kind, string? Team, long Revision, bool IsDirect = false,
+    string? TeamId = null, bool CanPost = true, bool CanReply = true, string? CapabilityReason = null);
+public sealed record ReadAccess(DateTimeOffset HistoryFrom, DateTimeOffset ValidUntil, long Epoch, bool CanSend = true)
 {
     public static ReadAccess Create(Member member, Conversation conversation, DateTimeOffset now)
     {
         if (member.FreshUntil is not { } authorityUntil || authorityUntil <= now)
             throw new AppError(503, "authorization_stale", "Current policy authority is required before serving this content.");
         return new(member.HistoryFrom > now.AddDays(-7) ? member.HistoryFrom : now.AddDays(-7),
-            authorityUntil, conversation.Epoch);
+            authorityUntil, conversation.Epoch, member.CanSend);
     }
 }
 public sealed record MessagePage(IReadOnlyList<Message> Messages, string? Cursor, long Revision, string Window,
     Message? ParentMessage = null, ReadAccess? Access = null,
     [property: System.Text.Json.Serialization.JsonIgnore] ReadRefreshRequest? Refresh = null,
     [property: System.Text.Json.Serialization.JsonIgnore] bool Pending = false,
-    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] ReadEvidence? Diagnostics = null);
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] ReadEvidence? Diagnostics = null,
+    int? ReplyCount = null, bool Preview = false, DateTimeOffset? ReplyCountExpiresAt = null);
 public sealed record PendingRead(string State, int RetryAfterMs, ReadAccess? Access,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] ReadEvidence? Diagnostics = null);
 public sealed record ChangePage(IReadOnlyList<Change> Changes, long Revision, bool ResetRequired,
     IReadOnlyList<Message>? Messages = null, DateTimeOffset? HistoryFrom = null, string? Window = null, ReadAccess? Access = null,
     bool CacheReset = false,
-    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] ReadEvidence? Diagnostics = null);
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] ReadEvidence? Diagnostics = null,
+    int? ReplyCount = null, DateTimeOffset? ReplyCountExpiresAt = null);
 
 public sealed class AppError(int status, string code, string message, ReadAccess? access = null) : Exception(message)
 {
@@ -87,6 +90,8 @@ public interface IRealtime
 {
     Task PublishAsync(Conversation conversation, CancellationToken ct);
     Task RevokeAsync(string tenant, string actorId, CancellationToken ct);
+    Task PublishEventAsync(string tenant, string actorId, RealtimeEvent value, CancellationToken ct) =>
+        throw new NotSupportedException("Typed realtime events are not configured.");
 }
 public interface ICommandTokens
 {

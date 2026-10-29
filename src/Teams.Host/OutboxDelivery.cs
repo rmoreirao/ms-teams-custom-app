@@ -14,7 +14,8 @@ public sealed class ServiceBusDeliveryQueue(ServiceBusClient client) : IDelivery
     public ValueTask DisposeAsync() => sender.DisposeAsync();
     public async Task EnqueueAsync(DeliveryWork work, DateTimeOffset? scheduledAt, CancellationToken ct)
     {
-        var key = JsonSerializer.Serialize(new { work.Change.TenantId, work.Change.ConversationId, work.Change.Id, work.Page, work.RecoveryId });
+        var key = JsonSerializer.Serialize(new { work.Change.TenantId, work.Change.ConversationId, work.Change.Id, work.Page,
+            work.RecoveryId, ActorId = work.ActorEvent?.ActorId });
         var message = new ServiceBusMessage(BinaryData.FromObjectAsJson(work))
         {
             MessageId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))),
@@ -25,10 +26,19 @@ public sealed class ServiceBusDeliveryQueue(ServiceBusClient client) : IDelivery
     }
 }
 public sealed class OutboxDispatcher(string tenant, LiveOptions options, IDeliveryWorkQueue queue,
-    ILogger<OutboxDispatcher> logger)
+    ILogger<OutboxDispatcher> logger, IResourceRegistry? registry = null)
 {
     public async Task DispatchAsync(IReadOnlyCollection<PartitionDocument> documents, CancellationToken ct)
     {
+        foreach (var document in documents.Where(d => d.Kind == "actor-outbox" && d.Pending))
+        {
+            var item = JsonSerializer.Deserialize<ActorEventWork>(document.Json, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                ?? throw new JsonException("Actor event is invalid.");
+            if (!options.ChannelDiscovery.RegistryEnabled || document.TenantId != tenant ||
+                item.TenantId != tenant || item.ActorId != document.ActorId || !options.Admits(item.ActorId))
+                throw new AppError(403, "channel_event_invalid", "Actor event does not match the admitted scope.");
+            await queue.EnqueueAsync(new(new(item.Id, tenant, "", item.Event.Sequence, item.CreatedAt), ActorEvent: item), null, ct);
+        }
         foreach (var document in documents.Where(d => d.Kind == "outbox" && d.Pending))
         {
             if (document.SchemaVersion != 1 || document.TenantId != tenant)
@@ -37,7 +47,8 @@ public sealed class OutboxDispatcher(string tenant, LiveOptions options, IDelive
                 ?? throw new JsonException("Outbox change is invalid.");
             if (change.TenantId != tenant || change.ConversationId != document.ConversationId || change.Revision != document.Revision)
                 throw new InvalidOperationException("Outbox identity does not match its document.");
-            if (!options.Resources.Any(r => r.Id == change.ConversationId))
+            if (registry is null ? !options.Resources.Any(r => r.Id == change.ConversationId) :
+                await registry.FindAsync(change.ConversationId, ct) is null)
             {
                 logger.LogWarning("Outbox resource is no longer approved; suppressing dispatch until an approved resource cleanup.");
                 continue;
@@ -75,14 +86,23 @@ public sealed class DeliveryDeferredException(DateTimeOffset retryAt) : Exceptio
     public DateTimeOffset RetryAt { get; } = retryAt;
 }
 public sealed class DeliveryHandler(string tenant, LiveOptions options, ILiveStateStore store, IRealtime realtime,
-    IDeliveryWorkQueue queue, TimeProvider clock, ILogger<DeliveryHandler> logger)
+    IDeliveryWorkQueue queue, TimeProvider clock, ILogger<DeliveryHandler> logger,
+    IResourceRegistry? registry = null, ChannelWorkflowStore? channelWorkflows = null)
 {
     public async Task HandleAsync(DeliveryWork work, CancellationToken ct)
     {
         using var measurement = LiveTelemetry.Measure("delivery-page");
+        if (work.ActorEvent is { } actorEvent)
+        {
+            if (!options.ChannelDiscovery.RegistryEnabled || channelWorkflows is null || !options.Admits(actorEvent.ActorId))
+                throw new AppError(403, "channel_event_invalid", "Actor-event delivery is not enabled for this scope.");
+            await channelWorkflows.DeliverAsync(actorEvent, realtime, ct);
+            return;
+        }
         if (work.SchemaVersion != 1 || work.Change.TenantId != tenant || work.Page < 0 ||
             work.Change.CreatedAt > clock.GetUtcNow().AddMinutes(1) || work.Change.CreatedAt < clock.GetUtcNow().AddDays(-14) ||
-            !options.Resources.Any(r => r.Id == work.Change.ConversationId))
+            (registry is null ? !options.Resources.Any(r => r.Id == work.Change.ConversationId) :
+                await registry.FindAsync(work.Change.ConversationId, ct) is null))
             throw new AppError(400, "delivery_invalid", "Delivery schema, tenant, age or resource is not approved.");
         var progress = await store.DeliveryAsync(work.Change, ct);
         if (progress.Value.Complete) return;
@@ -107,7 +127,7 @@ public sealed class DeliveryHandler(string tenant, LiveOptions options, ILiveSta
         if (lease.Value.Owner != owner) throw new DeliveryDeferredException(clock.GetUtcNow().AddSeconds(5));
         try
         {
-            if (metadata.Value.PublishedRevision >= work.Change.Revision)
+            if (work.Change.Event is null && metadata.Value.PublishedRevision >= work.Change.Revision)
             {
                 if (!await store.SaveDeliveryAsync(work.Change, lease, lease.Value with { Complete = true,
                     TargetRevision = metadata.Value.PublishedRevision, Owner = "", LeaseUntil = DateTimeOffset.MinValue }, ct))
@@ -126,7 +146,12 @@ public sealed class DeliveryHandler(string tenant, LiveOptions options, ILiveSta
             }
             if (members.Count > 0)
             {
-                await realtime.PublishAsync(metadata.Value with { Members = members, Revision = lease.Value.TargetRevision }, ct);
+                if (work.Change.Event is { } viewEvent)
+                {
+                    foreach (var member in members)
+                        await realtime.PublishEventAsync(tenant, member.Id, viewEvent, ct);
+                }
+                else await realtime.PublishAsync(metadata.Value with { Members = members, Revision = lease.Value.TargetRevision }, ct);
                 LiveTelemetry.DeliveryRecipients.Add(members.Count);
             }
             var next = lease.Value with { Page = lease.Value.Page + 1, Cursor = page.Cursor, Complete = page.Cursor is null,
@@ -146,7 +171,7 @@ public sealed class DeliveryHandler(string tenant, LiveOptions options, ILiveSta
     }
 }
 public sealed class DeliveryQueueWorker(ServiceBusClient client, DeliveryHandler handler, IDeliveryWorkQueue queue,
-    LiveOptions options, IConfiguration configuration, ILogger<DeliveryQueueWorker> logger) : BackgroundService
+    LiveOptions options, IConfiguration configuration, ILogger<DeliveryQueueWorker> logger, IResourceRegistry? registry = null) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -196,7 +221,9 @@ public sealed class DeliveryQueueWorker(ServiceBusClient client, DeliveryHandler
                         try { work = message.Body.ToObjectFromJson<DeliveryWork>(); }
                         catch (JsonException) { logger.LogWarning("Malformed body-free delivery dead letter is quarantined until retention expiry."); }
                         if (work is null || work.Change is null || work.SchemaVersion != 1 || work.Change.TenantId != tenant ||
-                            !options.Resources.Any(r => r.Id == work.Change.ConversationId))
+                            (work.ActorEvent is not null ? !options.ChannelDiscovery.RegistryEnabled || !options.Admits(work.ActorEvent.ActorId) :
+                                registry is null ? !options.Resources.Any(r => r.Id == work.Change.ConversationId) :
+                                await registry.FindAsync(work.Change.ConversationId, stoppingToken) is null))
                         {
                             if (message.EnqueuedTime > DateTimeOffset.UtcNow.AddHours(-1))
                                 await deadLetters.AbandonMessageAsync(message, cancellationToken: stoppingToken);

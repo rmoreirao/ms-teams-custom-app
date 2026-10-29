@@ -23,6 +23,7 @@ ADR 0008 records approval of a synthetic-only dev boundary. That limited approva
 | [0011](0011-service-authenticated-development.md) | Implementation staged; live activation gated | Service-authenticated background work and five isolated Dev roles; test users are not connector credentials |
 | [0012](0012-session-content-reads-and-revision-convergence.md) | Accepted; content-availability policy amended by 0013 | Explicit Session content reads, targeted current security/control reads and access-bounded monotonic revision convergence |
 | [0013](0013-availability-first-reads-and-bounded-hydration.md) | Accepted for source implementation; cloud release separate | Available authorized history, typed cold loading and bounded durable Control hydration without weakening access or retention |
+| [0014](0014-event-driven-channel-discovery.md) | Accepted; activated in Development on 2026-10-29; signed-in acceptance separate | Joined-team discovery, shared immutable channel admission, durable workflow/view events and event-driven channel UI |
 
 ## Maintenance
 

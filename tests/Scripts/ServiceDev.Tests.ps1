@@ -94,7 +94,7 @@ $refreshGrants=@(
     (Clone @{principalId=$contract.roleBindings.Api.principalId;scope=$refresh.id;roleDefinitionId="$scope/providers/Microsoft.Authorization/roleDefinitions/69a216fc-b8fb-44d8-bc22-1f3c2cd27a39"})
     (Clone @{principalId=$contract.roleBindings.Control.principalId;scope=$refresh.id;roleDefinitionId="$scope/providers/Microsoft.Authorization/roleDefinitions/4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0"})
 )
-$state=@{apps=@{};writes=0;reads=@{};failRole='';driftRole=''}
+$state=@{apps=@{};writes=0;writeOrder=@();reads=@{};failRole='';driftRole=''}
 foreach($role in @(Get-ServiceDevRoles)){$state.apps[$role]=New-App $role}
 function az {
     $global:LASTEXITCODE=0
@@ -133,6 +133,7 @@ function az {
         $state.apps[$role].properties.template=$template
         $state.apps[$role].properties.latestRevisionName="$target--$($template.revisionSuffix)"
         $state.apps[$role].properties.latestReadyRevisionName=$state.apps[$role].properties.latestRevisionName
+        $state.writeOrder+=@($role)
         $state.writes++;return
     }
     $target=$args[[Array]::IndexOf($args,'--name')+1]
@@ -148,6 +149,53 @@ function az {
 function Invoke-WebRequest { throw 'Public smoke should not run after the intentional partial rollout failure.' }
 try{
     Assert-ServiceDevTargets $contract
+    $channelContract=Clone $contract
+    $channelContract.liveConfig|Add-Member -NotePropertyName channelDiscovery -NotePropertyValue @{
+        registryEnabled=$true;enabled=$true;sendEnabled=$false;approvalReference='PENDING';historyFrom=[DateTimeOffset]::UtcNow.AddDays(-1).ToString('o')
+    }
+    Reject {Assert-ServiceDevTargets $channelContract} 'separate reviewed approval'
+    $channelContract.liveConfig.channelDiscovery.approvalReference='reviewed-expanded-channel-scope'
+    Assert-ServiceDevTargets $channelContract
+    $culture=[Globalization.CultureInfo]::CurrentCulture
+    $historyFrom=$channelContract.liveConfig.channelDiscovery.historyFrom
+    try{
+        [Globalization.CultureInfo]::CurrentCulture=[Globalization.CultureInfo]::GetCultureInfo('en-NL')
+        $iso='2001-12-22T09:52:45.1807249+02:00'
+        foreach($value in @($iso,[DateTime]::Parse($iso,[Globalization.CultureInfo]::InvariantCulture),
+            [DateTimeOffset]::Parse($iso,[Globalization.CultureInfo]::InvariantCulture))){
+            $channelContract.liveConfig.channelDiscovery.historyFrom=$value
+            Assert-ServiceDevTargets $channelContract
+            Assert-ServiceDevTargets (Clone $channelContract)
+        }
+        foreach($invalid in @('invalid',[DateTimeOffset]::MinValue,[DateTime]::UtcNow.AddDays(1),[DateTimeOffset]::UtcNow.AddDays(1))){
+            $channelContract.liveConfig.channelDiscovery.historyFrom=$invalid
+            Reject {Assert-ServiceDevTargets $channelContract} 'separate reviewed approval'
+        }
+    }finally{
+        [Globalization.CultureInfo]::CurrentCulture=$culture
+        $channelContract.liveConfig.channelDiscovery.historyFrom=$historyFrom
+    }
+    Reject {Assert-ServiceDevDataAccess $data $cosmosId $contract.primaryReaderRoleId $channelContract} 'missing or excess'
+    $channelData=@($data)
+    foreach($role in @(Get-ServiceDevRoles)){
+        $channelData+=Clone @{properties=@{principalId=$contract.roleBindings.$role.principalId;scope="$cosmosId/dbs/teams/colls/live-resources";
+            roleDefinitionId=if($role -eq 'Control'){"$cosmosId/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002"}else{$contract.primaryReaderRoleId}}}
+    }
+    Assert-ServiceDevDataAccess $channelData $cosmosId $contract.primaryReaderRoleId $channelContract
+    $wrongData=Clone $channelData
+    ($wrongData|Where-Object{$_.properties.principalId -eq $contract.roleBindings.Receiver.principalId -and
+        $_.properties.scope -like '*/live-resources'}).properties.roleDefinitionId="$cosmosId/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002"
+    Reject {Assert-ServiceDevDataAccess $wrongData $cosmosId $contract.primaryReaderRoleId $channelContract} 'least-privileged'
+    $channelQueue=Clone $refresh
+    $channelQueue.name='channel-work';$channelQueue.id=$refresh.id.Replace('graph-read-refresh','channel-work');$channelQueue.defaultMessageTimeToLive='PT1H'
+    $channelGrants=@($refreshGrants|ForEach-Object{$grant=Clone $_;$grant.scope=$channelQueue.id;$grant})
+    $channelGrants+=Clone @{principalId=$contract.roleBindings.Control.principalId;scope=$channelQueue.id;
+        roleDefinitionId="$scope/providers/Microsoft.Authorization/roleDefinitions/69a216fc-b8fb-44d8-bc22-1f3c2cd27a39"}
+    Assert-ServiceDevChannelWork $channelQueue $channelGrants $channelContract
+    Reject {Assert-ServiceDevChannelWork $channelQueue @($channelGrants|Select-Object -First 2) $channelContract} 'Unexpected Control'
+    $badGrant=Clone $channelGrants
+    $badGrant[0].scope=$channelQueue.id.Substring(0,$channelQueue.id.IndexOf('/queues/'))
+    Reject {Assert-ServiceDevChannelWork $channelQueue $badGrant $channelContract} 'queue-scoped'
     foreach($legacy in @('Strong','SessionPrimary','')){
         $bad=Clone $contract;$bad.liveConfig.readConsistency=$legacy
         Reject {Assert-ServiceDevTargets $bad} 'approved normal'
@@ -261,6 +309,7 @@ try{
     $state.failRole='Projector'
     Reject {& (Join-Path $root 'scripts\Deploy-ServiceDev.ps1') -TargetsPath $path -RegistryName 'approvedregistry' -Image $image -Apply -Confirmation DEPLOY-DEV -Confirm:$false -RolloutAttempts 1 -RolloutDelaySeconds 0} 'partial rollout'
     if($state.writes -ne 2){throw 'The failed partial rollout continued or rolled back automatically.'}
+    if(($state.writeOrder -join ',') -cne 'Control,Receiver'){throw 'Partial rollout did not prepare Control before the API.'}
     Import-Module (Join-Path $root 'scripts\DeploymentContract.psm1') -Force
     & (Get-Module DeploymentContract) {
         param($Tenant,$Client,$Origin)
@@ -280,9 +329,10 @@ try{
         }
     } $tenant $contract.webClientId $origin
     foreach($role in @(Get-ServiceDevRoles)){$state.apps[$role]=New-App $role}
-    $state.writes=0;$state.reads=@{};$state.failRole=''
+    $state.writes=0;$state.writeOrder=@();$state.reads=@{};$state.failRole=''
     & (Join-Path $root 'scripts\Deploy-ServiceDev.ps1') -TargetsPath $path -RegistryName 'approvedregistry' -Image $image -Apply -Confirmation DEPLOY-DEV -Confirm:$false -RolloutAttempts 1 -RolloutDelaySeconds 0
     if($state.writes -ne 5){throw 'The complete image-only rollout did not update exactly five targets.'}
+    if(($state.writeOrder -join ',') -cne 'Control,Receiver,Projector,Delivery,Api'){throw 'The API must be released after all background roles.'}
     & (Join-Path $root 'scripts\Deploy-ServiceDev.ps1') -TargetsPath $path -RegistryName 'approvedregistry' -Image $image -Apply -Confirmation DEPLOY-DEV -Confirm:$false -RolloutAttempts 1 -RolloutDelaySeconds 0
     if($state.writes -ne 5){throw 'Reapplying the same image was not idempotent.'}
     Write-Output 'Passed five-role target/access guards, no-write plan/WhatIf, all-target preflight, partial-failure preservation, exact full rollout and idempotent reapply; no cloud calls.'

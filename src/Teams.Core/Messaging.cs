@@ -37,15 +37,17 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
     }
 
     public async Task<MessagePage> ReadAsync(Actor actor, string id, string? cursor, string? parent,
-        long minimumRevision, CancellationToken ct, ReadEvidence? evidence = null)
+        long minimumRevision, CancellationToken ct, ReadEvidence? evidence = null, bool preview = false)
     {
+        if (preview && (parent is null || cursor is not null))
+            throw new AppError(400, "thread_preview_invalid", "Preview a selected thread without a continuation.");
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), clock);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
         MessagePage? pending = null;
         var accepted = false;
         try
         {
-            pending = await ReadPageAsync(actor, id, cursor, parent, minimumRevision, linked.Token, evidence);
+            pending = await ReadPageAsync(actor, id, cursor, parent, minimumRevision, linked.Token, evidence, preview);
             if (pending.Refresh is null) return pending;
             if (!pending.Pending)
             {
@@ -65,7 +67,7 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
             foreach (var delay in new[] { 0, 100, 300, 800, 1600 })
             {
                 if (delay > 0) await Task.Delay(TimeSpan.FromMilliseconds(delay), clock, linked.Token);
-                var page = await ReadPageAsync(actor, id, cursor, parent, minimumRevision, linked.Token, evidence);
+                var page = await ReadPageAsync(actor, id, cursor, parent, minimumRevision, linked.Token, evidence, preview);
                 if (!page.Pending) return page with { Refresh = null };
                 pending = page;
             }
@@ -82,12 +84,12 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
     }
 
     private async Task<MessagePage> ReadPageAsync(Actor actor, string id, string? cursor, string? parent,
-        long minimumRevision, CancellationToken ct, ReadEvidence? evidence)
+        long minimumRevision, CancellationToken ct, ReadEvidence? evidence, bool preview)
     {
         for (;;)
         {
             ct.ThrowIfCancellationRequested();
-            try { return await ReadPageAttemptAsync(actor, id, cursor, parent, minimumRevision, ct, evidence); }
+            try { return await ReadPageAttemptAsync(actor, id, cursor, parent, minimumRevision, ct, evidence, preview); }
             catch (AppError error) when (error.Code == "cache_generation_changed")
             {
                 await Task.Delay(TimeSpan.FromMilliseconds(10), clock, ct);
@@ -96,7 +98,7 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
     }
 
     private async Task<MessagePage> ReadPageAttemptAsync(Actor actor, string id, string? cursor, string? parent,
-        long minimumRevision, CancellationToken ct, ReadEvidence? evidence)
+        long minimumRevision, CancellationToken ct, ReadEvidence? evidence, bool preview)
     {
         if (minimumRevision < 0)
             throw new AppError(400, "invalid_revision", "Revision cannot be negative.");
@@ -134,17 +136,22 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
         if (parent is not null && (parentMessage is null || parentMessage.Deleted || parentMessage.CreatedAt < access.HistoryFrom))
             throw new AppError(404, "access_denied", "Thread is not available.");
         var messages = loaded.Where(message => message.CreatedAt >= access.HistoryFrom).ToArray();
-        var complete = view is { Complete: true, ParentMissing: false } || current.CoverageReady ||
-            coverage is { Ready: true, VerifiedAt: not null } ||
+        var complete = view is { Complete: true, ParentMissing: false } || parent is null && (current.CoverageReady ||
+            coverage is { Ready: true, VerifiedAt: not null }) ||
             boundary?.At < access.HistoryFrom ||
             conversation.Kind == "chat" && view?.OldestAt < access.HistoryFrom;
+        if (parent is not null && !complete) return Pending();
         if (messages.Length == 0 && !complete) return Pending();
-        var last = messages.Take(20).LastOrDefault();
-        var nextCursor = last is not null && (messages.Length > 20 || !complete) ? tokens.Issue(actor, id, $"page:{conversation.Epoch}:{parent}",
+        var size = preview ? 2 : 20;
+        var last = messages.Take(size).LastOrDefault();
+        var nextCursor = last is not null && (messages.Length > size || !complete) ? tokens.Issue(actor, id, $"page:{conversation.Epoch}:{parent}",
             JsonSerializer.Serialize(new PageBoundary(last.CreatedAt, last.Id)), TimeSpan.FromMinutes(15)) : null;
-        return new(messages.Take(20).OrderBy(m => m.CreatedAt).ToArray(), nextCursor, conversation.Revision,
+        return new(messages.Take(size).OrderBy(m => m.CreatedAt).ToArray(), nextCursor, conversation.Revision,
             tokens.Issue(actor, id, $"command:{conversation.Epoch}", Guid.NewGuid().ToString("N"), TimeSpan.FromMinutes(5)),
-            parentMessage, access, complete ? null : request);
+            parentMessage, access, complete ? null : request,
+            ReplyCount: parent is not null && boundary is null && complete && messages.Length < 21 ? messages.Length : null,
+            Preview: preview, ReplyCountExpiresAt: parent is not null && boundary is null && complete && messages.Length < 21
+                ? messages.Length == 0 ? access.ValidUntil : messages.Min(message => message.CreatedAt).AddDays(7) : null);
     }
 
     public async Task<ChangePage> ChangesAsync(Actor actor, string id, long after, CancellationToken ct,
@@ -164,10 +171,27 @@ public sealed class Messaging(ILiveStateStore store, IGraphTransport graph, ICom
         if (conversation.Revision < minimumRevision)
             throw new AppError(503, "projection_behind", "The reader has not reached the requested revision. Synchronizing recent context.", access);
         var page = await store.ChangesAsync(actor, id, after, ct, evidence);
+        int? replyCount = null;
+        DateTimeOffset? countExpiresAt = null;
+        if (parent is not null && !page.ResetRequired)
+        {
+            var view = (await store.ReadViewAsync(actor.TenantId, id, parent, ct))?.Value;
+            var recent = await store.MessagesAsync(actor, id, parent, cutoff, null, null, ct, evidence);
+            var current = (await GetAuthorizedAsync(actor, id, ct)).Value;
+            if (current.Revision == page.Revision && current.CacheGeneration == conversation.CacheGeneration &&
+                current.Epoch == conversation.Epoch && recent.Count < 21 &&
+                view is { Complete: true, ParentMissing: false } &&
+                view.Epoch == current.Epoch && view.CacheGeneration == current.CacheGeneration)
+            {
+                replyCount = recent.Count;
+                countExpiresAt = recent.Count == 0 ? access.ValidUntil : recent.Min(message => message.CreatedAt).AddDays(7);
+            }
+        }
         return page with
         {
             HistoryFrom = page.HistoryFrom ?? cutoff,
-            Window = tokens.Issue(actor, id, $"command:{conversation.Epoch}", Guid.NewGuid().ToString("N"), TimeSpan.FromMinutes(5))
+            Window = tokens.Issue(actor, id, $"command:{conversation.Epoch}", Guid.NewGuid().ToString("N"), TimeSpan.FromMinutes(5)),
+            ReplyCount = replyCount, ReplyCountExpiresAt = countExpiresAt
         };
     }
 

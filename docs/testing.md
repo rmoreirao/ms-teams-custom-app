@@ -2,6 +2,16 @@
 
 ## Offline correctness checks
 
+Channel development stays local. `ChannelTests` exercises immutable shared
+registration/capacity, metadata-only source discovery, unsupported/unauthorized
+denials, durable actor snapshots/journal/outbox/recovery, known-empty readiness,
+delivery deduplication and channel cache/history/parent isolation with controlled
+dependencies. `ApiTests` covers channel status, signed selections, CSRF, feature
+defaults and the content-free access lease. Script contracts test the additive
+queue and reader/writer matrix without calling Azure. Browser fixtures and
+component tests exercise the channel interaction; none of these authorize
+expanded live content processing or prove cloud/Teams acceptance.
+
 ```powershell
 .\scripts\Validate.ps1 -Browser
 ```
@@ -54,6 +64,8 @@ Windows tests use installed Edge; Linux/CI uses the configured Playwright Chromi
 | Personal-chat test messages | Verified one-to-one header action; default count 30 and independent concurrency 1, editable text and exact numbered bodies; sequential sends by default and immediate overlapping requests with explicit concurrency, preserved drafts, initial throttle/retry/final counts and cancellation only before submission |
 | Cache Diagnostics | Non-warming snapshots; actual page/delta attribution; independently confirmed chat-scoped Redis/Cosmos cleanup; bounded original-operation recovery; generation-fenced hydration, reset and refill; preserved drafts, access expiry and send status |
 | Realtime/reconnect | Web PubSub and targeted changes; no 30-second catalog polling or SSE fallback |
+| Channel workflows | Actor-bound discovery/open operations, early completion before the initial response, consecutive event batches, durable sequence/gap recovery and known-empty readiness without recurring status/content polling |
+| Channel UI and access | Separate destinations, team grouping, inline previews/expanded pagination, optional panel with shared drafts, viewport-scoped reads, automatic preparation without sending, explicit Post versus Reply, read-only capabilities and parent-bound access renewal |
 | UX and safety | Desktop/mobile focus/navigation, drafts in memory, offline send disabled, no business browser storage, sanitized rich content, virtualization |
 | Release | All selected targets preflighted before mutation; five-role queue properties/exact scoped grants checked read-only; image-only preservation; exact readiness; explicit partial-rollout errors |
 
@@ -79,6 +91,25 @@ validation, partial older-page progress, channel ordering, three-page bounds,
 unknown/deleted/newly appeared parents, history tightening during a cache read,
 conditional marker writes and newer-deletion protection. Progress must not invent
 global healthy coverage or another material revision.
+
+Channel-thread regressions explicitly reject root coverage and partial cached
+replies as proof of initialized thread history. Controlled Graph continuations
+prove latest previews across unordered pages, continuation beyond the three-page
+step without false completion/failure, known-empty results, unknown long-thread
+counts, count-expiry metadata and required queue/source failures. Readiness
+outbox evidence includes configured channels without the discovery registry.
+The existing notification journey starts from an explicitly initialized source
+view, rather than treating one received notification as complete thread history.
+
+`ChannelBrowser.test.tsx`, `MessageList.test.tsx` and `threadReads.test.ts` cover
+shared inline/panel drafts, sanitized expandable previews, normal-flow long
+threads, a maximum of three content reads, twenty-second transport deadlines,
+120-second initial/older-page recovery, explicit Retry with retained authorized
+content, and count invalidation without polling. `channels.spec.ts` exercises
+compiled-shell previews, expansion/pagination, live updates without expansion,
+same-revision nonempty and empty completion, failures, desktop/mobile navigation,
+no implicit sends, viewport activation/offscreen catch-up and independent reply
+author styling. These use controlled dependencies, not live tenant credentials.
 
 `ApiTests` checks actual `202` pending serialization separately from send `202`.
 `LiveSync.test.tsx` covers malformed/primitive read payloads, cold and older-page
